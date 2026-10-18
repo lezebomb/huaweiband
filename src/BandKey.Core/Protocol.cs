@@ -3,12 +3,25 @@ using System.Text;
 
 namespace BandKey.Core;
 
-public sealed record PublicDevice(string DeviceId, string Name, string PublicKey);
+public sealed record PublicDevice(string DeviceId, string Name, string PublicKey,
+    string ConfirmationSource = ConfirmationSources.WearEngine, bool TestOnly = false);
 public sealed record Challenge(string PcId, string DeviceId, string SessionId, string Nonce,
     long IssuedAt, long ExpiresAt, string Signature);
 public sealed record PollRequest(string PcId, string DeviceId, string Nonce, long Timestamp, string Signature);
 public sealed record Approval(Challenge Challenge, bool Approved, string Source, string Signature);
-public sealed record ApprovalResult(bool Authorized, bool WindowsUnlocked, string Code);
+public sealed record ApprovalResult(bool Authorized, bool WindowsUnlocked, string Code, bool Simulated = false);
+
+public static class ConfirmationSources
+{
+    public const string WearEngine = "wearengine-button", DirectBle = "ble-button", Gadgetbridge = "gadgetbridge-button", TestClient = "test-client";
+    public static bool IsKnown(string value) => value is WearEngine or DirectBle or Gadgetbridge or TestClient;
+}
+
+public interface IUserConfirmationSource
+{
+    string Source { get; }
+    ValueTask<Approval?> ConfirmAsync(Challenge challenge, CancellationToken cancellationToken);
+}
 
 public static class Protocol
 {
@@ -64,6 +77,7 @@ public sealed class AuthorizationBroker
     private readonly ECDsa pcKey;
     private readonly string pcId;
     private string? lockSession;
+    private string? lastLockSession;
     private bool locked, near;
     private long lastChallengeAt = long.MinValue;
     public string PcPublicKey { get; }
@@ -77,6 +91,8 @@ public sealed class AuthorizationBroker
         using var key = Protocol.ReadPublicKey(device.PublicKey);
         if (device.DeviceId != Protocol.Fingerprint(device.PublicKey) || string.IsNullOrWhiteSpace(device.Name) || device.Name.Length > 100)
             throw new ArgumentException("Device ID must equal SHA256(SPKI)");
+        if (!ConfirmationSources.IsKnown(device.ConfirmationSource) || (device.ConfirmationSource == ConfirmationSources.TestClient && !device.TestOnly))
+            throw new ArgumentException("Test clients must be explicitly enrolled as test-only");
         lock (gate)
         {
             if (devices.Count >= 64 && !devices.ContainsKey(device.DeviceId)) throw new ArgumentException("Enrollment capacity reached");
@@ -94,6 +110,7 @@ public sealed class AuthorizationBroker
             if (isLocked != locked)
             {
                 pending.Clear(); lockSession = isLocked ? Guid.NewGuid().ToString("N") : null;
+                if (isLocked) lastLockSession = lockSession;
                 lastChallengeAt = long.MinValue;
             }
             locked = isLocked; near = isNear;
@@ -124,7 +141,10 @@ public sealed class AuthorizationBroker
     }
 
     public ApprovalResult Accept(Approval approval, long now)
+        => Accept(approval, now, out _);
+    public ApprovalResult Accept(Approval approval, long now, out PublicDevice? authorizedDevice)
     {
+        authorizedDevice = null;
         lock (gate)
         {
             var c = approval.Challenge;
@@ -133,11 +153,18 @@ public sealed class AuthorizationBroker
             if (!devices.TryGetValue(c.DeviceId, out var device)) return Reject("device-revoked");
             if (!pending.TryGetValue(c.DeviceId, out var expected) || expected != c) return Reject("challenge-unknown-or-consumed");
             if (now < c.IssuedAt || now >= c.ExpiresAt) { pending.Remove(c.DeviceId); return Reject("challenge-expired"); }
-            if (approval.Source != "wearengine-button") return Reject("button-source-required");
+            if (approval.Source != device.ConfirmationSource) return Reject("button-source-required");
             if (!Protocol.Verify(device.PublicKey, Protocol.ApprovalText(approval), approval.Signature)) return Reject("signature-invalid");
             pending.Remove(c.DeviceId); // atomically consume signed approvals AND denials
+            if (approval.Approved) authorizedDevice = device;
             return approval.Approved ? new(true, false, "authorized-authentication-backend-unavailable") : Reject("user-denied");
         }
     }
+    public bool IsContextCurrent(Challenge challenge, long now)
+    { lock (gate) return locked && near && challenge.SessionId == lockSession && now >= challenge.IssuedAt && now < challenge.ExpiresAt && devices.ContainsKey(challenge.DeviceId); }
+    public bool IsDeviceCurrent(PublicDevice device)
+    { lock (gate) return devices.TryGetValue(device.DeviceId, out var current) && current == device; }
+    public bool IsSameLockSession(Challenge challenge)
+    { lock (gate) return challenge.SessionId == lastLockSession; }
     private static ApprovalResult Reject(string code) => new(false, false, code);
 }

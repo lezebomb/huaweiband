@@ -7,6 +7,24 @@ internal static class Program
     [STAThread]
     public static void Main(string[] args)
     {
+        if (args.Contains("--test-flow"))
+        {
+            var output = Path.GetFullPath(Arg(args, "--output") ?? "flow-lab.json");
+            try { Environment.ExitCode = FlowLab.RunAsync(output).GetAwaiter().GetResult(); }
+            catch (Exception e)
+            {
+                Environment.ExitCode = 2;
+                // CLI diagnostics must fail without opening a crash dialog or exposing secrets.
+                try
+                {
+                    Directory.CreateDirectory(Path.GetDirectoryName(output)!);
+                    File.WriteAllText(output, JsonSerializer.Serialize(new { simulated = true, failed = 1,
+                        startupError = e.GetType().Name, hresult = e.HResult, realWindowsAuthenticationTested = false, realWearableTested = false }, Store.Json));
+                }
+                catch (Exception) { /* Output may itself be inaccessible. The exit code still records failure. */ }
+            }
+            return;
+        }
         if (args.Contains("--probe")) { ProbeAsync(args).GetAwaiter().GetResult(); return; }
         if (args.Contains("--probe-classic"))
         {

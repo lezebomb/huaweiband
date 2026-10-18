@@ -17,7 +17,7 @@ public sealed class BridgeServer : IAsyncDisposable
 {
     private WebApplication? app;
     public async Task StartAsync(AppSettings settings, X509Certificate2 cert, AuthorizationBroker broker,
-        Action<ApprovalResult> result, CancellationToken cancellationToken = default)
+        Action<ApprovalResult> result, CancellationToken cancellationToken = default, AuthenticationCoordinator? authentication = null)
     {
         var builder = WebApplication.CreateSlimBuilder();
         builder.Logging.ClearProviders();
@@ -36,6 +36,7 @@ public sealed class BridgeServer : IAsyncDisposable
             server.Listen(IPAddress.Parse(settings.ListenAddress), settings.Port, listen => listen.UseHttps(cert));
         });
         app = builder.Build();
+        var flow = authentication ?? new AuthenticationCoordinator(broker, new UnavailableAuthenticationBackend(), () => null);
         app.UseRateLimiter();
         // Only the signed protocol is exposed. Configuration and enrollment have no network API.
         app.MapPost("/v1/poll", (PollRequest request) =>
@@ -48,11 +49,11 @@ public sealed class BridgeServer : IAsyncDisposable
             catch (Exception e) when (e is ArgumentException or UnauthorizedAccessException or FormatException or NullReferenceException)
             { return Results.Unauthorized(); }
         });
-        app.MapPost("/v1/approval", (Approval request) =>
+        app.MapPost("/v1/approval", async (Approval request, HttpContext context) =>
         {
             try
             {
-                var status = broker.Accept(request, DateTimeOffset.UtcNow.ToUnixTimeSeconds()); result(status);
+                var status = await flow.AcceptAsync(request, context.RequestAborted); result(status);
                 return Results.Json(status, statusCode: status.Authorized ? 200 : 403);
             }
             catch (Exception e) when (e is ArgumentException or FormatException or NullReferenceException)

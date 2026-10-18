@@ -45,10 +45,12 @@ bandkey.approval.v1
 <Base64(UTF8(challenge签名文本))>
 <challenge.signature>
 <1表示确认，0表示拒绝>
-wearengine-button
+<source>
 ```
 
 JSON 带完整 `challenge`、`approved`、`source`、`signature`。Windows 必须仍锁屏、距离仍 Near、设备仍授权、挑战与内存中完整记录完全一致且未过期，才验签并原子消费。合法拒绝同样消费挑战。离开 Near、会话解锁、撤权或重启均使旧挑战无效。
+
+授权设备记录绑定一种确认来源：`wearengine-button`、`ble-button`、`gadgetbridge-button` 或 `test-client`。未带来源的新旧 Android 公钥文件默认使用 Wear Engine；来源被包含在签名中，不能将一次测试确认改名当成真实按钮。`test-client` 必须同时带 `testOnly: true`，正式代理拒绝导入这种记录。BLE/Gadgetbridge 在本版本仅有可替换的接口契约，没有对应的真实按钮实现。
 
 有效响应示例语义：
 
@@ -56,11 +58,16 @@ JSON 带完整 `challenge`、`approved`、`source`、`signature`。Windows 必�
 {
   "authorized": true,
   "windowsUnlocked": false,
-  "code": "authorized-authentication-backend-unavailable"
+  "code": "authentication-backend-unavailable",
+  "simulated": false
 }
 ```
 
 这不是 Windows 登录令牌。当前未部署认证后端，无论验签是否成功都不解锁 Windows。
+
+`AuthenticationCoordinator` 将验证后的挑战、原子捕获的设备策略和来源传给 `IWindowsAuthenticationBackend`。模拟后端始终返回 `windowsUnlocked: false`；测试设备不能进入真实后端。真实后端返回成功也还需要观察到 Windows 会话已解锁，且设备、有效期和锁屏会话仍匹配。后端异常、取消和超时返回错误代码，不把异常内容发送到手机。Android 可读取 HTTPS 403 的拒绝结果，不将其当作网络断线。
+
+当前调度器运行在普通用户进程中，不是未来 SYSTEM 服务的信任根。真实认证代理必须独立验证签名、SID、会话、撤权和有效期，并在提交凭据前再次检查；仅在调用结束后检查上下文不能阻止已发生的认证。超时取消同样需要后端配合。本版本没有提供可绕过这些门槛的真实后端。
 
 ## 信任与限制
 

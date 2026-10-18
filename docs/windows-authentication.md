@@ -8,7 +8,19 @@ Windows LogonUI 从 Credential Provider 取得序列化凭据，再交给 LSA/�
 
 已阅读微软 V2 示例 `CSampleCredential::GetSerialization`：本地账户分支打包 `KERB_INTERACTIVE_UNLOCK_LOGON`；非本地身份分支使用带身份提供方标志的 `CredPackAuthenticationBuffer`，然后选择 Negotiate。两者都仍然需要系统可认可的凭据。这个示例不是外部签名登录适配器。[官方示例源码](https://github.com/microsoft/Windows-classic-samples/blob/main/Samples/CredentialProvider/cpp/CSampleCredential.cpp)
 
-当前 `UnavailableAuthenticationBackend` 始终返回未认证；`AuthorizationBroker` 从不将 `WindowsUnlocked` 设为 true。没有可调用的伪解锁路径。
+当前正式代理只使用 `UnavailableAuthenticationBackend`。新增的认证调度接口能传递验证后的请求、处理错误/超时并核对系统会话；独立测试模式的模拟后端不能报告 Windows 已解锁。没有可调用的真实解锁路径。
+
+## 已完成的独立接口测试
+
+`scripts/test-credential-provider.ps1` 编译固定提交 `434f6002bdf9cf9829406c3ff2b33387982d6168` 的微软 V2 样例，再由 `tests/CredentialProvider.Lab` 通过 DLL 的类工厂直接实例化。源文件应放在 `.research/Windows-classic-samples`，也可通过 `-UpstreamPath` 指定。脚本检查提交及参考源码是否被修改，需要 Visual Studio C++ 工具和 Windows SDK 10.0.26100.0。
+
+```powershell
+./scripts/test-credential-provider.ps1
+```
+
+本次 42/42 检查通过：V2 用户枚举、登录/解锁使用场景、字段描述、合成 SID 和 Negotiate 凭据序列化。合成用户不是 Windows 账户，随机测试密码只存在于内存；序列化缓冲区用后清零。没有执行注册脚本、没有加载进 LogonUI、没有调用 LSA 认证。这是样例接口验证，不是 BandKey Provider，更不是实际登录成功。报告位于本地 `artifacts/credential-provider-lab/tests.json`。
+
+成熟项目的参考价值：[privacyIDEA](https://github.com/privacyidea/privacyidea-credential-provider) 和 [multiOTP](https://github.com/multiOTP/multiOTPCredentialProvider) 提供 V2/MFA 的工程经验，但其附加验证仍需与 Windows 认可的账户凭据衔接；不能把它们当作当前 MSA 接受任意手环签名的现成方案。未在本机安装这些组件。
 
 ## 方案与适用性
 
@@ -26,7 +38,7 @@ Windows LogonUI 从 Credential Provider 取得序列化凭据，再交给 LSA/�
 ## 下阶段优先顺序
 
 1. 先取得手环真实按钮回调与稳定距离观测证据，避免为不可用的硬件通道部署登录扩展。
-2. 准备独立 Windows 11 25H2 虚拟机，创建快照、测试账户、可从宿主机访问的恢复控制台；使用虚拟机测试凭据，绝不使用真实电脑密码。
+2. 准备独立 Windows 11 虚拟机，创建快照、测试账户、可从宿主机访问的恢复控制台；使用虚拟机测试凭据，绝不使用真实电脑密码。已新建 BandKey-Win11（8 GiB、4 vCPU、80 GiB 稀疏虚拟磁盘、NAT、UEFI/vTPM），官方 Enterprise 26H2 评估镜像正在下载，尚未完成安装。现有 Ubuntu22.04 保留。
 3. 从固定提交的微软 V2 示例建立独立附加 Provider。保持系统 PIN/密码提供程序，不写 Credential Provider Filter，不包装内置 Provider。
 4. 若选择密码托管路线，先实现受 ACL 保护的独立凭据保管/代理，评估 DPAPI、Windows Credential Manager、机器/用户范围的真实权限区别。禁止以明文配置、日志、命令行或通用网络/管道消息运输密码。
 5. 登录代理与交互用户进程区分权限；IPC 限制 SYSTEM 与明确SID，拒绝远端管道，绑定用户SID、目标会话、挑战和一次性消费。Provider不应相信任意本机进程发来的“已授权”布尔值。

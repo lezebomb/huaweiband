@@ -36,7 +36,11 @@ public sealed class Agent : IAsyncDisposable
         };
         key = store.LoadSigningKey(); certificate = store.LoadTlsCertificate();
         PcId = Protocol.Fingerprint(Protocol.ExportPublicKey(key)); Broker = new(PcId, key);
-        foreach (var device in store.Read<PublicDevice[]>("devices.json") ?? []) Broker.Enroll(device);
+        foreach (var device in store.Read<PublicDevice[]>("devices.json") ?? [])
+        {
+            if (device.TestOnly || device.ConfirmationSource == ConfirmationSources.TestClient) throw new ArgumentException("正式代理不加载模拟设备，请使用独立的 --test-flow。");
+            Broker.Enroll(device);
+        }
         Scanner.Observed += OnObserved;
         Scanner.Failed += code => { lock (gate) { autoLock.Reset("scanner-stopped"); RefreshContext(); Status = "蓝牙扫描停止：" + code; Store.Log("ble-stopped", code); } };
     }
@@ -47,7 +51,7 @@ public sealed class Agent : IAsyncDisposable
         catch (Exception e) { Status = "蓝牙不可用：" + e.GetType().Name; Store.Log("ble-start-failed", e.GetType().Name); }
         if (Settings.BridgeEnabled)
         {
-            try { await bridge.StartAsync(Settings, certificate, Broker, OnApproval); }
+            try { await bridge.StartAsync(Settings, certificate, Broker, OnApproval, authentication: new(Broker, new UnavailableAuthenticationBackend(), () => Locked)); }
             catch (Exception e) { Status = "桥接监听失败：" + e.GetType().Name; Store.Log("bridge-start-failed", e.GetType().Name); }
         }
     }
@@ -82,7 +86,11 @@ public sealed class Agent : IAsyncDisposable
             RefreshContext(); Status = "设置已保存；桥接地址或开关变更需重启程序";
         }
     }
-    public void Enroll(PublicDevice device) { lock (gate) { Broker.Enroll(device); Store.Write("devices.json", Broker.Devices); } }
+    public void Enroll(PublicDevice device)
+    {
+        if (device.TestOnly || device.ConfirmationSource == ConfirmationSources.TestClient) throw new ArgumentException("测试客户端只能在 --test-flow 隔离模拟器中使用。");
+        lock (gate) { Broker.Enroll(device); Store.Write("devices.json", Broker.Devices); }
+    }
     public void Revoke(string deviceId) { lock (gate) { Broker.Revoke(deviceId); Store.Write("devices.json", Broker.Devices); Status = "已撤销手机公钥授权"; } }
     public object PairingBundle => new
     {

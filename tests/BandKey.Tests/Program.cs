@@ -65,9 +65,10 @@ Test("changed nonce rejected even with fresh phone signature", () => { var b = B
 Test("canonical field injection rejected", () => Throws(() => Protocol.PollText(Poll() with { PcId = "pc\nother" })));
 Test("prompt rate limit after expiry", () => { var b = Broker(); Assert(b.Poll(Poll(), 1000) != null); Assert(b.Poll(Poll(1031), 1031) == null); Assert(b.Poll(Poll(1061), 1061) != null); });
 Test("repeated fresh poll returns same pending prompt", () => { var b = Broker(); var a = b.Poll(Poll(), 1000); Assert(a == b.Poll(Poll(1001), 1001)); });
-Test("authentication adapter fails closed", () => { var backend = new UnavailableAuthenticationBackend(); Assert(!backend.IsAvailable && !backend.AuthenticateAsync(default).Result.WindowsAuthenticated); });
+Test("authentication adapter fails closed", () => { var backend = new UnavailableAuthenticationBackend(); Assert(!backend.IsAvailable && !backend.AuthenticateAsync(null!, default).Result.WindowsAuthenticated); });
 
 SafetyTests.Run(Test);
+AuthenticationTests.Run(Test);
 var report = new { generatedAt = DateTimeOffset.UtcNow, total = tests.Count, passed = tests.Count - failed, failed, tests };
 var output = args.FirstOrDefault() ?? "core-tests.json"; Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(output))!);
 File.WriteAllText(output, JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true }));

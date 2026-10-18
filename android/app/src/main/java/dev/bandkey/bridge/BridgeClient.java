@@ -52,10 +52,13 @@ final class BridgeClient {
         try {
             try(OutputStream output=connection.getOutputStream()){output.write(bytes);}
             int code=connection.getResponseCode(); if(code==204)return null;
-            if(code!=200)throw new IOException("PC HTTP "+code);
-            try(InputStream input=connection.getInputStream()) {
+            if(code!=200 && !(path.equals("/v1/approval") && code==403))throw new IOException("PC HTTP "+code);
+            try(InputStream input=code==200?connection.getInputStream():connection.getErrorStream()) {
+                if(input==null)throw new IOException("Empty PC response");
                 byte[] response=Wire.readBounded(input,8192);
-                return new JSONObject(new String(response,StandardCharsets.UTF_8));
+                JSONObject result=new JSONObject(new String(response,StandardCharsets.UTF_8));
+                if(code==403 && result.optBoolean("authorized"))throw new SecurityException("Inconsistent denial response");
+                return result;
             }
         }finally{connection.disconnect();}
     }

@@ -2,6 +2,7 @@
 .research/
 artifacts/
 outputs/
+virtualmachine/
 **/bin/
 **/obj/
 **/.gradle/

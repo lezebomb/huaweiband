@@ -15,8 +15,8 @@
 |---|---|---|
 | Windows Release 编译、自包含发布 | 已实际验证 | .NET 10.0.402；无编译错误/警告 |
 | Windows BLE / Classic 发现 | 已实际验证 | BLE 25 秒和 Classic inquiry 约 8 秒均完成，未观察到已连接手机的目标手环；不能据此证明永远不可发现 |
-| RSSI 滤波、滞回、延迟、重连后的重新就绪 | 模拟测试通过 | 59 项核心测试包含距离轨迹、实际控制器和协议攻击测试；没有真机走远锁屏测试 |
-| 一次性授权、撤权、防重放 | 模拟测试通过 | 真实密码学与真实回环 HTTPS 连接；测试中的锁屏/靠近状态是人工构造的 |
+| RSSI 滤波、滞回、延迟、重连后的重新就绪 | 模拟测试通过 | 82 项核心测试包含距离轨迹、控制器、协议攻击及认证调度；没有真机走远锁屏测试 |
+| 一次性授权、撤权、防重放、认证调度 | 模拟测试通过 | 真实密码学、回环 HTTPS 8/8；锁屏/靠近状态及认证后端为模拟输入，结果明确标记 `simulated` |
 | Windows DPAPI、TLS、Java/.NET 签名互通 | 已实际验证 | 11 项 Windows 集成测试；Java 直接编译 Android 的 `Wire.java` 和固定证书验证器，含错误/过期证书反例 |
 | `LockWorkStation`、WTS 锁屏事件、托盘/参数界面 | 仅完成代码实现 | 窗口已离线渲染检查；没有在真实会话中触发锁屏测试 |
 | Android 官方 SDK、环境诊断 | 部分已实际验证 | 一加 Android 16、运动健康 17.0.8.300；正式 App ID + HMS Core 6.16.4.352 后查询返回服务范围错误 8 |
@@ -24,6 +24,7 @@
 | 手环按钮点击 → 手机 → 电脑 | 尚需真机验证 | 尚无手环 Notify 能力及真实点击证据；手机指定地址 30 秒扫描为 0 条广播 |
 | 电脑同时作为第二个华为协议主机 | 技术上仍存在障碍 | 未拿到已有配对会话的合法认证通道；未重配或重置手环；并发连接能力未知 |
 | Windows 真实身份认证/解锁 | 技术上仍存在障碍 | 当前真实账户来源为 **MicrosoftAccount**；尚无经虚拟机验证的 Credential Provider 和认可的登录凭据衔接 |
+| 微软 V2 Credential Provider 参考接口 | 已实际验证接口，未验证登录 | 固定上游提交编译，普通进程直接加载测试 42/42；未注册、未提交系统认证，测试身份为虚构用户 |
 | 登录后启动、崩溃恢复 | 部分已验证 | 监督脚本异常子进程重启、正常退出停止已测；任务计划/真机重启未测，首次登录前不运行用户代理 |
 
 测试原始结果：[核心](artifacts/core-tests.json)、[Windows 集成](artifacts/windows-tests.json)、[Android 生命周期](artifacts/android-runtime-tests.json)。最新硬件与接入结果见 [一加实机记录](docs/device-validation-20261017.md)，申请身份和用途见 [Wear Engine 申请资料](docs/wearengine-application.md)。
@@ -97,6 +98,8 @@ Start-Process -Wait ./artifacts/BandKey-win-x64/BandKey.exe -ArgumentList '--pro
 Start-Process -Wait ./artifacts/BandKey-win-x64/BandKey.exe -ArgumentList '--probe --seconds 60 --output D:\huawei\artifacts\probe.json --jsonl D:\huawei\artifacts\observations.jsonl'
 # Classic inquiry：只做发现，不配对、不打开 RFCOMM；可用 --cache-only 只读缓存
 Start-Process -Wait ./artifacts/BandKey-win-x64/BandKey.exe -ArgumentList '--probe-classic --seconds 8 --output D:\huawei\artifacts\classic-probe.json'
+# 独立模拟输入，真实回环 HTTPS；不读取正式代理配置，不调用锁屏或 Windows 登录
+Start-Process -Wait ./artifacts/BandKey-win-x64/BandKey.exe -ArgumentList '--test-flow --output D:\huawei\artifacts\flow-lab.json'
 ```
 
 Android 提供环境/设备能力诊断、指定 MAC 的 30 秒广播诊断和诊断 JSON 导出。诊断不会连接、配对或重置手环，缺少服务授权会显示真实 SDK 错误码。
@@ -127,6 +130,7 @@ src/BandKey.Windows/         托盘 UI、BLE、WTS、DPAPI、HTTPS、GATT 诊断
 android/                    正式 Android 桥接工程与 Gradle Wrapper
 tests/BandKey.Tests/         信号与协议攻击测试
 tests/BandKey.Windows.Tests/ DPAPI、实际 HTTPS、跨语言密码学测试
+tests/CredentialProvider.Lab/ 不注册的微软 V2 参考接口测试宿主
 tests/interop/              编译 Android Wire.java 的 JDK 验证程序
 scripts/                    可重复构建、登录后启动、异常恢复
 docs/                       技术证据、协议、验证记录、真机步骤、认证路线
