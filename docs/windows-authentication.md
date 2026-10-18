@@ -12,7 +12,7 @@
 
 微软还提供正式的安装配置接口 [LocalAccounts](https://learn.microsoft.com/en-us/windows-hardware/customize/desktop/unattend/microsoft-windows-shell-setup-useraccounts-localaccounts) 和 [HideOnlineAccountScreens](https://learn.microsoft.com/en-us/windows-hardware/customize/desktop/unattend/microsoft-windows-shell-setup-oobe-hideonlineaccountscreens)，均可在 oobeSystem 阶段配置。它们为后续可重复部署提供研究依据，不是已在这台运行中虚拟机应用成功的方案。本次没有绕过初始化、修改认证注册表、设置空密码或开启自动登录。
 
-只读调用 VMware `listSnapshots` 返回“此操作需要输入密码”，确认加密虚拟机的 CLI 快照读取还需要认证；没有读取凭据管理器或尝试提取加密密码。基线快照和 VMware Tools 尚未验证。用户释放鼠标后，窗口工具仍返回 `failed to activate captured window` 和黑色截图，已停止输入，请用户通过 VMware 菜单手动建立 `00-Windows-desktop` 快照。此前还观察到激活窗口会使 VMware 恢复到小窗口；工具故障原因未确诊。
+只读调用 VMware `listSnapshots` 返回“此操作需要输入密码”，确认加密虚拟机的 CLI 快照读取还需要认证；没有读取凭据管理器或尝试提取加密密码。用户已手动建立“快照 1”；VMware `.vmsd` 元数据、对应 `.vmsn` 及增量磁盘均已核实，恢复操作尚未测试。VMware Tools 尚未验证。用户确认此前黑色截图源于熄屏，已纠正原因判断。激活窗口仍会使 VMware 恢复到小窗口，且虚拟机捕获输入后自动化无法可靠打开宿主机菜单；需手动释放并打开设置窗口后继续挂载测试 ISO。
 
 ## 为什么授权成功还不能解锁
 
@@ -60,7 +60,7 @@ Windows LogonUI 从 Credential Provider 取得序列化凭据，再交给 LSA/�
 ## 下阶段优先顺序
 
 1. 先取得手环真实按钮回调与稳定距离观测证据，避免为不可用的硬件通道部署登录扩展。
-2. 准备独立 Windows 11 虚拟机，创建快照、测试账户、可从宿主机访问的恢复控制台；使用虚拟机测试凭据，绝不使用真实电脑密码。BandKey-Win11（8 GiB、4 vCPU、80 GiB 稀疏虚拟磁盘、NAT、UEFI/vTPM）已安装并进入桌面；官方评估 ISO 已匹配微软 SHA-256。快照、账户类型和实际来宾版本仍待确认。现有 Ubuntu22.04 保留，配置哈希复核未变。
+2. 准备独立 Windows 11 虚拟机，创建快照、测试账户、可从宿主机访问的恢复控制台；使用虚拟机测试凭据，绝不使用真实电脑密码。BandKey-Win11（8 GiB、4 vCPU、80 GiB 稀疏虚拟磁盘、NAT、UEFI/vTPM）已安装并进入桌面；官方评估 ISO 已匹配微软 SHA-256，“快照 1”已核实存在但尚未做恢复测试。账户类型和实际来宾版本仍待确认。现有 Ubuntu22.04 保留，配置哈希复核未变。
 3. 从固定提交的微软 V2 示例建立独立附加 Provider。保持系统 PIN/密码提供程序，不写 Credential Provider Filter，不包装内置 Provider。
 4. 若选择密码托管路线，先实现受 ACL 保护的独立凭据保管/代理，评估 DPAPI、Windows Credential Manager、机器/用户范围的真实权限区别。禁止以明文配置、日志、命令行或通用网络/管道消息运输密码。
 5. 登录代理与交互用户进程区分权限；IPC 限制 SYSTEM 与明确SID，拒绝远端管道，绑定用户SID、目标会话、挑战和一次性消费。Provider不应相信任意本机进程发来的“已授权”布尔值。
