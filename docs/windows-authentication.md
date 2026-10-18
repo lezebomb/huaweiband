@@ -65,6 +65,8 @@ Windows LogonUI 从 Credential Provider 取得序列化凭据，再交给 LSA/�
 
 新增只读可见的分步日志与 20 项普通进程生命周期/签名路径检查，总原生 154/154。日志明确区分 timer-active、approval-verified、refresh-requested、auto-credential、Vault 失败和 serialization-prepared；Windows 回调另记状态。模拟环境只进入测试 EXE，实际系统认证没有在这些测试中提交。新版真实 LogonUI 的消息循环、Vault 及桌面结果仍待一轮用户诊断；尚不能认定此次来宾失败的唯一原因已被确认。操作见新教程。
 
+**2026-10-18 后续正例：**用户明确报告 lifecycle fix 2 在锁屏后、尚未进入密码页面时自动返回桌面，截图显示定时器、原生验签、刷新及 UnAdvise 路径。记为 VM 本地账户有效模拟签名触发实际自动解锁的用户实测通过，不是独立 WTS/Windows-result 采集，不是手环实测。该结果不构成主力机部署的验证依据；本版反例、系统边界及完整卸载仍需补测。正式 C# 后端保持不可用。
+
 ## 新增：VM 加密保管与模拟签名
 
 安装器现在登记一次当前 VM 本地密码，通过 LogonUser 核对返回 SID；不接收宿主机密码或 PIN。密码以机器 DPAPI 加密，放在 Program Files 独立 Vault，所有者与 DACL 限制为 SYSTEM/管理员。Provider 仅在 SYSTEM 身份读取，并检查实际文件权限、大小、非重解析点及严格字符串边界。机器 DPAPI 若密文可读，同机其他用户也可能解密，故文件 ACL 是必需权限边界；管理员和系统被控制无法由此防护。[DPAPI 机器范围说明](https://learn.microsoft.com/en-us/windows/win32/seccrypto/example-c-program-using-cryptprotectdata)
