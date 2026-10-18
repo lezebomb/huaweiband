@@ -1,0 +1,6 @@
+<resources>
+  <string name="screen_title">BandKey · 手机透明桥接</string>
+  <string name="diagnostic_band_address" translatable="false"></string>
+  <string name="status_format">\n手机公钥指纹：\n%1$s\n手环：%2$s\n自动桥接：%3$s\n状态：%4$s\n</string>
+  <string name="status_error">状态读取失败</string>
+</resources>

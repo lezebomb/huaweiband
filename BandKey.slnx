@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="src/BandKey.Core/BandKey.Core.csproj" />
+  <Project Path="src/BandKey.Windows/BandKey.Windows.csproj" />
+  <Project Path="tests/BandKey.Tests/BandKey.Tests.csproj" />
+  <Project Path="tests/BandKey.Windows.Tests/BandKey.Windows.Tests.csproj" />
+</Solution>

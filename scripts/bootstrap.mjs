@@ -1,0 +1,18 @@
+import {mkdir, writeFile, readFile} from 'node:fs/promises';
+import {createHash} from 'node:crypto';
+import {resolve} from 'node:path';
+import {spawnSync} from 'node:child_process';
+const root=resolve(import.meta.dirname,'..');
+await mkdir(resolve(root,'.tooling'),{recursive:true});
+const metadata=await (await fetch('https://builds.dotnet.microsoft.com/dotnet/release-metadata/10.0/releases.json')).json();
+const sdk=metadata.releases.find(r=>r.sdk && !r.sdk.version.includes('-')).sdk;
+const file=sdk.files.find(f=>f.rid==='win-x64'&&f.name.endsWith('.zip'));
+console.log(`Downloading project-local .NET SDK ${sdk.version}`);
+const response=await fetch(file.url); if(!response.ok)throw Error(`Download HTTP ${response.status}`);
+const bytes=Buffer.from(await response.arrayBuffer());
+if(createHash('sha512').update(bytes).digest('hex')!==file.hash.toLowerCase())throw Error('SDK SHA512 mismatch');
+await writeFile(resolve(root,'.tooling/dotnet-sdk.zip'),bytes);
+await writeFile(resolve(root,'.tooling/dotnet-download.json'),JSON.stringify({version:sdk.version,...file},null,2));
+const result=spawnSync('pwsh.exe',['-NoProfile','-Command',"[System.IO.Compression.ZipFile]::ExtractToDirectory('.tooling\\dotnet-sdk.zip','.tooling\\dotnet',$true)"],{cwd:root,stdio:'inherit'});
+if(result.status!==0)process.exit(result.status||1);
+console.log('SDK ready in .tooling/dotnet');

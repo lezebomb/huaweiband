@@ -1,0 +1,17 @@
+plugins { id 'com.android.application' }
+android {
+    namespace 'dev.bandkey.bridge'
+    compileSdk 36
+    defaultConfig {
+        applicationId 'dev.bandkey.bridge'
+        minSdk 26
+        targetSdk 36
+        versionCode 1
+        versionName '0.1.0'
+        // Huawei-issued client ID is supplied after service application; no developer secrets in source.
+        manifestPlaceholders = [wearEngineAppId: providers.gradleProperty('wearEngineAppId').getOrElse('UNCONFIGURED')]
+    }
+    compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+    buildTypes { release { minifyEnabled false } }
+}
+dependencies { implementation 'com.huawei.hms:wearengine:5.0.3.304' }
