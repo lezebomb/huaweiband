@@ -2,6 +2,16 @@
 
 本机真实用户账户来源是 MicrosoftAccount。当前没有安装 Credential Provider、认证包或修改登录注册表；没有使用自动键盘输入、粘贴密码、关闭 Hello/PIN、替换或过滤系统凭据提供程序。
 
+## 虚拟机首次账户设置
+
+2026-10-18 用户已完成 Windows 文件安装，当前实见页面为企业评估版的工作/学校账户 OOBE，尚未进入桌面。该页面不是安装失败的证据。先查看“登录选项”是否提供“改为域加入”（Domain join instead）；该入口可创建本地 Windows 测试账户，参考 [Dell Image Assist 的配置说明](https://www.dell.com/community/en/conversations/image-assist/how-to-create-w11-image-using-a-local-windows-user-account/647fa0bef4ccf8a8de5cf735)。该资料针对较早 Windows 11；本机 26H2 菜单分支尚未点击验证，不能保证该版本一定保留相同文案。
+
+虚拟机可用独立本地账户（例如 BandKeyLab），无需绑定工作或学校邮箱。为后续验证锁屏及凭据正确/错误场景，保留独立测试密码；由用户设置，不使用宿主机密码。个人 MicrosoftAccount 的兼容性应在后续单独验证，本地账户测试不能冒充 MSA 登录测试。
+
+微软还提供正式的安装配置接口 [LocalAccounts](https://learn.microsoft.com/en-us/windows-hardware/customize/desktop/unattend/microsoft-windows-shell-setup-useraccounts-localaccounts) 和 [HideOnlineAccountScreens](https://learn.microsoft.com/en-us/windows-hardware/customize/desktop/unattend/microsoft-windows-shell-setup-oobe-hideonlineaccountscreens)，均可在 oobeSystem 阶段配置。它们为后续可重复部署提供研究依据，不是已在这台运行中虚拟机应用成功的方案。本次没有绕过初始化、修改认证注册表、设置空密码或开启自动登录。
+
+只读调用 VMware `listSnapshots` 返回“此操作需要输入密码”，确认加密虚拟机的 CLI 快照读取还需要认证；没有读取凭据管理器或尝试提取加密密码。Windows 基线快照尚未创建。已找到现有 VMware 安装内的 Windows Tools ISO，需在首次设置完成后继续安装及验证。观察到调用 Computer Use 激活窗口前后，VMware 从最大化恢复到小窗口；原因未确诊，暂避开该调用，账户页面不自动操作。
+
 ## 为什么授权成功还不能解锁
 
 Windows LogonUI 从 Credential Provider 取得序列化凭据，再交给 LSA/认证包校验。手机的 P-256 公钥没有自动成为这个 Windows 账户的登录凭据。`LockWorkStation` 没有对称的普通桌面 `UnlockWorkStation` API。[微软职责说明](https://learn.microsoft.com/en-us/windows/win32/secauthn/credential-providers-in-windows)
