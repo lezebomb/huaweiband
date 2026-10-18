@@ -6,7 +6,7 @@
 
 2026-10-18 用户已完成首次设置，已观察到 BandKey-Win11 内的 Windows 企业评估版桌面。此前工作/学校账户 OOBE 不代表安装失败；已向用户说明“登录选项 → 改为域加入”（Domain join instead）的本地账户入口，参考 [Dell Image Assist 的配置说明](https://www.dell.com/community/en/conversations/image-assist/how-to-create-w11-image-using-a-local-windows-user-account/647fa0bef4ccf8a8de5cf735)。实际创建的账户类型尚未读回确认，不把桌面可用等同于账户认证测试通过。
 
-桌面水印显示 `26100.ge_release.240331-1435`，与下载 URL 中的 26H2 标记不一致。实际来宾版本需通过来宾注册表进一步确认，不能仅凭 ISO 文件名将来宾标成 26H2。
+此前桌面水印显示 `26100.ge_release.240331-1435`；随后用户在来宾实际运行图形诊断，截图确认注册表读取结果为 **build 26300 / 26H2，42/42 参考接口检查通过**。版本以该运行结果为准，不再沿用旧水印推断。
 
 虚拟机可用独立本地账户（例如 BandKeyLab），无需绑定工作或学校邮箱。为后续验证锁屏及凭据正确/错误场景，保留独立测试密码；由用户设置，不使用宿主机密码。个人 MicrosoftAccount 的兼容性应在后续单独验证，本地账户测试不能冒充 MSA 登录测试。
 
@@ -40,7 +40,24 @@ Windows LogonUI 从 Credential Provider 取得序列化凭据，再交给 LSA/�
 
 该脚本先构建及测试，再从已安装的 VS 目录复制通过 Microsoft Authenticode 校验的 VC++ 运行库，按明确文件列表生成本地测试目录、SHA-256 清单及只读数据 ISO。使用 Windows [IMAPI CreateResultImage](https://learn.microsoft.com/en-us/windows/win32/api/imapi2fs/nf-imapi2fs-ifilesystemimage-createresultimage)，不会自动挂载、启用共享文件夹、运行安装程序或修改虚拟机。ISO 内容不含注册脚本、自动运行项或真实账户凭据。
 
-在 VMware 中将该 ISO 连接到 **BandKey-Win11** 的虚拟光驱，用来宾资源管理器打开光盘，运行 `CredentialProvider.Lab.Gui.exe`。不需要管理员权限或 VMware Tools。程序从旁边加载参考 DLL，报告写入来宾 `%LOCALAPPDATA%\BandKeyLab`，窗口显示检查数、实际 OS build、报告路径和三项明确的“未注册 / 未提交认证 / 未测试解锁”。不要运行 `regsvr32`。当前只完成 ISO 解包及全部 7 个载荷文件的哈希复核，来宾运行仍待验证。
+在 VMware 中将该 ISO 连接到 **BandKey-Win11** 的虚拟光驱，用来宾资源管理器打开光盘，运行 `CredentialProvider.Lab.Gui.exe`。不需要管理员权限或 VMware Tools。程序从旁边加载参考 DLL，报告写入来宾 `%LOCALAPPDATA%\BandKeyLab`，窗口显示检查数、实际 OS build、报告路径和三项明确的“未注册 / 未提交认证 / 未测试解锁”。用户已手动运行，截图确认 42/42 及上述三项 NO。该证据仍不是 Windows 实际登录。
+
+## 独立 BandKey VM Provider
+
+新增 `src/BandKey.CredentialProvider`，独立实验 CLSID `{76B424B6-A72D-4E98-9DC1-485E37A5429C}`。它是最小 V2 本地账户密码测试组件，使用 Windows 用户枚举绑定唯一 SID，拒绝非本地身份；不自动选择登录，不支持远程桌面、CredUI 或改密场景，不写过滤器、不替换系统 Provider。此阶段只供验证真实 Windows 凭据提交链路，**还没有接入手环授权或密码托管，也没有接入正式 C# 认证后端**。
+
+密码只由用户在虚拟机安全桌面的测试选项中手动输入；程序不保存密码。内存固定长度缓冲区在序列化、取消选择、结束回调、系统结果回调及销毁时清零；读字段接口不会返回该密码。通过 `CredProtect` 保护后，打包正确的 `KERB_INTERACTIVE_LOGON` / `KERB_WORKSTATION_UNLOCK_LOGON` 消息交给 LogonUI。只有后续真实进入桌面，才能记录为 Windows 登录成功。[微软接口语义](https://learn.microsoft.com/en-us/windows/win32/api/credentialprovider/nf-credentialprovider-icredentialprovidercredential-getserialization)
+
+`BandKey.VmSetup.exe` 是由用户运行的安装/移除入口。它只接受 VMware 厂商/型号和 build 26300，拒绝远程会话，核对当前交互本地账户与提升后的 SID 一致，并用 `USER_INFO_24` 拒绝连接 Internet 身份的账户。只有用户选择操作后才请求提升；安装文件置于 Program Files 的独立目录，ACL 仅允许 SYSTEM/管理员写入、普通用户读取执行。安装器内嵌 DLL SHA-256，复制前后核对；最后才启用配置，失败时仅清理本次创建的注册和文件。移除仅针对本实验的三个固定注册子树与专用文件，不调整系统 Provider。[账户类型检查](https://learn.microsoft.com/en-us/windows/win32/api/lmaccess/ns-lmaccess-user_info_24)
+
+```powershell
+./scripts/test-bandkey-provider.ps1
+./scripts/package-bandkey-provider.ps1
+```
+
+本阶段编译及原生静态分析最终均为 0 错误/警告，普通进程 85/85 检查通过，覆盖 SID/身份选择、无配置或无凭据拒绝、密码边界、Windows CredProtect/Unprotect 合成凭据往返、登录/解锁结构类型、重复提交清理、失败及取消清理、COM 生命周期、实际发布 DLL 加载及登录选项图标/标签字段。宿主机只读 `--check` 确认 VM 限制拒绝宿主机、没有注册。二进制检查确认 CFG/ASLR/NX 和仅系统 DLL 依赖，使用静态 VC++ 运行库。ISO 已解包复核三个载荷文件的哈希。
+
+**未验证：**来宾安装、卸载、真实凭据成功/失败、实际登录界面、组件故障恢复和快照恢复。由用户按 [虚拟机测试教程](vm-provider-test.md) 执行。尚不能把 85 项普通进程测试或此前 42 项参考测试视为真实登录、手环解锁或安装回滚验证通过。
 
 成熟项目的参考价值：[privacyIDEA](https://github.com/privacyidea/privacyidea-credential-provider) 和 [multiOTP](https://github.com/multiOTP/multiOTPCredentialProvider) 提供 V2/MFA 的工程经验，但其附加验证仍需与 Windows 认可的账户凭据衔接；不能把它们当作当前 MSA 接受任意手环签名的现成方案。未在本机安装这些组件。
 
@@ -59,9 +76,9 @@ Windows LogonUI 从 Credential Provider 取得序列化凭据，再交给 LSA/�
 
 ## 下阶段优先顺序
 
-1. 先取得手环真实按钮回调与稳定距离观测证据，避免为不可用的硬件通道部署登录扩展。
-2. 准备独立 Windows 11 虚拟机，创建快照、测试账户、可从宿主机访问的恢复控制台；使用虚拟机测试凭据，绝不使用真实电脑密码。BandKey-Win11（8 GiB、4 vCPU、80 GiB 稀疏虚拟磁盘、NAT、UEFI/vTPM）已安装并进入桌面；官方评估 ISO 已匹配微软 SHA-256，“快照 1”已核实存在但尚未做恢复测试。账户类型和实际来宾版本仍待确认。现有 Ubuntu22.04 保留，配置哈希复核未变。
-3. 从固定提交的微软 V2 示例建立独立附加 Provider。保持系统 PIN/密码提供程序，不写 Credential Provider Filter，不包装内置 Provider。
+1. 审核等待期在隔离 VM 中验证真实 Windows 凭据提交；审批通过后补充真实按钮回调与稳定距离观测证据。VM 手动密码实验不作为正式手环方案的部署依据。
+2. 准备独立 Windows 11 虚拟机，创建快照、测试账户、可从宿主机访问的恢复控制台；使用虚拟机测试凭据，绝不使用真实电脑密码。BandKey-Win11（8 GiB、4 vCPU、80 GiB 稀疏虚拟磁盘、NAT、UEFI/vTPM）已安装并进入桌面，实际 build 26300 / 26H2；官方评估 ISO 已匹配微软 SHA-256，“快照 1”已核实存在但尚未做恢复测试。账户类型待安装器确认。现有 Ubuntu22.04 保留，配置哈希复核未变。
+3. 已实现独立附加 VM Provider；下一步由用户在虚拟机测试真实账户凭据、错误拒绝与移除。保持系统 PIN/密码提供程序，不写 Credential Provider Filter，不包装内置 Provider。
 4. 若选择密码托管路线，先实现受 ACL 保护的独立凭据保管/代理，评估 DPAPI、Windows Credential Manager、机器/用户范围的真实权限区别。禁止以明文配置、日志、命令行或通用网络/管道消息运输密码。
 5. 登录代理与交互用户进程区分权限；IPC 限制 SYSTEM 与明确SID，拒绝远端管道，绑定用户SID、目标会话、挑战和一次性消费。Provider不应相信任意本机进程发来的“已授权”布尔值。
 6. Provider 中仅在验证的目标会话授权后提交系统凭据，等待真实认证结果。后台服务不可从 Session 0 直接调用交互锁屏；仍由会话代理调用。
@@ -70,4 +87,4 @@ Windows LogonUI 从 Credential Provider 取得序列化凭据，再交给 LSA/�
 
 必须验证：正确/错误凭据、无授权、重复签名、过期、撤权、篡改、服务不可用、蓝牙离线、重启首次登录、普通锁屏解锁、快速用户切换、RDP、睡眠恢复、账户密码变更、MSA离线登录、Hello-only 策略、组件崩溃、系统升级后回归。以上目前均没有 Windows真实登录测试证据。
 
-回滚方案应先在虚拟机中验证：只移除 BandKey 自有 CLSID/COM 注册及文件、保留系统 Provider；若登录界面不可用，使用虚拟机控制台和脱机恢复移除该自有注册并回退快照。真实电脑上的注册/安装另需用户明确确认。本仓库没有可被误执行的注册脚本。
+回滚方案应先在虚拟机中验证：通过 VM 专用安装器仅移除 BandKey 实验 CLSID/COM 注册及文件、保留系统 Provider；若登录界面不可用，通过 VMware 控制台回退快照。真实电脑上的注册/安装不在本实验范围，安装器会拒绝当前宿主机。本仓库没有通用注册脚本或自动执行注册入口。

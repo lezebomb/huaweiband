@@ -1,0 +1,4 @@
+LIBRARY "BandKey.CredentialProvider.dll"
+EXPORTS
+    DllGetClassObject PRIVATE
+    DllCanUnloadNow PRIVATE
