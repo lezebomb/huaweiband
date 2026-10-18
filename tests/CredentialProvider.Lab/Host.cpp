@@ -4,6 +4,9 @@
 #include <identitycommon.h>
 #include <propkey.h>
 #include <shlwapi.h>
+#include <shlobj.h>
+#include <knownfolders.h>
+#include <shellapi.h>
 #include <wrl/client.h>
 #include <bcrypt.h>
 #include <filesystem>
@@ -15,6 +18,24 @@
 using Microsoft::WRL::ComPtr;
 static const GUID SampleProvider = {0x5fd3d285,0x0dd9,0x4362,{0x88,0x55,0xe0,0xab,0xaa,0xcd,0x4a,0xf6}};
 static const wchar_t* FakeSid = L"S-1-5-21-100-200-300-1001";
+
+static std::wstring ReadSystemVersion(const wchar_t* name) {
+    wchar_t value[256] = {}; DWORD bytes = sizeof(value);
+    return RegGetValueW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", name,
+        RRF_RT_REG_SZ, nullptr, value, &bytes) == ERROR_SUCCESS ? value : L"unknown";
+}
+static std::string JsonText(const std::wstring& value) {
+    int size = WideCharToMultiByte(CP_UTF8, 0, value.data(), static_cast<int>(value.size()), nullptr, 0, nullptr, nullptr);
+    std::string utf8(size, '\0'), escaped;
+    WideCharToMultiByte(CP_UTF8, 0, value.data(), static_cast<int>(value.size()), utf8.data(), size, nullptr, nullptr);
+    constexpr char hex[] = "0123456789abcdef";
+    for (unsigned char c : utf8) {
+        if (c == '"' || c == '\\') { escaped += '\\'; escaped += static_cast<char>(c); }
+        else if (c < 32) { escaped += "\\u00"; escaped += hex[c >> 4]; escaped += hex[c & 15]; }
+        else escaped += static_cast<char>(c);
+    }
+    return escaped;
+}
 
 class LabUser final : public ICredentialProviderUser {
     LONG refs = 1;
@@ -56,15 +77,14 @@ public:
     HRESULT STDMETHODCALLTYPE GetAt(DWORD index, ICredentialProviderUser** value) override { *value = nullptr; return index == 0 ? user.CopyTo(value) : E_INVALIDARG; }
 };
 
-int wmain(int argc, wchar_t** argv) {
-    if (argc != 3) return 2;
+static int RunLab(const wchar_t* dllPath, const wchar_t* reportPath, std::wstring* summary) {
     std::vector<std::pair<std::string, bool>> tests;
     auto check = [&](const char* name, bool success) { tests.emplace_back(name, success); if (!success) throw std::runtime_error(name); };
     HMODULE library = nullptr;
     HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     try {
         check("COM initialization", SUCCEEDED(com));
-        library = LoadLibraryExW(argv[1], nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
+        library = LoadLibraryExW(dllPath, nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
         check("reference DLL loaded without registration", library != nullptr);
         auto getClass = reinterpret_cast<HRESULT(WINAPI*)(REFCLSID, REFIID, void**)>(GetProcAddress(library, "DllGetClassObject"));
         check("class factory export", getClass != nullptr);
@@ -119,9 +139,48 @@ int wmain(int argc, wchar_t** argv) {
     if (library) FreeLibrary(library);
     if (SUCCEEDED(com)) CoUninitialize();
     size_t failed = 0; for (const auto& entry : tests) if (!entry.second) failed++;
-    std::ofstream output{std::filesystem::path(argv[2])};
-    output << "{\"referenceProviderOnly\":true,\"registered\":false,\"windowsAuthenticationSubmitted\":false,\"windowsUnlockTested\":false,\"total\":" << tests.size() << ",\"passed\":" << tests.size() - failed << ",\"failed\":" << failed << ",\"tests\":[";
+    const auto build = ReadSystemVersion(L"CurrentBuildNumber"), version = ReadSystemVersion(L"DisplayVersion");
+    std::ofstream output{std::filesystem::path(reportPath)};
+    output << "{\"referenceProviderOnly\":true,\"registered\":false,\"windowsAuthenticationSubmitted\":false,\"windowsUnlockTested\":false,\"osBuild\":\"" << JsonText(build)
+        << "\",\"displayVersion\":\"" << JsonText(version) << "\",\"total\":" << tests.size() << ",\"passed\":" << tests.size() - failed << ",\"failed\":" << failed << ",\"tests\":[";
     bool first = true; for (const auto& entry : tests) { if (!first) output << ','; first = false; output << "{\"name\":\"" << entry.first << "\",\"passed\":" << (entry.second ? "true" : "false") << '}'; }
     output << "]}";
-    return failed || tests.empty() || !output ? 1 : 0;
+    output.close();
+    const bool reportWritten = static_cast<bool>(output);
+    if (summary) {
+        *summary = L"Reference provider interface checks: " + std::to_wstring(tests.size() - failed) + L"/" + std::to_wstring(tests.size()) + L" passed.\nWindows build: " + build + L" (" + version
+            + L")\n\nProvider registered: NO\nWindows authentication submitted: NO\nWindows unlock tested: NO\n\n";
+        *summary += reportWritten ? L"JSON report: " + std::wstring(reportPath) : L"ERROR: report could not be written.";
+    }
+    return failed || tests.empty() || !reportWritten ? 1 : 0;
 }
+
+#ifdef BANDKEY_GUI
+int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
+    int argc = 0; auto args = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (!args) return 2;
+    const bool quiet = argc == 4 && wcscmp(args[3], L"--quiet") == 0;
+    std::wstring summary; int result = 2;
+    try {
+        std::filesystem::path dll, report;
+        if (argc == 1) {
+            wchar_t executable[32768]; DWORD n = GetModuleFileNameW(nullptr, executable, ARRAYSIZE(executable));
+            if (!n || n >= ARRAYSIZE(executable)) throw std::runtime_error("module path");
+            dll = std::filesystem::path(executable).parent_path() / L"SampleV2CredentialProvider.dll";
+            PWSTR local = nullptr;
+            if (FAILED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &local))) throw std::runtime_error("local app data");
+            report = std::filesystem::path(local) / L"BandKeyLab"; CoTaskMemFree(local);
+            std::filesystem::create_directories(report);
+            report /= L"interface-" + std::to_wstring(GetTickCount64()) + L".json";
+        } else if (argc == 3 || quiet) {
+            dll = std::filesystem::absolute(args[1]); report = std::filesystem::absolute(args[2]);
+        } else throw std::runtime_error("arguments");
+        result = RunLab(dll.c_str(), report.c_str(), &summary);
+    } catch (const std::exception&) { summary = L"Lab setup failed. No Windows authentication was submitted."; }
+    LocalFree(args);
+    if (!quiet) MessageBoxW(nullptr, summary.c_str(), L"BandKey interface lab - no Windows logon", MB_OK | (result ? MB_ICONERROR : MB_ICONINFORMATION));
+    return result;
+}
+#else
+int wmain(int argc, wchar_t** argv) { return argc == 3 ? RunLab(argv[1], argv[2], nullptr) : 2; }
+#endif

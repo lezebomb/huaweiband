@@ -4,13 +4,15 @@
 
 ## 虚拟机首次账户设置
 
-2026-10-18 用户已完成 Windows 文件安装，当前实见页面为企业评估版的工作/学校账户 OOBE，尚未进入桌面。该页面不是安装失败的证据。先查看“登录选项”是否提供“改为域加入”（Domain join instead）；该入口可创建本地 Windows 测试账户，参考 [Dell Image Assist 的配置说明](https://www.dell.com/community/en/conversations/image-assist/how-to-create-w11-image-using-a-local-windows-user-account/647fa0bef4ccf8a8de5cf735)。该资料针对较早 Windows 11；本机 26H2 菜单分支尚未点击验证，不能保证该版本一定保留相同文案。
+2026-10-18 用户已完成首次设置，已观察到 BandKey-Win11 内的 Windows 企业评估版桌面。此前工作/学校账户 OOBE 不代表安装失败；已向用户说明“登录选项 → 改为域加入”（Domain join instead）的本地账户入口，参考 [Dell Image Assist 的配置说明](https://www.dell.com/community/en/conversations/image-assist/how-to-create-w11-image-using-a-local-windows-user-account/647fa0bef4ccf8a8de5cf735)。实际创建的账户类型尚未读回确认，不把桌面可用等同于账户认证测试通过。
+
+桌面水印显示 `26100.ge_release.240331-1435`，与下载 URL 中的 26H2 标记不一致。实际来宾版本需通过来宾注册表进一步确认，不能仅凭 ISO 文件名将来宾标成 26H2。
 
 虚拟机可用独立本地账户（例如 BandKeyLab），无需绑定工作或学校邮箱。为后续验证锁屏及凭据正确/错误场景，保留独立测试密码；由用户设置，不使用宿主机密码。个人 MicrosoftAccount 的兼容性应在后续单独验证，本地账户测试不能冒充 MSA 登录测试。
 
 微软还提供正式的安装配置接口 [LocalAccounts](https://learn.microsoft.com/en-us/windows-hardware/customize/desktop/unattend/microsoft-windows-shell-setup-useraccounts-localaccounts) 和 [HideOnlineAccountScreens](https://learn.microsoft.com/en-us/windows-hardware/customize/desktop/unattend/microsoft-windows-shell-setup-oobe-hideonlineaccountscreens)，均可在 oobeSystem 阶段配置。它们为后续可重复部署提供研究依据，不是已在这台运行中虚拟机应用成功的方案。本次没有绕过初始化、修改认证注册表、设置空密码或开启自动登录。
 
-只读调用 VMware `listSnapshots` 返回“此操作需要输入密码”，确认加密虚拟机的 CLI 快照读取还需要认证；没有读取凭据管理器或尝试提取加密密码。Windows 基线快照尚未创建。已找到现有 VMware 安装内的 Windows Tools ISO，需在首次设置完成后继续安装及验证。观察到调用 Computer Use 激活窗口前后，VMware 从最大化恢复到小窗口；原因未确诊，暂避开该调用，账户页面不自动操作。
+只读调用 VMware `listSnapshots` 返回“此操作需要输入密码”，确认加密虚拟机的 CLI 快照读取还需要认证；没有读取凭据管理器或尝试提取加密密码。基线快照和 VMware Tools 尚未验证。用户释放鼠标后，窗口工具仍返回 `failed to activate captured window` 和黑色截图，已停止输入，请用户通过 VMware 菜单手动建立 `00-Windows-desktop` 快照。此前还观察到激活窗口会使 VMware 恢复到小窗口；工具故障原因未确诊。
 
 ## 为什么授权成功还不能解锁
 
@@ -28,7 +30,17 @@ Windows LogonUI 从 Credential Provider 取得序列化凭据，再交给 LSA/�
 ./scripts/test-credential-provider.ps1
 ```
 
-本次 42/42 检查通过：V2 用户枚举、登录/解锁使用场景、字段描述、合成 SID 和 Negotiate 凭据序列化。合成用户不是 Windows 账户，随机测试密码只存在于内存；序列化缓冲区用后清零。没有执行注册脚本、没有加载进 LogonUI、没有调用 LSA 认证。这是样例接口验证，不是 BandKey Provider，更不是实际登录成功。报告位于本地 `artifacts/credential-provider-lab/tests.json`。
+本次控制台和图形入口各有 42/42 检查通过：V2 用户枚举、登录/解锁使用场景、字段描述、合成 SID 和 Negotiate 凭据序列化。图形入口的缺少 DLL、报告无法写入两个反例也通过。合成用户不是 Windows 账户，随机测试密码只存在于内存；序列化缓冲区用后清零。没有执行注册脚本、没有加载进 LogonUI、没有调用 LSA 认证。这是宿主机普通进程中的样例接口验证，不是 BandKey Provider，更不是实际登录成功。报告位于本地 `artifacts/credential-provider-lab/`，包含实际执行系统的 build 和 DisplayVersion。
+
+### 来宾图形诊断包
+
+```powershell
+./scripts/package-credential-provider-lab.ps1 -CreateIso
+```
+
+该脚本先构建及测试，再从已安装的 VS 目录复制通过 Microsoft Authenticode 校验的 VC++ 运行库，按明确文件列表生成本地测试目录、SHA-256 清单及只读数据 ISO。使用 Windows [IMAPI CreateResultImage](https://learn.microsoft.com/en-us/windows/win32/api/imapi2fs/nf-imapi2fs-ifilesystemimage-createresultimage)，不会自动挂载、启用共享文件夹、运行安装程序或修改虚拟机。ISO 内容不含注册脚本、自动运行项或真实账户凭据。
+
+在 VMware 中将该 ISO 连接到 **BandKey-Win11** 的虚拟光驱，用来宾资源管理器打开光盘，运行 `CredentialProvider.Lab.Gui.exe`。不需要管理员权限或 VMware Tools。程序从旁边加载参考 DLL，报告写入来宾 `%LOCALAPPDATA%\BandKeyLab`，窗口显示检查数、实际 OS build、报告路径和三项明确的“未注册 / 未提交认证 / 未测试解锁”。不要运行 `regsvr32`。当前只完成 ISO 解包及全部 7 个载荷文件的哈希复核，来宾运行仍待验证。
 
 成熟项目的参考价值：[privacyIDEA](https://github.com/privacyidea/privacyidea-credential-provider) 和 [multiOTP](https://github.com/multiOTP/multiOTPCredentialProvider) 提供 V2/MFA 的工程经验，但其附加验证仍需与 Windows 认可的账户凭据衔接；不能把它们当作当前 MSA 接受任意手环签名的现成方案。未在本机安装这些组件。
 
@@ -48,7 +60,7 @@ Windows LogonUI 从 Credential Provider 取得序列化凭据，再交给 LSA/�
 ## 下阶段优先顺序
 
 1. 先取得手环真实按钮回调与稳定距离观测证据，避免为不可用的硬件通道部署登录扩展。
-2. 准备独立 Windows 11 虚拟机，创建快照、测试账户、可从宿主机访问的恢复控制台；使用虚拟机测试凭据，绝不使用真实电脑密码。已新建 BandKey-Win11（8 GiB、4 vCPU、80 GiB 稀疏虚拟磁盘、NAT、UEFI/vTPM），官方 Enterprise 26H2 评估镜像已下载并匹配微软 SHA-256，已挂载并进入 Windows 安装程序，尚未完成安装。现有 Ubuntu22.04 保留。
+2. 准备独立 Windows 11 虚拟机，创建快照、测试账户、可从宿主机访问的恢复控制台；使用虚拟机测试凭据，绝不使用真实电脑密码。BandKey-Win11（8 GiB、4 vCPU、80 GiB 稀疏虚拟磁盘、NAT、UEFI/vTPM）已安装并进入桌面；官方评估 ISO 已匹配微软 SHA-256。快照、账户类型和实际来宾版本仍待确认。现有 Ubuntu22.04 保留，配置哈希复核未变。
 3. 从固定提交的微软 V2 示例建立独立附加 Provider。保持系统 PIN/密码提供程序，不写 Credential Provider Filter，不包装内置 Provider。
 4. 若选择密码托管路线，先实现受 ACL 保护的独立凭据保管/代理，评估 DPAPI、Windows Credential Manager、机器/用户范围的真实权限区别。禁止以明文配置、日志、命令行或通用网络/管道消息运输密码。
 5. 登录代理与交互用户进程区分权限；IPC 限制 SYSTEM 与明确SID，拒绝远端管道，绑定用户SID、目标会话、挑战和一次性消费。Provider不应相信任意本机进程发来的“已授权”布尔值。

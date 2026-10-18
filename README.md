@@ -24,7 +24,8 @@
 | 手环按钮点击 → 手机 → 电脑 | 尚需真机验证 | 尚无手环 Notify 能力及真实点击证据；手机指定地址 30 秒扫描为 0 条广播 |
 | 电脑同时作为第二个华为协议主机 | 技术上仍存在障碍 | 未拿到已有配对会话的合法认证通道；未重配或重置手环；并发连接能力未知 |
 | Windows 真实身份认证/解锁 | 技术上仍存在障碍 | 当前真实账户来源为 **MicrosoftAccount**；尚无经虚拟机验证的 Credential Provider 和认可的登录凭据衔接 |
-| 微软 V2 Credential Provider 参考接口 | 已实际验证接口，未验证登录 | 固定上游提交编译，普通进程直接加载测试 42/42；未注册、未提交系统认证，测试身份为虚构用户 |
+| 微软 V2 Credential Provider 参考接口 | 宿主机接口验证通过，未验证登录 | 控制台和图形入口各 42/42，两个失败场景通过；已生成只读来宾测试 ISO，未注册、未提交系统认证，测试身份为虚构用户 |
+| Windows 隔离测试环境 | 已进入桌面，待快照及来宾验证 | BandKey-Win11 企业评估版；Ubuntu 配置哈希未变。窗口工具激活失败，基线快照尚未核实 |
 | 登录后启动、崩溃恢复 | 部分已验证 | 监督脚本异常子进程重启、正常退出停止已测；任务计划/真机重启未测，首次登录前不运行用户代理 |
 
 测试原始结果：[核心](artifacts/core-tests.json)、[Windows 集成](artifacts/windows-tests.json)、[Android 生命周期](artifacts/android-runtime-tests.json)。最新硬件与接入结果见 [一加实机记录](docs/device-validation-20261017.md)，申请身份和用途见 [Wear Engine 申请资料](docs/wearengine-application.md)。
