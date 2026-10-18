@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <iostream>
 #include <stdexcept>
+#include <thread>
 
 static const wchar_t* TestSid = L"S-1-5-21-100-200-300-1001";
 class SyntheticUser final : public ICredentialProviderUser {
@@ -53,12 +54,110 @@ static void FreeSerialization(CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION& resu
     if (result.rgbSerialization) { SecureZeroMemory(result.rgbSerialization, result.cbSerialization); CoTaskMemFree(result.rgbSerialization); result = {}; }
 }
 int wmain(int argc, wchar_t** argv) {
-    if (argc != 3) return 2;
+    if (argc == 3 && wcscmp(argv[1], L"--verify-interop") == 0) {
+        auto directory = std::filesystem::path(argv[2]); bool passed = false;
+        try {
+            auto body = ReadBoundedFile(directory / L"native-challenge.bin", sizeof(WindowsChallenge));
+            auto response = ReadBoundedFile(directory / L"csharp-approval.bin", sizeof(WindowsApproval));
+            auto key = ReadBoundedFile(directory / L"csharp-public.bin", 72);
+            NativeRequire(body.size() == sizeof(WindowsChallenge) && response.size() == sizeof(WindowsApproval), "interop-wire-size");
+            WindowsChallenge challenge; WindowsApproval approval;
+            CopyMemory(&challenge, body.data(), sizeof(challenge)); CopyMemory(&approval, response.data(), sizeof(approval));
+            OneTimeWindowsGrant grant(challenge, 1000); passed = grant.Verify(approval, key, 100001, 1001);
+            approval.signature[0] ^= 1; passed = passed && !grant.Verify(approval, key, 100001, 1001);
+        } catch (...) { passed = false; }
+        std::ofstream report(directory / L"native-interop-result.json"); report << "{\"passed\":" << (passed ? 2 : 0) << ",\"failed\":" << (passed ? 0 : 1) << ",\"windowsAuthenticationSubmitted\":false}"; report.close();
+        std::cout << "CNG verifies CSharp signature and rejects tampering: " << (passed ? "passed" : "failed") << '\n'; return passed && report ? 0 : 1;
+    }
+    if (argc != 3 && argc != 4) return 2;
     std::vector<std::pair<const char*, bool>> tests;
     auto check = [&](const char* name, bool success) { tests.emplace_back(name, success); if (!success) throw std::runtime_error(name); };
     HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     try {
         check("COM initialized", SUCCEEDED(com));
+        {
+            SigningKey key; key.Generate(); auto publicKey = key.Export(false);
+            auto challenge = NewWindowsChallenge(TestSid, 5, 100000);
+            auto signedRequest = SignWindowsChallenge(challenge, key);
+            check("canonical Windows challenge size", sizeof(challenge) == 436 && sizeof(signedRequest) == 500);
+            check("P256 public key uses expected native blob", publicKey.size() == 72);
+            check("Windows challenge context accepted", ChallengeContextValid(challenge, TestSid, 5, 100001));
+            check("wrong Windows session rejected", !ChallengeContextValid(challenge, TestSid, 6, 100001));
+            check("wrong Windows SID rejected", !ChallengeContextValid(challenge, L"S-1-5-21-100-200-300-1002", 5, 100001));
+            check("challenge expiry boundary rejected", !ChallengeContextValid(challenge, TestSid, 5, 130000));
+            check("wall clock before issuance rejected", !ChallengeContextValid(challenge, TestSid, 5, 99999));
+            auto otherChallenge = NewWindowsChallenge(TestSid, 5, 100000);
+            check("Windows nonces are unpredictable across requests", memcmp(challenge.nonce, otherChallenge.nonce, sizeof(challenge.nonce)) != 0);
+            OneTimeWindowsGrant grant(challenge, 1000);
+            check("valid signed Windows grant accepted", grant.Verify(signedRequest, publicKey, 100001, 1001));
+            auto changed = signedRequest; changed.signature[0] ^= 1;
+            check("signature tampering rejected", !grant.Verify(changed, publicKey, 100001, 1001));
+            changed = signedRequest; changed.challenge.nonce[0] ^= 1;
+            check("nonce substitution rejected", !grant.Verify(changed, publicKey, 100001, 1001));
+            changed = signedRequest; changed.challenge.session++;
+            check("signed grant cannot change sessions", !grant.Verify(changed, publicKey, 100001, 1001));
+            changed = signedRequest; changed.challenge.sid[0] ^= 1;
+            check("signed grant cannot change target account", !grant.Verify(changed, publicKey, 100001, 1001));
+            changed = signedRequest; changed.challenge.expiresMs++;
+            check("signed grant cannot extend lifetime", !grant.Verify(changed, publicKey, 100001, 1001));
+            SigningKey rotated; rotated.Generate(); auto rotatedPublic = rotated.Export(false);
+            check("wrong or rotated key rejected", !grant.Verify(signedRequest, rotatedPublic, 100001, 1001));
+            check("monotonic expiry rejects frozen wall clock", !grant.Verify(signedRequest, publicKey, 100001, 31000));
+            check("monotonic rollback rejected", !grant.Verify(signedRequest, publicKey, 100001, 999));
+            check("grant consumed once", grant.Consume(signedRequest, publicKey, 100001, 1001));
+            check("consumed grant rejects replay", !grant.Consume(signedRequest, publicKey, 100001, 1001));
+            OneTimeWindowsGrant concurrent(challenge, 1000); std::atomic_uint successes{0}; std::vector<std::thread> workers;
+            for (int i = 0; i < 16; i++) workers.emplace_back([&] { if (concurrent.Consume(signedRequest, publicKey, 100001, 1001)) successes++; });
+            for (auto& worker : workers) worker.join();
+            check("concurrent approvals consume exactly once", successes == 1);
+            auto unterminated = challenge; for (auto& c : unterminated.sid) c = L'x';
+            check("unterminated SID rejected without reading beyond packet", !ChallengeContextValid(unterminated, TestSid, 5, 100001));
+            OneTimeWindowsGrant malformed(unterminated, 1000);
+            check("malformed verifier context fails closed", !malformed.Verify(signedRequest, publicKey, 100001, 1001));
+            if (argc == 4) {
+                auto directory = std::filesystem::path(argv[3]); std::filesystem::create_directories(directory);
+                WriteNewFile(directory / L"native-public.bin", publicKey.data(), static_cast<DWORD>(publicKey.size()));
+                WriteNewFile(directory / L"native-challenge.bin", reinterpret_cast<BYTE*>(&challenge), sizeof(challenge));
+                WriteNewFile(directory / L"native-approval.bin", reinterpret_cast<BYTE*>(&signedRequest), sizeof(signedRequest));
+            }
+        }
+        {
+            SecretBuffer<33> secret; BYTE random[16]{}; NativeRequire(BCryptGenRandom(nullptr, random, sizeof(random), BCRYPT_USE_SYSTEM_PREFERRED_RNG) >= 0, "test-random-unavailable");
+            constexpr wchar_t hex[] = L"0123456789abcdef";
+            for (size_t i = 0; i < sizeof(random); i++) { secret.data[i * 2] = hex[random[i] >> 4]; secret.data[i * 2 + 1] = hex[random[i] & 15]; } SecureZeroMemory(random, sizeof(random));
+            ProtectedBytes encrypted; EncryptSecret(reinterpret_cast<BYTE*>(secret.data.data()), sizeof(secret.data), TestSid, true, encrypted);
+            std::vector<BYTE> cipher(encrypted.blob.pbData, encrypted.blob.pbData + encrypted.blob.cbData);
+            check("machine DPAPI ciphertext differs from synthetic secret", cipher.size() != sizeof(secret.data) || memcmp(cipher.data(), secret.data.data(), sizeof(secret.data)) != 0);
+            ProtectedBytes restored; DecryptSecret(cipher, TestSid, restored);
+            check("vault DPAPI round trip preserves synthetic secret", restored.blob.cbData == sizeof(secret.data) && memcmp(restored.blob.pbData, secret.data.data(), sizeof(secret.data)) == 0);
+            bool refused = false;
+            try { ProtectedBytes wrong; DecryptSecret(cipher, L"S-1-5-21-100-200-300-1002", wrong); } catch (...) { refused = true; }
+            check("vault blob binds the target SID", refused);
+            cipher.back() ^= 1; refused = false;
+            try { ProtectedBytes wrong; DecryptSecret(cipher, TestSid, wrong); } catch (...) { refused = true; }
+            check("vault ciphertext tampering rejected", refused);
+            auto permissions = [&](const wchar_t* text) {
+                PSECURITY_DESCRIPTOR descriptor = nullptr;
+                bool valid = ConvertStringSecurityDescriptorToSecurityDescriptorW(text, SDDL_REVISION_1, &descriptor, nullptr) && RestrictedToSystemAndAdministrators(descriptor);
+                if (descriptor) LocalFree(descriptor); return valid;
+            };
+            check("SYSTEM and admin only vault ACL accepted", permissions(L"O:BAG:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)"));
+            check("world-readable machine DPAPI vault rejected", !permissions(L"O:BAG:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;GR;;;WD)"));
+            check("target-user-readable machine DPAPI vault rejected", !permissions(L"O:BAG:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;GR;;;S-1-5-21-100-200-300-1001)"));
+            check("untrusted vault owner rejected", !permissions(L"O:S-1-5-21-100-200-300-1001G:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)"));
+            check("null vault DACL rejected", !permissions(L"O:BAG:BAD:NO_ACCESS_CONTROL"));
+        }
+        {
+            LabPolicy signedPolicy(true, TestSid); signedPolicy.mode = 2;
+            ComPtr<ICredentialProviderCredential> credential; credential.Attach(new BandKeyCredential(CPUS_LOGON, TestSid, L"BANDKEYLAB\\TestUser", signedPolicy));
+            CREDENTIAL_PROVIDER_FIELD_STATE state; CREDENTIAL_PROVIDER_FIELD_INTERACTIVE_STATE interactive;
+            credential->GetFieldState(Password, &state, &interactive);
+            DWORD adjacent = MAXDWORD;
+            check("signed mode hides password and uses a visible submit field", state == CPFS_HIDDEN && interactive == CPFIS_NONE && SUCCEEDED(credential->GetSubmitButtonValue(Submit, &adjacent)) && adjacent == Explanation);
+            check("signed mode refuses manual password injection", credential->SetStringValue(Password, L"synthetic") == E_ACCESSDENIED);
+            CREDENTIAL_PROVIDER_GET_SERIALIZATION_RESPONSE response; CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION serialization{}; PWSTR status = nullptr; CREDENTIAL_PROVIDER_STATUS_ICON icon;
+            check("signed mode never emits a credential without authorization", SUCCEEDED(credential->GetSerialization(&response, &serialization, &status, &icon)) && response == CPGSR_NO_CREDENTIAL_NOT_FINISHED && !serialization.rgbSerialization); CoTaskMemFree(status);
+        }
         check("VMware build 26300 accepted by safety guard", IsSupportedVmwareMachine(L"VMware, Inc.", L"VMware20,1", L"26300"));
         check("physical PC refused by safety guard", !IsSupportedVmwareMachine(L"ASUSTeK COMPUTER INC.", L"Desktop", L"26300"));
         check("different guest build refused", !IsSupportedVmwareMachine(L"VMware, Inc.", L"VMware20,1", L"26200"));
@@ -113,7 +212,7 @@ int wmain(int argc, wchar_t** argv) {
             std::wstring tooLong(257, L'x');
             check("oversized input refused", credential->SetStringValue(Password, tooLong.c_str()) == E_INVALIDARG);
             SecretBuffer<33> password; BYTE random[16] = {};
-            BCryptGenRandom(nullptr, random, sizeof(random), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+            NativeRequire(BCryptGenRandom(nullptr, random, sizeof(random), BCRYPT_USE_SYSTEM_PREFERRED_RNG) >= 0, "test-random-unavailable");
             constexpr wchar_t hex[] = L"0123456789abcdef";
             for (size_t i = 0; i < sizeof(random); i++) { password.data[i * 2] = hex[random[i] >> 4]; password.data[i * 2 + 1] = hex[random[i] & 15]; }
             SecureZeroMemory(random, sizeof(random));
@@ -157,6 +256,7 @@ int wmain(int argc, wchar_t** argv) {
         check("release DLL loads", module != nullptr);
         auto factoryFunction = reinterpret_cast<HRESULT(WINAPI*)(REFCLSID, REFIID, void**)>(GetProcAddress(module, "DllGetClassObject"));
         check("release DLL factory exported", factoryFunction != nullptr);
+        if (!factoryFunction) throw std::runtime_error("release-factory-unavailable");
         {
             ComPtr<IClassFactory> factory; check("release DLL creates factory", SUCCEEDED(factoryFunction(BandKeyLabClsid, IID_PPV_ARGS(&factory))));
             ComPtr<ICredentialProvider> provider; check("release DLL creates provider", SUCCEEDED(factory->CreateInstance(nullptr, IID_PPV_ARGS(&provider))));

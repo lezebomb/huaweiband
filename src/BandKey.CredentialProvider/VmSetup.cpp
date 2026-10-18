@@ -12,6 +12,9 @@
 #include <vector>
 #include <array>
 #include <stdexcept>
+#include <wincred.h>
+#include <strsafe.h>
+#include "SignedGrant.h"
 #include "LabPolicy.h"
 #include "ProviderHash.h"
 #pragma comment(linker, "/manifestdependency:\"type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='amd64' publicKeyToken='6595b64144ccf1df' language='*'\"")
@@ -63,7 +66,7 @@ static bool IsAdmin() {
     if (!AllocateAndInitializeSid(&authority, 2, SECURITY_BUILTIN_DOMAIN_RID, DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0, &administrators)) return false;
     CheckTokenMembership(nullptr, administrators, &member); FreeSid(administrators); return member != FALSE;
 }
-static std::wstring CurrentLocalSid() {
+static std::wstring CurrentLocalSid(std::wstring* qualifiedName = nullptr) {
     DWORD session = 0; Require(ProcessIdToSessionId(GetCurrentProcessId(), &session) && session, L"Interactive VM session required");
     PWSTR userText = nullptr, domainText = nullptr; DWORD bytes = 0;
     Require(WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, session, WTSUserName, &userText, &bytes) != FALSE, L"Cannot inspect interactive user");
@@ -89,7 +92,58 @@ static std::wstring CurrentLocalSid() {
     bool converted = matches && ConvertSidToStringSidW(account->usri23_user_sid, &sidText);
     NetApiBufferFree(account);
     if (!converted || !sidText) throw SetupFailure{L"Run setup as the same local account used on the VM desktop", ERROR_INVALID_DATA};
-    std::wstring sid(sidText); LocalFree(sidText); return sid;
+    std::wstring sid(sidText); LocalFree(sidText); if (qualifiedName) *qualifiedName = domain + L"\\" + user; return sid;
+}
+static void EnrollVault(const std::filesystem::path& directory, const std::wstring& sid, const std::wstring& account, std::vector<BYTE>& publicKey) {
+    wchar_t user[513]{}; NativeRequire(SUCCEEDED(StringCchCopyW(user, ARRAYSIZE(user), account.c_str())), "account-name-too-long");
+    SecretBuffer<257> password; BOOL save = FALSE;
+    CREDUI_INFOW info{}; info.cbSize = sizeof(info); info.pszCaptionText = L"BandKey VM encrypted credential enrollment";
+    info.pszMessageText = L"Enter only this VM local-account password. It will be encrypted in a SYSTEM/administrator-only vault for the VM signed-confirmation experiment. Do not enter a host password or PIN.";
+    DWORD result = CredUIPromptForCredentialsW(&info, L"BandKey VM lab", nullptr, 0, user, ARRAYSIZE(user), password.data.data(), static_cast<ULONG>(password.data.size()), &save,
+        CREDUI_FLAGS_GENERIC_CREDENTIALS | CREDUI_FLAGS_ALWAYS_SHOW_UI | CREDUI_FLAGS_DO_NOT_PERSIST | CREDUI_FLAGS_KEEP_USERNAME);
+    Require(result == NO_ERROR, L"Enrollment cancelled or unavailable; no credential was saved", result);
+    Require(password.data[0] && _wcsicmp(user, account.c_str()) == 0, L"The VM account and a nonempty password are required");
+    auto slash = account.find(L'\\'); NativeRequire(slash != std::wstring::npos, "local-account-invalid");
+    NativeHandle token; BOOL valid = LogonUserW(account.substr(slash + 1).c_str(), account.substr(0, slash).c_str(), password.data.data(), LOGON32_LOGON_INTERACTIVE, LOGON32_PROVIDER_DEFAULT, &token.value);
+    Require(valid != FALSE, L"Windows rejected enrollment password; no credential was saved", valid ? ERROR_SUCCESS : GetLastError());
+    DWORD bytes = 0; GetTokenInformation(token.value, TokenUser, nullptr, 0, &bytes); std::vector<BYTE> tokenData(bytes);
+    NativeRequire(bytes && GetTokenInformation(token.value, TokenUser, tokenData.data(), bytes, &bytes), "enrollment-token-unavailable");
+    PSID expected = nullptr; NativeRequire(ConvertStringSidToSidW(sid.c_str(), &expected) != FALSE, "enrollment-sid-invalid");
+    bool same = EqualSid(expected, reinterpret_cast<TOKEN_USER*>(tokenData.data())->User.Sid) != FALSE; LocalFree(expected); NativeRequire(same, "enrollment-account-mismatch");
+    auto vault = directory / L"Vault"; auto exchange = directory / L"Exchange";
+    NativeRequire(CreateDirectoryW(vault.c_str(), nullptr) && CreateDirectoryW(exchange.c_str(), nullptr), "experiment-directories-unavailable");
+    SetAdministratorSecretSecurity(vault);
+    SetDirectoryDacl(exchange, L"D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1301bf;;;" + sid + L")");
+    ProtectedBytes encrypted;
+    EncryptSecret(reinterpret_cast<BYTE*>(password.data.data()), static_cast<DWORD>((wcslen(password.data.data()) + 1) * sizeof(wchar_t)), sid, true, encrypted); password.Clear();
+    auto credential = vault / L"credential.dpapi"; WriteNewFile(credential, encrypted.blob.pbData, encrypted.blob.cbData); SetAdministratorSecretSecurity(credential);
+    SigningKey key; key.Generate(); publicKey = key.Export(false);
+    auto privateKey = key.Export(true);
+    ProtectedBytes protectedKey;
+    try { EncryptSecret(privateKey.data(), static_cast<DWORD>(privateKey.size()), sid, false, protectedKey); }
+    catch (...) { SecureZeroMemory(privateKey.data(), privateKey.size()); throw; }
+    SecureZeroMemory(privateKey.data(), privateKey.size());
+    WriteNewFile(exchange / L"signer.dpapi", protectedKey.blob.pbData, protectedKey.blob.cbData);
+}
+static bool RemoveExperimentFiles(const std::filesystem::path& directory) {
+    bool removed = true;
+    auto vault = directory / L"Vault"; auto exchange = directory / L"Exchange";
+    if (GetFileAttributesW(vault.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        CheckNoReparseDirectory(vault);
+        if (!DeleteFileW((vault / L"credential.dpapi").c_str()) && GetLastError() != ERROR_FILE_NOT_FOUND) removed = false;
+        if (!RemoveDirectoryW(vault.c_str())) removed = false;
+    }
+    if (GetFileAttributesW(exchange.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        CheckNoReparseDirectory(exchange);
+        // No recursion: only ordinary files within this owned exchange directory.
+        WIN32_FIND_DATAW entry{}; HANDLE find = FindFirstFileW((exchange / L"*").c_str(), &entry);
+        if (find != INVALID_HANDLE_VALUE) {
+            do { if (!(entry.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && !DeleteFileW((exchange / entry.cFileName).c_str())) removed = false; } while (FindNextFileW(find, &entry));
+            FindClose(find);
+        }
+        if (!RemoveDirectoryW(exchange.c_str())) removed = false;
+    }
+    return removed;
 }
 static std::string FileHash(const std::filesystem::path& path) {
     BCRYPT_ALG_HANDLE algorithm = nullptr; BCRYPT_HASH_HANDLE hash = nullptr;
@@ -117,7 +171,7 @@ static void ProtectDirectory(const std::filesystem::path& path) {
     LocalFree(descriptor); Require(code == ERROR_SUCCESS, L"Cannot protect lab directory", code);
 }
 static void Install() {
-    auto sid = CurrentLocalSid(); auto directory = InstallDirectory(); auto destination = directory / L"BandKey.CredentialProvider.dll";
+    std::wstring account; auto sid = CurrentLocalSid(&account); auto directory = InstallDirectory(); auto destination = directory / L"BandKey.CredentialProvider.dll";
     auto source = ExecutablePath().parent_path() / destination.filename();
     Require(FileHash(source) == BandKeyExpectedProviderHash, L"Provider DLL hash does not match this setup build");
     Require(!KeyExists(BandKeyLabConfig) && !KeyExists(BandKeyLabCom) && !KeyExists(BandKeyLabRegistration), L"Existing lab registration found; remove it first", ERROR_ALREADY_EXISTS);
@@ -129,8 +183,14 @@ static void Install() {
         BOOL copied = CopyFileW(source.c_str(), destination.c_str(), TRUE);
         Require(copied != FALSE, L"Cannot copy provider DLL", copied ? ERROR_SUCCESS : GetLastError()); fileCopied = true;
         Require(FileHash(destination) == BandKeyExpectedProviderHash, L"Copied DLL hash mismatch");
+        std::vector<BYTE> publicKey; EnrollVault(directory, sid, account, publicKey);
         Key config; NewKey(BandKeyLabConfig, config); configCreated = true;
         EnabledValue(config.value, 0); TextValue(config.value, L"TargetSid", sid);
+        DWORD mode = 2;
+        auto setting = RegSetValueExW(config.value, L"Mode", 0, REG_DWORD, reinterpret_cast<const BYTE*>(&mode), sizeof(mode));
+        Require(setting == ERROR_SUCCESS, L"Cannot set experiment mode", setting);
+        setting = RegSetValueExW(config.value, L"LabPublicKey", 0, REG_BINARY, publicKey.data(), static_cast<DWORD>(publicKey.size()));
+        Require(setting == ERROR_SUCCESS, L"Cannot pin VM simulation key", setting);
         Key com; NewKey(BandKeyLabCom, com); comCreated = true; TextValue(com.value, nullptr, L"BandKey VM credential test");
         Key server; DWORD disposition = 0;
         auto code = RegCreateKeyExW(com.value, L"InprocServer32", 0, nullptr, 0, KEY_WRITE | KEY_WOW64_64KEY, nullptr, &server.value, &disposition);
@@ -143,6 +203,7 @@ static void Install() {
         if (registrationCreated) DeleteOwnedKey(BandKeyLabRegistration);
         if (configCreated) DeleteOwnedKey(BandKeyLabConfig);
         if (comCreated) DeleteOwnedKey(BandKeyLabCom);
+        try { RemoveExperimentFiles(directory); } catch (...) {}
         if (fileCopied) DeleteFileW(destination.c_str());
         RemoveDirectoryW(directory.c_str()); throw;
     }
@@ -157,10 +218,11 @@ static bool Remove() {
     auto directory = InstallDirectory();
     if (GetFileAttributesW(directory.c_str()) == INVALID_FILE_ATTRIBUTES) return true;
     CheckOrdinaryDirectory(directory);
+    bool experimentRemoved = RemoveExperimentFiles(directory);
     auto dll = directory / L"BandKey.CredentialProvider.dll";
     if (!DeleteFileW(dll.c_str()) && GetLastError() != ERROR_FILE_NOT_FOUND) return false;
     if (!RemoveDirectoryW(directory.c_str()) && GetLastError() != ERROR_PATH_NOT_FOUND) return false;
-    return true;
+    return experimentRemoved;
 }
 int WINAPI wWinMain(_In_ HINSTANCE, _In_opt_ HINSTANCE, _In_ PWSTR, _In_ int) {
     int argc = 0; PWSTR* args = CommandLineToArgvW(GetCommandLineW(), &argc);
@@ -179,11 +241,11 @@ int WINAPI wWinMain(_In_ HINSTANCE, _In_opt_ HINSTANCE, _In_ PWSTR, _In_ int) {
         if (argc == 2 && (arguments[1] == L"--install" || arguments[1] == L"--remove")) operation = arguments[1];
         else {
             Require(argc == 1, L"Unsupported setup arguments");
-            const TASKDIALOG_BUTTON buttons[] = {{101, L"Install VM password-test tile\nOnly the current independent local VM account"}, {102, L"Remove VM password-test tile\nKeep all system sign-in options"}};
+            const TASKDIALOG_BUTTON buttons[] = {{101, L"Install signed-confirmation VM experiment\nEnroll this VM password once into an encrypted SYSTEM/admin-only vault"}, {102, L"Remove VM experiment\nRemove the lab vault, simulation key and provider; keep system sign-in options"}};
             TASKDIALOGCONFIG dialog = {}; dialog.cbSize = sizeof(dialog); dialog.dwFlags = TDF_USE_COMMAND_LINKS | TDF_ALLOW_DIALOG_CANCELLATION;
             dialog.dwCommonButtons = TDCBF_CANCEL_BUTTON; dialog.pszWindowTitle = L"BandKey VM lab setup";
-            dialog.pszMainInstruction = L"Manual Windows password test - no band authorization";
-            dialog.pszContent = L"Keep your baseline VM snapshot and original Windows sign-in option. This lab does not store passwords, change the default provider, or sign you out. Administrator approval is requested only after choosing an action.";
+            dialog.pszMainInstruction = L"VM-only simulated signature and encrypted credential experiment";
+            dialog.pszContent = L"Keep a baseline snapshot and working system sign-in option. Enrollment verifies and encrypts this VM password. A deliberately simulated device key is used only in this isolated VM; no real band is tested. Setup does not lock, sign out or reboot. Administrator approval is requested after choosing an action.";
             dialog.cButtons = ARRAYSIZE(buttons); dialog.pButtons = buttons; int choice = IDCANCEL;
             Require(SUCCEEDED(TaskDialogIndirect(&dialog, &choice, nullptr, nullptr)), L"Cannot open setup dialog");
             if (choice != 101 && choice != 102) return 0;
@@ -196,7 +258,7 @@ int WINAPI wWinMain(_In_ HINSTANCE, _In_opt_ HINSTANCE, _In_ PWSTR, _In_ int) {
             }
         }
         Require(IsAdmin(), L"Administrator approval is required for this action");
-        if (operation == L"--install") { Install(); MessageBoxW(nullptr, L"VM lab tile installed. No Windows authentication has been tested.\n\nKeep a working VM account password. Lock the VM manually and choose BandKey VM credential test under Sign-in options.\n\nTo roll back: run this setup again and choose Remove.", L"BandKey VM lab", MB_OK | MB_ICONINFORMATION); }
+        if (operation == L"--install") { Install(); MessageBoxW(nullptr, L"Signed-confirmation VM experiment installed. Enrollment credentials were verified; desktop unlock is still untested.\n\nStart BandKey.VmConfirmation.exe from the lab disc. Arm one confirmation, then manually lock the VM within 10 seconds.\n\nKeep the system password sign-in option. To roll back, run this setup and choose Remove.", L"BandKey VM lab", MB_OK | MB_ICONINFORMATION); }
         else { bool filesRemoved = Remove(); MessageBoxW(nullptr, filesRemoved ? L"Lab registration and files removed. System providers were preserved." : L"Lab registration removed. The DLL or directory is still in use or not empty; restart the VM, then run Remove again. System providers were preserved.", L"BandKey VM lab", MB_OK | MB_ICONINFORMATION); }
         return 0;
     } catch (const SetupFailure& error) { auto text = error.text + L"\nWindows error: " + std::to_wstring(error.code); MessageBoxW(nullptr, text.c_str(), L"BandKey VM lab - action not completed", MB_OK | MB_ICONERROR); }

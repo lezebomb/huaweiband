@@ -6,7 +6,7 @@
 
 - Windows：解压 [BandKey-win-x64.zip](artifacts/BandKey-win-x64.zip)，运行其中的 `BandKey.exe`。当前目录已有 [BandKey.exe](artifacts/BandKey-win-x64/BandKey.exe)，内含 .NET 运行时，无需另装运行时。
 - Android：[BandKey-bridge-debug.apk](artifacts/BandKey-bridge-debug.apk)。已安装并运行在一加实机，正式 App ID、HMS Core 和账号服务已就绪。用户于 2026-10-17 确认 Wear Engine 申请正在审核；最近实机查询仍为错误 8，尚不能向手环发送按钮通知。
-- 配置、应用身份密钥、授权公钥及日志保存在程序旁的 `runtime/`。可用 `--data <目录>` 改变位置。私钥以当前 Windows 用户的 DPAPI 加密保存；正式托盘代理没有 Windows 密码/PIN输入框，也没有保存它们的代码。独立 VM 实验组件仅在 Windows 登录界面接受用户手动输入的测试密码，不持久保存。
+- 配置、应用身份密钥、授权公钥及日志保存在程序旁的 `runtime/`。可用 `--data <目录>` 改变位置。私钥以当前 Windows 用户的 DPAPI 加密保存；正式托盘代理没有 Windows 密码/PIN输入框，也没有保存它们的代码。独立 VM 新实验由用户登记一次 VM 密码，以机器 DPAPI 和 SYSTEM/管理员专属 ACL 保管；它与正式分发包分开。
 - 关闭窗口会缩到托盘；使用托盘菜单“退出”彻底关闭。首次启动默认关闭自动锁屏和网络监听。
 
 ## 验证状态
@@ -23,9 +23,9 @@
 | Android 前台桥接与按钮处理 | 代码实现及模拟测试通过 | 19 项生命周期/重试测试通过；停止、换设备、过期后取消旧请求，重复点击只消费一次。服务权限、Notify 能力、ColorOS 长期后台尚待验证 |
 | 手环按钮点击 → 手机 → 电脑 | 尚需真机验证 | 尚无手环 Notify 能力及真实点击证据；手机指定地址 30 秒扫描为 0 条广播 |
 | 电脑同时作为第二个华为协议主机 | 技术上仍存在障碍 | 未拿到已有配对会话的合法认证通道；未重配或重置手环；并发连接能力未知 |
-| Windows 真实身份认证/解锁 | 技术上仍存在障碍 | 当前真实账户来源为 **MicrosoftAccount**；尚无经虚拟机验证的 Credential Provider 和认可的登录凭据衔接 |
+| Windows 真实身份认证/解锁 | VM 本地密码链路获用户反馈通过；正式账户仍有障碍 | VM 正确密码进入桌面、错误密码拒绝及原有登录由用户反馈；当前宿主机 **MicrosoftAccount**、Hello 及手环自动认证均未验证 |
 | 微软 V2 Credential Provider 参考接口 | 宿主机接口验证通过，未验证登录 | 控制台和图形入口各 42/42，两个失败场景通过；已生成只读来宾测试 ISO，未注册、未提交系统认证，测试身份为虚构用户 |
-| 独立 BandKey VM Provider | 已实现，普通进程 85/85；待来宾安装及登录验证 | 仅测试虚拟机本地账户手动密码，独立 CLSID，附安装/移除入口及 [手动教程](docs/vm-provider-test.md)；未接入手环或正式认证后端 |
+| 独立 BandKey VM Provider | 原生 119/119、C# 互通 15/15、原生反向 2/2 | 前轮手动密码安装/认证/卸载获用户反馈通过；本轮加密保管及一次性模拟签名已实现，[新教程](docs/vm-signed-confirmation-test.md)中的自动认证尚待来宾验证；正式后端未启用 |
 | Windows 隔离测试环境 | 来宾参考接口 42/42，基线快照已核实 | 用户截图确认 build 26300 / 26H2；“快照 1”存在，恢复未测；Ubuntu 配置哈希未变 |
 | 登录后启动、崩溃恢复 | 部分已验证 | 监督脚本异常子进程重启、正常退出停止已测；任务计划/真机重启未测，首次登录前不运行用户代理 |
 
@@ -133,8 +133,9 @@ android/                    正式 Android 桥接工程与 Gradle Wrapper
 tests/BandKey.Tests/         信号与协议攻击测试
 tests/BandKey.Windows.Tests/ DPAPI、实际 HTTPS、跨语言密码学测试
 tests/CredentialProvider.Lab/ 不注册的微软 V2 参考接口测试宿主
-src/BandKey.CredentialProvider/ VM 专用的手动本地账户密码测试 Provider 和安装器
+src/BandKey.CredentialProvider/ VM 专用 Provider、加密保管安装器及模拟签名客户端
 tests/BandKey.CredentialProvider.Tests/ 普通进程中的独立 Provider 测试
+tests/BandKey.Grant.Interop/ 原生 CNG 与 .NET Windows 授权互通测试
 tests/interop/              编译 Android Wire.java 的 JDK 验证程序
 scripts/                    可重复构建、登录后启动、异常恢复
 docs/                       技术证据、协议、验证记录、真机步骤、认证路线
@@ -143,4 +144,4 @@ artifacts/                  EXE/APK/测试报告（不纳入版本控制）
 .tooling/                   项目本地 SDK/依赖缓存
 ```
 
-下一步由用户按 [VM 测试教程](docs/vm-provider-test.md)验证独立 Provider 的真实 Windows 密码认证与移除；正式登录方案仍受 [Windows 认证实施门槛](docs/windows-authentication.md)约束。Wear Engine 审核通过后，继续验证 **一加 + Band 11 Pro 的 Notify 点击反馈与电脑侧可持续观测性**。上述 VM 密码实验尚未接入手环授权。
+下一步由用户按 [VM 一次性签名确认教程](docs/vm-signed-confirmation-test.md)验证“模拟设备确认 → Windows 实际进入桌面”、拒绝无效确认、防重复及清理。正式登录方案仍受 [Windows 认证实施门槛](docs/windows-authentication.md)约束。Wear Engine 审核通过后，继续验证 **一加 + Band 11 Pro 的 Notify 点击反馈与电脑侧可持续观测性**；VM 模拟私钥不能作为真实手环凭据。

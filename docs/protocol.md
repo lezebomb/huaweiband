@@ -1,5 +1,7 @@
 # BandKey v1 授权协议
 
+隔离 VM 新增的原生 Windows 授权格式另见 [Windows grant 线格式](windows-grant-wire.md)。它与本页 Android v1 消息分开，尚未接入正式代理，不能通过转发本页签名自动获得系统认证权限。
+
 传输为局域网 HTTPS，Android 固定电脑叶证书 SHA-256，禁止跳转和明文回退。电脑持 ECDSA P-256 私钥（DPAPI CurrentUser）；手机持 Android Keystore P-256 不可导出私钥。算法为 SHA256withECDSA，ASN.1 DER 签名；公钥格式为 DER SubjectPublicKeyInfo。
 
 `pcId` / `deviceId` 等于各自公钥 DER 的 SHA-256 小写十六进制。双方配对通过用户核对完整指纹后本地导入；不存在网络注册、网络配置、TOFU 自动信任接口。
