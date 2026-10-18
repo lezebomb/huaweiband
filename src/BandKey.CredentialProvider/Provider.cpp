@@ -15,14 +15,17 @@
 #include <new>
 #include <memory>
 #include <optional>
-#include "SignedGrant.h"
-#include "LabPolicy.h"
+#include "GrantRuntime.h"
+#include "LabDiagnostics.h"
 
 using Microsoft::WRL::ComPtr;
 static LONG objectCount = 0;
 enum Field : DWORD { Logo, Label, Title, Explanation, Password, Submit, FieldCount };
 static const CREDENTIAL_PROVIDER_FIELD_TYPE fieldTypes[] = { CPFT_TILE_IMAGE, CPFT_SMALL_TEXT, CPFT_LARGE_TEXT, CPFT_SMALL_TEXT, CPFT_PASSWORD_TEXT, CPFT_SUBMIT_BUTTON };
 static const wchar_t* const fieldLabels[] = { L"BandKey", L"BandKey VM credential test", L"BandKey VM credential test", L"Manual local-account password test. Band confirmation is not connected.", L"VM account password", L"Sign in" };
+static void GrantDiagnostic(LabStage stage, DWORD code = 0) noexcept {
+    try { if (GrantIsSystem()) AppendLabDiagnostic(GrantDirectory() / L"Diagnostics" / L"provider.log", stage, code); } catch (...) {}
+}
 
 static HRESULT NegotiatePackage(ULONG* package) {
     HANDLE lsa = nullptr;
@@ -82,26 +85,28 @@ class BandKeyCredential final : public ICredentialProviderCredential2 {
     std::filesystem::path requestPath;
     DWORD session = 0;
     bool attempted = false, requestWritten = false, announced = false;
+    int observedApproval = -1;
     ULONGLONG deadline = 0;
     void ClearExchange() {
         if (requestWritten) { DeleteFileW(requestPath.c_str()); DeleteFileW((requestPath.wstring() + L".approval").c_str()); }
         requestWritten = false; approval.reset(); grant.reset();
     }
     bool CurrentPolicy() const {
-        auto current = ReadLabPolicy();
+        auto current = GrantPolicy();
         return current.enabled && current.mode == 2 && current.sid == sid && current.publicKey == policy.publicKey;
     }
     void EnsureChallenge() {
-        if (policy.mode != 2 || attempted || grant || !ProcessIsLocalSystem() || !CurrentPolicy()) return;
-        if (!ProcessIdToSessionId(GetCurrentProcessId(), &session) || !session || !SessionIsLocked(session)) return;
-        auto root = LabInstallDirectory(); auto exchange = root / L"Exchange";
+        if (policy.mode != 2 || attempted || grant || !GrantIsSystem() || !CurrentPolicy()) return;
+        session = GrantSession(); if (!session || !GrantSessionLocked(session)) return;
+        auto root = GrantDirectory(); auto exchange = root / L"Exchange";
         CheckNoReparseDirectory(root); CheckNoReparseDirectory(exchange);
-        auto challenge = NewWindowsChallenge(sid, session, FileTimeMilliseconds());
+        auto challenge = NewWindowsChallenge(sid, session, GrantWallTime());
         deadline = challenge.expiresMs;
-        auto pending = std::make_unique<OneTimeWindowsGrant>(challenge, GetTickCount64());
+        auto pending = std::make_unique<OneTimeWindowsGrant>(challenge, GrantMonotonicTime());
         requestPath = exchange / ChallengeFileName(challenge);
         WriteNewFile(requestPath, reinterpret_cast<const BYTE*>(&challenge), sizeof(challenge)); requestWritten = true;
         grant = std::move(pending);
+        GrantDiagnostic(LabStage::ChallengeWritten);
     }
     void ClearPassword() {
         password.Clear();
@@ -117,19 +122,21 @@ public:
         if (policy.mode != 2 || attempted) return false;
         try {
             EnsureChallenge();
-            if (grant && FileTimeMilliseconds() >= deadline) { Cancel(); return false; }
-            if (grant && (!CurrentPolicy() || !SessionIsLocked(session))) { Cancel(); return false; }
+            if (grant && GrantWallTime() >= deadline) { GrantDiagnostic(LabStage::ChallengeExpired); Cancel(); return false; }
+            if (grant && (!CurrentPolicy() || !GrantSessionLocked(session))) { GrantDiagnostic(LabStage::ContextCancelled); Cancel(); return false; }
             if (!grant) return false;
             if (!approval) {
                 auto response = ReadBoundedFile(requestPath.wstring() + L".approval", sizeof(WindowsApproval));
                 if (response.size() != sizeof(WindowsApproval)) return false;
                 WindowsApproval candidate; CopyMemory(&candidate, response.data(), sizeof(candidate));
-                if (grant->Verify(candidate, policy.publicKey, FileTimeMilliseconds(), GetTickCount64())) approval = candidate;
+                if (grant->Verify(candidate, policy.publicKey, GrantWallTime(), GrantMonotonicTime())) { approval = candidate; if (observedApproval != 1) GrantDiagnostic(LabStage::ApprovalVerified); observedApproval = 1; }
+                else { if (observedApproval != 2) GrantDiagnostic(LabStage::ApprovalRejected); observedApproval = 2; }
             }
-            return approval && grant->Verify(*approval, policy.publicKey, FileTimeMilliseconds(), GetTickCount64());
-        } catch (...) { return false; }
+            return approval && grant->Verify(*approval, policy.publicKey, GrantWallTime(), GrantMonotonicTime());
+        } catch (...) { if (observedApproval < 0) { GrantDiagnostic(LabStage::WaitingApproval); observedApproval = 0; } return false; }
     }
     bool NotifyReady() { if (Ready() && !announced) { announced = true; return true; } return false; }
+    void NewSubscription() { announced = false; }
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** value) override {
         if (!value) return E_POINTER; *value = nullptr;
         if (iid != IID_IUnknown && iid != __uuidof(ICredentialProviderCredential) && iid != __uuidof(ICredentialProviderCredential2)) return E_NOINTERFACE;
@@ -138,9 +145,9 @@ public:
     ULONG STDMETHODCALLTYPE AddRef() override { return InterlockedIncrement(&refs); }
     ULONG STDMETHODCALLTYPE Release() override { auto n = InterlockedDecrement(&refs); if (!n) delete this; return n; }
     HRESULT STDMETHODCALLTYPE Advise(ICredentialProviderCredentialEvents* value) override { if (!value) return E_POINTER; events = value; return S_OK; }
-    HRESULT STDMETHODCALLTYPE UnAdvise() override { password.Clear(); if (policy.mode == 2) { attempted = true; ClearExchange(); } events.Reset(); return S_OK; }
-    HRESULT STDMETHODCALLTYPE SetSelected(BOOL* automatic) override { if (!automatic) return E_POINTER; *automatic = Ready() ? TRUE : FALSE; return S_OK; }
-    HRESULT STDMETHODCALLTYPE SetDeselected() override { ClearPassword(); if (policy.mode == 2) { attempted = true; ClearExchange(); } return S_OK; }
+    HRESULT STDMETHODCALLTYPE UnAdvise() override { password.Clear(); events.Reset(); if (policy.mode == 2) GrantDiagnostic(LabStage::CredentialUnAdvise); return S_OK; }
+    HRESULT STDMETHODCALLTYPE SetSelected(BOOL* automatic) override { if (!automatic) return E_POINTER; *automatic = Ready() ? TRUE : FALSE; if (policy.mode == 2) GrantDiagnostic(*automatic ? LabStage::SelectedReady : LabStage::SelectedWaiting); return S_OK; }
+    HRESULT STDMETHODCALLTYPE SetDeselected() override { ClearPassword(); if (policy.mode == 2) GrantDiagnostic(LabStage::Deselected); return S_OK; }
     HRESULT STDMETHODCALLTYPE GetFieldState(DWORD id, CREDENTIAL_PROVIDER_FIELD_STATE* state, CREDENTIAL_PROVIDER_FIELD_INTERACTIVE_STATE* interactive) override {
         if (!state || !interactive) return E_POINTER;
         if (id >= FieldCount) return E_INVALIDARG;
@@ -152,7 +159,7 @@ public:
         if (!value) return E_POINTER; *value = nullptr;
         if (id >= FieldCount || id == Logo) return E_INVALIDARG;
         // Never hand the stored password back to a caller through a read method.
-        if (policy.mode == 2 && id == Explanation) return SHStrDupW(L"VM simulated-signature experiment. Waiting for one-time authorization; no password input here.", value);
+        if (policy.mode == 2 && id == Explanation) return SHStrDupW(L"VM signed-confirmation lifecycle fix 2. Waiting for one-time authorization; no password input here.", value);
         return SHStrDupW(id == Password ? L"" : fieldLabels[id], value);
     }
     HRESULT STDMETHODCALLTYPE GetBitmapValue(DWORD id, HBITMAP* value) override {
@@ -191,15 +198,21 @@ public:
         if (!response || !result || !status || !icon) return E_POINTER;
         *response = CPGSR_NO_CREDENTIAL_NOT_FINISHED; *result = {}; *status = nullptr; *icon = CPSI_NONE;
         if (policy.mode == 2) {
+            GrantDiagnostic(LabStage::SerializationRequested);
             if (!Ready()) return SHStrDupW(L"No current signed authorization. Use a system sign-in option if needed.", status);
             attempted = true;
             auto approvalDeadline = approval->challenge.expiresMs;
-            bool valid = grant->Consume(*approval, policy.publicKey, FileTimeMilliseconds(), GetTickCount64());
+            bool valid = grant->Consume(*approval, policy.publicKey, GrantWallTime(), GrantMonotonicTime());
             ClearExchange();
-            if (!valid || !CurrentPolicy() || !SessionIsLocked(session)) return E_ACCESSDENIED;
-            try { ReadVaultPassword(LabInstallDirectory() / L"Vault", sid, password); }
-            catch (...) { password.Clear(); return E_ACCESSDENIED; }
-            if (FileTimeMilliseconds() >= approvalDeadline || !CurrentPolicy() || !SessionIsLocked(session)) { password.Clear(); return E_ACCESSDENIED; }
+            if (!valid || !CurrentPolicy() || !GrantSessionLocked(session)) return E_ACCESSDENIED;
+            GrantDiagnostic(LabStage::GrantConsumed); GrantDiagnostic(LabStage::VaultReadStarted);
+            try { GrantReadPassword(sid, password); GrantDiagnostic(LabStage::VaultReadSucceeded); }
+            catch (const std::exception& error) {
+                auto stage = strcmp(error.what(), "vault-file-permissions-invalid") == 0 ? LabStage::VaultPermissionRejected : (strcmp(error.what(), "dpapi-unprotect-failed") == 0 ? LabStage::VaultDpapiFailed : LabStage::VaultReadFailed);
+                GrantDiagnostic(stage); password.Clear(); return E_ACCESSDENIED;
+            }
+            catch (...) { GrantDiagnostic(LabStage::VaultReadFailed); password.Clear(); return E_ACCESSDENIED; }
+            if (GrantWallTime() >= approvalDeadline || !CurrentPolicy() || !GrantSessionLocked(session)) { password.Clear(); return E_ACCESSDENIED; }
         }
         if (!password.data[0]) { *icon = CPSI_WARNING; return SHStrDupW(L"Enter the independent VM account password. Band authorization is not connected.", status); }
         HRESULT hr = E_OUTOFMEMORY;
@@ -207,10 +220,12 @@ public:
         catch (const std::bad_alloc&) { hr = E_OUTOFMEMORY; }
         ClearPassword();
         if (SUCCEEDED(hr)) *response = CPGSR_RETURN_CREDENTIAL_FINISHED;
+        if (policy.mode == 2) GrantDiagnostic(SUCCEEDED(hr) ? LabStage::SerializationPrepared : LabStage::SerializationFailed, static_cast<DWORD>(hr));
         return hr;
     }
     HRESULT STDMETHODCALLTYPE ReportResult(NTSTATUS status, NTSTATUS, PWSTR* text, CREDENTIAL_PROVIDER_STATUS_ICON* icon) override {
         if (!text || !icon) return E_POINTER;
+        if (policy.mode == 2) GrantDiagnostic(LabStage::WindowsResult, static_cast<DWORD>(status));
         *text = nullptr; *icon = CPSI_NONE; ClearPassword(); if (policy.mode == 2) { attempted = true; ClearExchange(); }
         if (status < 0) { *icon = CPSI_ERROR; return SHStrDupW(L"Windows rejected this credential. Use a system sign-in option to recover.", text); }
         return S_OK;
@@ -228,6 +243,7 @@ class BandKeyProvider final : public ICredentialProvider, public ICredentialProv
     UINT_PTR adviseContext = 0;
     HWND notificationWindow = nullptr;
     HINSTANCE windowModule = nullptr;
+    bool timerObserved = false;
     static constexpr wchar_t WindowClass[] = L"BandKey.VM.Grant.Notification.V1";
     static LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
         if (message == WM_NCCREATE) {
@@ -238,6 +254,7 @@ class BandKeyProvider final : public ICredentialProvider, public ICredentialProv
         if (message == WM_WTSSESSION_CHANGE && self && (wParam == WTS_SESSION_UNLOCK || wParam == WTS_SESSION_LOGOFF || wParam == WTS_SESSION_LOCK)) {
             self->AddRef();
             try {
+                GrantDiagnostic(LabStage::SessionBoundary, static_cast<DWORD>(wParam));
                 if (self->credential) static_cast<BandKeyCredential*>(self->credential.Get())->Cancel();
                 self->credential.Reset();
                 if (wParam == WTS_SESSION_LOCK && self->providerEvents) { auto callback = self->providerEvents; callback->CredentialsChanged(self->adviseContext); }
@@ -247,10 +264,13 @@ class BandKeyProvider final : public ICredentialProvider, public ICredentialProv
         if (message == WM_TIMER && self) {
             self->AddRef();
             try {
+                if (!self->timerObserved) { self->timerObserved = true; GrantDiagnostic(LabStage::TimerActive); }
                 auto value = static_cast<BandKeyCredential*>(self->credential.Get());
                 if (value && value->NotifyReady() && self->providerEvents) {
                     auto callback = self->providerEvents;
-                    callback->CredentialsChanged(self->adviseContext);
+                    GrantDiagnostic(LabStage::RefreshRequested);
+                    auto result = callback->CredentialsChanged(self->adviseContext);
+                    if (FAILED(result)) GrantDiagnostic(LabStage::RefreshFailed, static_cast<DWORD>(result));
                 }
             } catch (...) { /* Fail closed; no UI-thread exception may cross Winlogon. */ }
             self->Release(); return 0;
@@ -265,7 +285,7 @@ class BandKeyProvider final : public ICredentialProvider, public ICredentialProv
     }
     HRESULT Enumerate() {
         if (credential || !policy.enabled || !users || (scenario != CPUS_LOGON && scenario != CPUS_UNLOCK_WORKSTATION)) return S_OK;
-        if (policy.mode == 2 && !ProcessIsLocalSystem()) return S_OK;
+        if (policy.mode == 2 && !GrantIsSystem()) return S_OK;
         DWORD count = 0; HRESULT hr = users->GetCount(&count);
         if (FAILED(hr)) return hr;
         if (count > 128) return E_INVALIDARG;
@@ -281,6 +301,7 @@ class BandKeyProvider final : public ICredentialProvider, public ICredentialProv
                 try { credential.Attach(new(std::nothrow) BandKeyCredential(scenario, sid, name, policy)); }
                 catch (const std::bad_alloc&) { hr = E_OUTOFMEMORY; }
                 if (!credential) hr = E_OUTOFMEMORY;
+                else if (policy.mode == 2) GrantDiagnostic(LabStage::UserBound);
             }
             CoTaskMemFree(sid); CoTaskMemFree(name);
             if (credential || FAILED(hr)) return hr;
@@ -288,7 +309,7 @@ class BandKeyProvider final : public ICredentialProvider, public ICredentialProv
         return S_OK;
     }
 public:
-    explicit BandKeyProvider(LabPolicy configuration) : policy(std::move(configuration)) { InterlockedIncrement(&objectCount); }
+    explicit BandKeyProvider(LabPolicy configuration) : policy(std::move(configuration)) { InterlockedIncrement(&objectCount); if (policy.mode == 2) GrantDiagnostic(LabStage::ProviderLoaded); }
     ~BandKeyProvider() { StopNotifications(); InterlockedDecrement(&objectCount); }
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** value) override {
         if (!value) return E_POINTER; *value = nullptr;
@@ -311,13 +332,18 @@ public:
         if (!events) return E_POINTER;
         providerEvents = events; adviseContext = context;
         if (policy.mode != 2) return S_OK;
+        if (credential) static_cast<BandKeyCredential*>(credential.Get())->NewSubscription();
+        timerObserved = false; GrantDiagnostic(LabStage::Advise);
+        APTTYPE apartment; APTTYPEQUALIFIER qualifier;
+        if (SUCCEEDED(CoGetApartmentType(&apartment, &qualifier))) GrantDiagnostic(LabStage::Apartment, static_cast<DWORD>(apartment));
         if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, reinterpret_cast<LPCWSTR>(&WindowProcedure), &windowModule)) return E_FAIL;
         WNDCLASSW type{}; type.lpfnWndProc = WindowProcedure; type.hInstance = windowModule; type.lpszClassName = WindowClass;
         if (!RegisterClassW(&type) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return E_FAIL;
         notificationWindow = CreateWindowExW(0, WindowClass, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, windowModule, this);
-        if (!notificationWindow || !WTSRegisterSessionNotification(notificationWindow, NOTIFY_FOR_THIS_SESSION) || !SetTimer(notificationWindow, 1, 250, nullptr)) { StopNotifications(); return E_FAIL; } return S_OK;
+        if (!notificationWindow || !WTSRegisterSessionNotification(notificationWindow, NOTIFY_FOR_THIS_SESSION) || !SetTimer(notificationWindow, 1, 250, nullptr)) { GrantDiagnostic(LabStage::NotificationsFailed, GetLastError()); StopNotifications(); return E_FAIL; }
+        GrantDiagnostic(LabStage::NotificationsArmed); return S_OK;
     }
-    HRESULT STDMETHODCALLTYPE UnAdvise() override { StopNotifications(); credential.Reset(); return S_OK; }
+    HRESULT STDMETHODCALLTYPE UnAdvise() override { StopNotifications(); if (policy.mode == 2) GrantDiagnostic(LabStage::ProviderUnAdvise); else credential.Reset(); return S_OK; }
     HRESULT STDMETHODCALLTYPE GetFieldDescriptorCount(DWORD* count) override { if (!count) return E_POINTER; *count = FieldCount; return S_OK; }
     HRESULT STDMETHODCALLTYPE GetFieldDescriptorAt(DWORD id, CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR** value) override {
         if (!value) return E_POINTER; *value = nullptr;
@@ -335,7 +361,7 @@ public:
         if (!count || !defaultIndex || !automatic) return E_POINTER;
         *count = 0; *defaultIndex = CREDENTIAL_PROVIDER_NO_DEFAULT; *automatic = FALSE;
         HRESULT hr = Enumerate();
-        if (SUCCEEDED(hr) && credential) { *count = 1; if (static_cast<BandKeyCredential*>(credential.Get())->Ready()) { *defaultIndex = 0; *automatic = TRUE; } }
+        if (SUCCEEDED(hr) && credential) { *count = 1; if (static_cast<BandKeyCredential*>(credential.Get())->Ready()) { *defaultIndex = 0; *automatic = TRUE; if (policy.mode == 2) GrantDiagnostic(LabStage::AutoCredential); } }
         return hr;
     }
     HRESULT STDMETHODCALLTYPE GetCredentialAt(DWORD index, ICredentialProviderCredential** value) override {

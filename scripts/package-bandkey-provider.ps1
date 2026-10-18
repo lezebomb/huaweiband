@@ -22,6 +22,11 @@ $bandKeyFiles=@(Get-ChildItem -LiteralPath $bandKeyOutput -File | Sort-Object Na
     nativeReverseInteropChecksPassed=2
     nativeStaticAnalysisPassed=$true
     cleanupFixVersion=1
+    cleanupFixGuestUserReported=$true
+    providerLifecycleFixVersion=2
+    providerDiagnosticsAvailable=$true
+    signedPathOrdinaryProcessTest='synthetic SID/session and vault; real message pump, files, crypto and serialization; no Windows authentication submission'
+    previousSignedGuestResult=[ordered]@{evidence='user screenshots/report';approvalDelivered=$true;bandKeyTileSelected=$true;automaticWindowsUnlock=$false;error='No current signed authorization'}
     credentialStorage='Machine DPAPI plus SYSTEM/administrator-only vault ACL; VM password entered locally by user'
     simulatedDeviceEvent=$true
     previousManualStage=[ordered]@{evidence='user-reported';install=$true;correctPasswordDesktop=$true;incorrectPasswordRejected=$true;systemSignInPreserved=$true;uninstall=$false;uninstallStatus='later screenshot: registration removed but file cleanup incomplete'}

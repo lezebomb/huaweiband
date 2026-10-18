@@ -7,8 +7,28 @@
 #include <iostream>
 #include <stdexcept>
 #include <thread>
+#include <functional>
 
 static const wchar_t* TestSid = L"S-1-5-21-100-200-300-1001";
+class SyntheticProviderEvents final : public ICredentialProviderEvents {
+    LONG refs = 1;
+public:
+    unsigned notifications = 0; UINT_PTR lastContext = 0;
+    std::function<void()> changed;
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** value) override {
+        if (!value) return E_POINTER; *value = nullptr;
+        if (iid != IID_IUnknown && iid != __uuidof(ICredentialProviderEvents)) return E_NOINTERFACE;
+        *value = static_cast<ICredentialProviderEvents*>(this); AddRef(); return S_OK;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return InterlockedIncrement(&refs); }
+    ULONG STDMETHODCALLTYPE Release() override { auto n = InterlockedDecrement(&refs); if (!n) delete this; return n; }
+    HRESULT STDMETHODCALLTYPE CredentialsChanged(UINT_PTR context) override { ++notifications; lastContext = context; if (changed) changed(); return S_OK; }
+};
+struct ScopedGrantRuntime {
+    SyntheticGrantRuntime* previous;
+    explicit ScopedGrantRuntime(SyntheticGrantRuntime& value) : previous(syntheticGrantRuntime) { syntheticGrantRuntime = &value; }
+    ~ScopedGrantRuntime() { syntheticGrantRuntime = previous; }
+};
 class SyntheticUser final : public ICredentialProviderUser {
     LONG refs = 1;
 public:
@@ -76,6 +96,95 @@ int wmain(int argc, wchar_t** argv) {
     HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     try {
         check("COM initialized", SUCCEEDED(com));
+        {
+            SyntheticGrantRuntime runtime;
+            runtime.directory = std::filesystem::absolute(std::filesystem::path(argv[2]).parent_path()) / (L"grant-flow-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
+            NativeRequire(CreateDirectoryW(runtime.directory.c_str(), nullptr) && CreateDirectoryW((runtime.directory / L"Exchange").c_str(), nullptr) && CreateDirectoryW((runtime.directory / L"Diagnostics").c_str(), nullptr), "grant-fixture-unavailable");
+            BYTE random[16]{}; NativeRequire(BCryptGenRandom(nullptr, random, sizeof(random), BCRYPT_USE_SYSTEM_PREFERRED_RNG) >= 0, "test-random-unavailable");
+            constexpr wchar_t hex[] = L"0123456789abcdef";
+            for (size_t i = 0; i < sizeof(random); ++i) { runtime.password.data[2 * i] = hex[random[i] >> 4]; runtime.password.data[2 * i + 1] = hex[random[i] & 15]; } SecureZeroMemory(random, sizeof(random));
+            SigningKey key; key.Generate(); runtime.policy = LabPolicy(true, TestSid); runtime.policy.mode = 2; runtime.policy.publicKey = key.Export(false);
+            ScopedGrantRuntime scope(runtime);
+            auto readChallenge = [&]() {
+                WIN32_FIND_DATAW entry{}; HANDLE find = FindFirstFileW((runtime.directory / L"Exchange" / L"*.request").c_str(), &entry);
+                NativeRequire(find != INVALID_HANDLE_VALUE, "pending-test-challenge-missing"); FindClose(find);
+                auto path = runtime.directory / L"Exchange" / entry.cFileName; auto bytes = ReadBoundedFile(path, sizeof(WindowsChallenge));
+                NativeRequire(bytes.size() == sizeof(WindowsChallenge), "test-challenge-size"); WindowsChallenge challenge; CopyMemory(&challenge, bytes.data(), sizeof(challenge)); return std::make_pair(path, challenge);
+            };
+            auto writeApproval = [&](bool invalid) {
+                auto request = readChallenge(); auto response = SignWindowsChallenge(request.second, key); if (invalid) response.signature[0] ^= 1;
+                WriteNewFile(request.first.wstring() + L".approval", reinterpret_cast<const BYTE*>(&response), sizeof(response));
+            };
+            {
+                ComPtr<BandKeyProvider> provider; provider.Attach(new BandKeyProvider(runtime.policy));
+                ComPtr<SyntheticUsers> users; users.Attach(new SyntheticUsers()); users->Add();
+                provider->SetUsageScenario(CPUS_UNLOCK_WORKSTATION, 0); provider->SetUserArray(users.Get());
+                ComPtr<SyntheticProviderEvents> callback; callback.Attach(new SyntheticProviderEvents());
+                check("signed runtime notification setup succeeds", SUCCEEDED(provider->Advise(callback.Get(), 42)));
+                DWORD count = 0, selected = 0; BOOL automatic = TRUE;
+                check("locked synthetic session issues request without automatic credential", SUCCEEDED(provider->GetCredentialCount(&count, &selected, &automatic)) && count == 1 && !automatic && runtime.vaultReads == 0);
+                auto original = readChallenge(); ComPtr<ICredentialProviderCredential> credential; provider->GetCredentialAt(0, &credential);
+                credential->SetDeselected(); credential->UnAdvise();
+                provider->UnAdvise(); provider->SetUsageScenario(CPUS_UNLOCK_WORKSTATION, 0); provider->SetUserArray(users.Get());
+                check("UI unadvise and deselection preserve the original unexpired request", readChallenge().first == original.first && readChallenge().second.expiresMs == original.second.expiresMs);
+                check("provider can subscribe again after refresh", SUCCEEDED(provider->Advise(callback.Get(), 42)));
+                callback->changed = [&]() { credential->SetDeselected(); credential->UnAdvise(); provider->SetUsageScenario(CPUS_UNLOCK_WORKSTATION, 0); provider->SetUserArray(users.Get()); };
+                writeApproval(false);
+                auto until = GetTickCount64() + 2000;
+                while (!callback->notifications && GetTickCount64() < until) {
+                    MSG message{}; while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) { TranslateMessage(&message); DispatchMessageW(&message); }
+                    MsgWaitForMultipleObjectsEx(0, nullptr, 50, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+                }
+                check("real message pump delivers one signed-ready provider callback", callback->notifications == 1 && callback->lastContext == 42);
+                check("signed authorization survives callback re-enumeration", SUCCEEDED(provider->GetCredentialCount(&count, &selected, &automatic)) && count == 1 && selected == 0 && automatic && runtime.vaultReads == 0);
+                provider->UnAdvise(); NativeRequire(SUCCEEDED(provider->Advise(callback.Get(), 42)), "test-resubscription-failed");
+                until = GetTickCount64() + 2000;
+                while (callback->notifications < 2 && GetTickCount64() < until) {
+                    MSG message{}; while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) { TranslateMessage(&message); DispatchMessageW(&message); }
+                    MsgWaitForMultipleObjectsEx(0, nullptr, 50, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+                }
+                check("new subscription is notified again without replacing approved request", callback->notifications == 2 && readChallenge().first == original.first && runtime.vaultReads == 0);
+                BOOL selectedAutomatic = FALSE; credential->SetSelected(&selectedAutomatic);
+                check("selecting valid signed tile requests automatic submission", selectedAutomatic != FALSE);
+                CREDENTIAL_PROVIDER_GET_SERIALIZATION_RESPONSE response; CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION serialization{}; PWSTR text = nullptr; CREDENTIAL_PROVIDER_STATUS_ICON icon;
+                auto result = credential->GetSerialization(&response, &serialization, &text, &icon); CoTaskMemFree(text);
+                check("signed path serializes synthetic credential only after proof", SUCCEEDED(result) && response == CPGSR_RETURN_CREDENTIAL_FINISHED && serialization.rgbSerialization && runtime.vaultReads == 1);
+                FreeSerialization(serialization);
+                credential->GetSerialization(&response, &serialization, &text, &icon); CoTaskMemFree(text);
+                check("refresh and repeated submission never reread the synthetic vault", !serialization.rgbSerialization && runtime.vaultReads == 1);
+                provider->UnAdvise(); callback->changed = {};
+            }
+            auto checkRefusal = [&](int action) {
+                runtime.locked = true; runtime.policy.enabled = true; runtime.wall = 100000; runtime.monotonic = 1000;
+                unsigned reads = runtime.vaultReads;
+                ComPtr<BandKeyCredential> value; value.Attach(new BandKeyCredential(CPUS_UNLOCK_WORKSTATION, TestSid, L"BANDKEYLAB\\TestUser", runtime.policy));
+                value->Ready();
+                if (action != 0) writeApproval(action == 1);
+                value->SetDeselected(); value->UnAdvise();
+                if (action == 2) runtime.wall = 130000;
+                if (action == 3) runtime.monotonic = 31000;
+                if (action == 4) runtime.policy.enabled = false;
+                if (action == 5) runtime.locked = false;
+                CREDENTIAL_PROVIDER_GET_SERIALIZATION_RESPONSE response; CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION serialization{}; PWSTR text = nullptr; CREDENTIAL_PROVIDER_STATUS_ICON icon;
+                auto result = value->GetSerialization(&response, &serialization, &text, &icon); CoTaskMemFree(text);
+                bool refused = SUCCEEDED(result) && !serialization.rgbSerialization && runtime.vaultReads == reads;
+                FreeSerialization(serialization); return refused;
+            };
+            check("no approval through signed provider cannot read vault", checkRefusal(0));
+            check("invalid signature through signed provider cannot read vault", checkRefusal(1));
+            check("UI refresh cannot extend original wall-clock expiry", checkRefusal(2));
+            check("UI refresh cannot extend original monotonic expiry", checkRefusal(3));
+            check("revocation after UI refresh prevents vault read", checkRefusal(4));
+            check("unlock after UI refresh prevents vault read", checkRefusal(5));
+            auto log = runtime.directory / L"Diagnostics" / L"provider.log";
+            auto bytes = ReadBoundedFile(log, 262304); std::string messages(bytes.begin(), bytes.end());
+            check("diagnostics distinguish accepted signature and serialized credential", messages.find("approval-verified") != std::string::npos && messages.find("serialization-prepared") != std::string::npos);
+            check("diagnostics distinguish callback and invalid signature", messages.find("refresh-requested") != std::string::npos && messages.find("approval-rejected") != std::string::npos);
+            std::wstring wide(messages.begin(), messages.end());
+            check("diagnostics contain no account SID or synthetic password", messages.find("S-1-5-21") == std::string::npos && wide.find(runtime.password.data.data()) == std::wstring::npos);
+            LabCleanupResult cleanup; cleanup.File(log); cleanup.Directory(runtime.directory / L"Diagnostics"); cleanup.Directory(runtime.directory / L"Exchange"); cleanup.Directory(runtime.directory);
+            check("signed flow fixture cleanup completes", cleanup.complete);
+        }
         {
             auto root = std::filesystem::absolute(std::filesystem::path(argv[2]).parent_path()) / (L"cleanup-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
             NativeRequire(CreateDirectoryW(root.c_str(), nullptr) != FALSE, "cleanup-fixture-unavailable");

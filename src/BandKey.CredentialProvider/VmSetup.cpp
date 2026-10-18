@@ -112,9 +112,11 @@ static void EnrollVault(const std::filesystem::path& directory, const std::wstri
     PSID expected = nullptr; NativeRequire(ConvertStringSidToSidW(sid.c_str(), &expected) != FALSE, "enrollment-sid-invalid");
     bool same = EqualSid(expected, reinterpret_cast<TOKEN_USER*>(tokenData.data())->User.Sid) != FALSE; LocalFree(expected); NativeRequire(same, "enrollment-account-mismatch");
     auto vault = directory / L"Vault"; auto exchange = directory / L"Exchange";
-    NativeRequire(CreateDirectoryW(vault.c_str(), nullptr) && CreateDirectoryW(exchange.c_str(), nullptr), "experiment-directories-unavailable");
+    auto diagnostics = directory / L"Diagnostics";
+    NativeRequire(CreateDirectoryW(vault.c_str(), nullptr) && CreateDirectoryW(exchange.c_str(), nullptr) && CreateDirectoryW(diagnostics.c_str(), nullptr), "experiment-directories-unavailable");
     SetAdministratorSecretSecurity(vault);
     SetDirectoryDacl(exchange, L"D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1301bf;;;" + sid + L")");
+    SetDirectoryDacl(diagnostics, L"D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;GR;;;" + sid + L")");
     ProtectedBytes encrypted;
     EncryptSecret(reinterpret_cast<BYTE*>(password.data.data()), static_cast<DWORD>((wcslen(password.data.data()) + 1) * sizeof(wchar_t)), sid, true, encrypted); password.Clear();
     auto credential = vault / L"credential.dpapi"; WriteNewFile(credential, encrypted.blob.pbData, encrypted.blob.cbData); SetAdministratorSecretSecurity(credential);
@@ -146,6 +148,12 @@ static void RemoveExperimentFiles(const std::filesystem::path& directory, LabCle
         }
         CloseHandle(exchangeGuard.value); exchangeGuard.value = INVALID_HANDLE_VALUE;
         result.Directory(exchange);
+    }
+    auto diagnostics = directory / L"Diagnostics"; NativeHandle diagnosticsGuard;
+    if (CheckCleanupDirectory(diagnostics, result, &diagnosticsGuard)) {
+        result.File(diagnostics / L"provider.log");
+        CloseHandle(diagnosticsGuard.value); diagnosticsGuard.value = INVALID_HANDLE_VALUE;
+        result.Directory(diagnostics);
     }
 }
 static std::string FileHash(const std::filesystem::path& path) {
@@ -263,7 +271,7 @@ int WINAPI wWinMain(_In_ HINSTANCE, _In_opt_ HINSTANCE, _In_ PWSTR, _In_ int) {
             const TASKDIALOG_BUTTON buttons[] = {{101, L"Install signed-confirmation VM experiment\nEnroll this VM password once into an encrypted SYSTEM/admin-only vault"}, {102, L"Remove VM experiment\nRemove the lab vault, simulation key and provider; keep system sign-in options"}};
             TASKDIALOGCONFIG dialog = {}; dialog.cbSize = sizeof(dialog); dialog.dwFlags = TDF_USE_COMMAND_LINKS | TDF_ALLOW_DIALOG_CANCELLATION;
             dialog.dwCommonButtons = TDCBF_CANCEL_BUTTON; dialog.pszWindowTitle = L"BandKey VM lab setup";
-            dialog.pszMainInstruction = L"VM-only simulated signature and encrypted credential experiment";
+            dialog.pszMainInstruction = L"VM-only signed confirmation - lifecycle fix 2 with diagnostics";
             dialog.pszContent = L"Keep a baseline snapshot and working system sign-in option. Enrollment verifies and encrypts this VM password. A deliberately simulated device key is used only in this isolated VM; no real band is tested. Setup does not lock, sign out or reboot. Administrator approval is requested after choosing an action.";
             dialog.cButtons = ARRAYSIZE(buttons); dialog.pButtons = buttons; int choice = IDCANCEL;
             Require(SUCCEEDED(TaskDialogIndirect(&dialog, &choice, nullptr, nullptr)), L"Cannot open setup dialog");

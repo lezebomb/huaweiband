@@ -2,15 +2,40 @@
 
 本包只支持 BandKey-Win11：VMware、Windows 11 x64 build 26300、当前独立本地账户。所有虚拟机操作由用户手动执行，保留 Ubuntu 和“快照 1”。
 
-上一阶段的安装、正确密码进入桌面、错误密码被拒绝及原有登录可用，已由用户反馈通过。此前笼统的卸载正常反馈已由后续截图纠正：注册项移除后文件仍有残留，重启无效；新版清理修复仍待来宾确认。这次验证新增的“模拟设备签名确认 → Windows 凭据提交 → 实际回到桌面”，没有接入真实手环、Wear Engine、BLE 距离或正式代理。
+当前为 **lifecycle fix 2 / diagnostics**。用户已反馈 cleanup fix 1 成功清理残留，重新安装后正确/错误签名都已交付，但有效签名仍需系统密码进入桌面；截图确认已选中 BandKey，显示 No current signed authorization。旧签名版的自动登录测试失败。当前修复登录页刷新提前清理请求的问题并增加诊断，尚不能认定它就是来宾实际失败的唯一原因。本实验未接入真实手环、Wear Engine、BLE 距离或正式代理。
 
 ## 1. 安装新实验
 
 1. 若旧版 Remove 在重启后仍提示文件占用，先关闭旧安装器和确认客户端，不要反复重启，也不要删除其他登录组件。
 2. 在 VMware 的 **BandKey-Win11** 设置中，将 CD/DVD 的 ISO 换成本次提供的 **BandKey-VM-Signed-Lab-*.iso**，勾选“已连接”。先运行**新光盘**的 `BandKey.VmSetup.exe`，选择 **Remove VM experiment** 并确认 UAC。预期标题含 **cleanup fix 1**，正文为 **Lab registration and files removed**；若仍失败，会列出具体路径和 Windows 错误码，请反馈该提示，先不安装。保留基线快照和 Ubuntu。
-3. 在虚拟机“此电脑”打开 `BANDKEY_LAB` 光盘，运行 `BandKey.VmSetup.exe`，选择 **Install signed-confirmation VM experiment**，由你确认 UAC。
+3. 在虚拟机“此电脑”打开 `BANDKEY_LAB` 光盘，运行 `BandKey.VmSetup.exe`。主说明应包含 **lifecycle fix 2 with diagnostics**；选择 **Install signed-confirmation VM experiment**，由你确认 UAC。
 4. 弹出凭据登记窗口时，只输入**这台虚拟机本地账户的独立密码**。用户名固定，不能使用 PIN；不要输入宿主机密码，也不要把密码发给开发者。此窗口会验证并加密保存该 VM 密码，供这次实验的系统认证使用。
 5. 预期显示 **Signed-confirmation VM experiment installed**。登记校验成功只说明密码可用，尚未验证桌面解锁。安装器不会自动锁屏、注销或重启。
+
+本轮优先只复测一次有效确认，使用下面的诊断步骤；确认问题解决后，再完整补测错误签名与防重复。
+
+## 本轮优先：有效确认与分步诊断
+
+1. 运行光盘上的 `BandKey.VmConfirmation.exe`，标题应包含 **lifecycle fix 2 / diagnostics**，下半部分新增 Provider diagnostics 文本框。
+2. 点击 **Arm one valid confirmation**，10 秒内从 VM 开始菜单手动锁定，点击锁屏画面进入登录页。在 30 秒有效期内选一次 BandKey 蓝色钥匙。登录页说明也应包含 **lifecycle fix 2**；记录是否需要手动选择，不将手动选择后的成功冒充自动切换成功。
+3. 如果仍停留在等待页，可在这轮有效期内点一次右侧箭头。不要等待很久后继续提交旧请求，也不要连续点击。
+4. 若未进入桌面，用原有系统密码恢复。回到客户端，将下方 Provider diagnostics 的最后约 20 行复制反馈（点击文本框、Ctrl+A、Ctrl+C）；可以发截图，但不要包含登记窗口、密码、Vault 或私钥文件。
+
+诊断含固定事件名称、启动后的毫秒数和数值结果，不含账号、SID、密码、密钥、nonce 或原始请求。它只是错误定位材料，不参与认证。文件位于 `%ProgramFiles%\BandKeyVmLab\Diagnostics\provider.log`，SYSTEM/管理员可写，目标用户只读，总大小有上限。客户端只显示末尾片段。
+
+| 最后阶段 | 可以确认的范围 |
+|---|---|
+| challenge-written / waiting-approval | Provider 已发出请求，尚未确认有效响应 |
+| approval-rejected | 原生验签或上下文检查拒绝 |
+| approval-verified | 原生已核验签名，尚不代表 Windows 认证 |
+| refresh-requested / auto-credential | 已请求重新枚举，或已返回可自动提交的凭据索引 |
+| timer-active 缺失 | 不能认定窗口定时器已在真实 LogonUI 中运行，需要进一步检查回调环境 |
+| vault-*-failed / vault-permission-rejected | 加密凭据读取或权限检查失败 |
+| serialization-prepared | 已打包交给 LogonUI，仍不代表实际进入桌面 |
+| Windows-result | Windows 回调的数值状态；仍需结合实际桌面结果 |
+| challenge-expired / context-cancelled / session-boundary | 请求已过期或会话/策略边界改变 |
+
+登录页重新枚举、UnAdvise 或取消选择本身不会延长请求，也不再直接清掉仍有效的同一请求；密码缓冲区仍立即清零。过期、撤权、会话边界、身份变化及对象销毁继续使请求失效。
 
 如果报告环境不支持、旧目录存在或登记失败，停止本轮安装，记录提示。不要修改机器信息、注册表限制或其他登录组件来绕过检查。
 

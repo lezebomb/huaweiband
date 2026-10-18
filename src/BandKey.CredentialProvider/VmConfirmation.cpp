@@ -4,6 +4,7 @@
 #include <memory>
 #include "SignedGrant.h"
 #include "LabPolicy.h"
+#include "LabDiagnostics.h"
 
 static LabPolicy policy;
 static std::unique_ptr<SigningKey> signer;
@@ -11,6 +12,20 @@ static ULONGLONG armedAt = 0, armedWall = 0;
 static bool tampered = false;
 static DWORD session = 0;
 static HWND statusWindow = nullptr;
+static HWND diagnosticsWindow = nullptr;
+static ULONGLONG diagnosticsUpdated = 0;
+static std::wstring lastDiagnostics;
+static void RefreshDiagnostics() {
+    auto tick = GetTickCount64(); if (tick - diagnosticsUpdated < 1000) return; diagnosticsUpdated = tick;
+    try {
+        auto bytes = ReadBoundedFile(LabInstallDirectory() / L"Diagnostics" / L"provider.log", 262304);
+        auto start = bytes.size() > 6000 ? bytes.size() - 6000 : 0;
+        while (start && start < bytes.size() && bytes[start - 1] != '\n') ++start;
+        std::wstring text; for (size_t i = start; i < bytes.size(); ++i) text += bytes[i] < 128 ? static_cast<wchar_t>(bytes[i]) : L'?';
+        if (text.size() > 6000) text.resize(6000);
+        if (text != lastDiagnostics) { lastDiagnostics = text; SetWindowTextW(diagnosticsWindow, text.c_str()); SendMessageW(diagnosticsWindow, EM_SETSEL, static_cast<WPARAM>(-1), static_cast<LPARAM>(-1)); SendMessageW(diagnosticsWindow, EM_SCROLLCARET, 0, 0); }
+    } catch (...) { SetWindowTextW(diagnosticsWindow, L"No provider diagnostics yet. Lock the VM and select the BandKey sign-in option once. This text is diagnostic only."); }
+}
 static void Status(const wchar_t* text) { SetWindowTextW(statusWindow, text); }
 static void Disarm(const wchar_t* status) { signer.reset(); armedAt = 0; Status(status); }
 static void Arm(bool invalidSignature) {
@@ -61,7 +76,7 @@ static LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam
             if (LOWORD(wParam) == 103) Disarm(L"Cancelled. No request will be signed.");
             return 0;
         }
-        if (message == WM_TIMER) { Poll(); return 0; }
+        if (message == WM_TIMER) { Poll(); RefreshDiagnostics(); return 0; }
         if (message == WM_DESTROY) { signer.reset(); KillTimer(window, 1); PostQuitMessage(0); return 0; }
     } catch (...) { Disarm(L"Operation failed. No additional request will be signed. Check installation and account, then retry."); }
     return DefWindowProcW(window, message, wParam, lParam);
@@ -78,14 +93,16 @@ int WINAPI wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE, _In_ PWSTR, _In
         NativeRequire(ProcessIdToSessionId(GetCurrentProcessId(), &session) && session, "interactive-session-required");
         WNDCLASSW type{}; type.hInstance = instance; type.lpfnWndProc = WindowProcedure; type.lpszClassName = L"BandKey.VmConfirmation"; type.hCursor = LoadCursorW(nullptr, IDC_ARROW); type.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
         NativeRequire(RegisterClassW(&type) != 0, "window-class-unavailable");
-        HWND window = CreateWindowExW(0, type.lpszClassName, L"BandKey VM simulated confirmation - not a real band", WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, CW_USEDEFAULT, CW_USEDEFAULT, 720, 320, nullptr, nullptr, instance, nullptr);
+        HWND window = CreateWindowExW(0, type.lpszClassName, L"BandKey VM confirmation - lifecycle fix 2 / diagnostics", WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, CW_USEDEFAULT, CW_USEDEFAULT, 720, 530, nullptr, nullptr, instance, nullptr);
         if (!window) throw std::runtime_error("window-unavailable");
         CreateWindowExW(0, L"STATIC", L"Isolated VM experiment: simulated device event, real Windows authentication.\nEach Arm allows only one NEW request within 30 seconds. The app does not lock the VM.\nKeep the original system password sign-in option. It never receives your Windows password.", WS_CHILD | WS_VISIBLE, 18, 18, 670, 78, window, nullptr, instance, nullptr);
         CreateWindowExW(0, L"BUTTON", L"Arm one valid confirmation", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 18, 106, 235, 36, window, reinterpret_cast<HMENU>(101), instance, nullptr);
         CreateWindowExW(0, L"BUTTON", L"Arm one INVALID signature", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 266, 106, 235, 36, window, reinterpret_cast<HMENU>(102), instance, nullptr);
         CreateWindowExW(0, L"BUTTON", L"Cancel", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 515, 106, 160, 36, window, reinterpret_cast<HMENU>(103), instance, nullptr);
         statusWindow = CreateWindowExW(0, L"STATIC", L"Disarmed. No authorization will be signed until you choose Arm.", WS_CHILD | WS_VISIBLE, 18, 164, 655, 84, window, nullptr, instance, nullptr);
-        NativeRequire(statusWindow && SetTimer(window, 1, 200, nullptr), "timer-unavailable"); ShowWindow(window, SW_SHOW);
+        CreateWindowExW(0, L"STATIC", L"Provider diagnostics (Ctrl+A / Ctrl+C to copy; no password, key or nonce):", WS_CHILD | WS_VISIBLE, 18, 253, 665, 24, window, nullptr, instance, nullptr);
+        diagnosticsWindow = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"No provider diagnostics yet.", WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL, 18, 280, 665, 190, window, nullptr, instance, nullptr);
+        NativeRequire(statusWindow && diagnosticsWindow && SetTimer(window, 1, 200, nullptr), "timer-unavailable"); ShowWindow(window, SW_SHOW);
         MSG message{}; while (GetMessageW(&message, nullptr, 0, 0) > 0) { TranslateMessage(&message); DispatchMessageW(&message); } return 0;
     } catch (...) { MessageBoxW(nullptr, L"This client requires the signed-confirmation experiment installed for the current local account inside the supported VMware guest. No authorization was issued.", L"BandKey VM confirmation", MB_OK | MB_ICONERROR); return 1; }
 }
