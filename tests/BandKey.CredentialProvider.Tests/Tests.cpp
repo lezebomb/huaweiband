@@ -75,21 +75,22 @@ static void FreeSerialization(CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION& resu
     if (result.rgbSerialization) { SecureZeroMemory(result.rgbSerialization, result.cbSerialization); CoTaskMemFree(result.rgbSerialization); result = {}; }
 }
 int wmain(int argc, wchar_t** argv) {
-    if (argc == 3 && (wcscmp(argv[1], L"--verify-interop") == 0 || wcscmp(argv[1], L"--verify-java") == 0)) {
+    if (argc == 3 && (wcscmp(argv[1], L"--verify-interop") == 0 || wcscmp(argv[1], L"--verify-java") == 0 || wcscmp(argv[1], L"--verify-phone") == 0)) {
         auto directory = std::filesystem::path(argv[2]); bool passed = false;
         bool java = wcscmp(argv[1], L"--verify-java") == 0;
+        bool phone = wcscmp(argv[1], L"--verify-phone") == 0;
         try {
             auto body = ReadBoundedFile(directory / L"native-challenge.bin", sizeof(WindowsChallenge));
-            auto response = ReadBoundedFile(directory / (java ? L"java-approval.bin" : L"csharp-approval.bin"), sizeof(WindowsApproval));
-            auto key = ReadBoundedFile(directory / (java ? L"java-public.bin" : L"csharp-public.bin"), 72);
+            auto response = ReadBoundedFile(directory / (phone ? L"phone-approval.bin" : (java ? L"java-approval.bin" : L"csharp-approval.bin")), sizeof(WindowsApproval));
+            auto key = ReadBoundedFile(directory / (phone ? L"phone-public.bin" : (java ? L"java-public.bin" : L"csharp-public.bin")), 72);
             NativeRequire(body.size() == sizeof(WindowsChallenge) && response.size() == sizeof(WindowsApproval), "interop-wire-size");
             WindowsChallenge challenge; WindowsApproval approval;
             CopyMemory(&challenge, body.data(), sizeof(challenge)); CopyMemory(&approval, response.data(), sizeof(approval));
-            OneTimeWindowsGrant grant(challenge, 1000); passed = grant.Verify(approval, key, 100001, 1001);
-            approval.signature[0] ^= 1; passed = passed && !grant.Verify(approval, key, 100001, 1001);
+            OneTimeWindowsGrant grant(challenge, 1000); passed = grant.Verify(approval, key, challenge.issuedMs + 1, 1001);
+            approval.signature[0] ^= 1; passed = passed && !grant.Verify(approval, key, challenge.issuedMs + 1, 1001);
         } catch (...) { passed = false; }
-        std::ofstream report(directory / (java ? L"native-java-result.json" : L"native-interop-result.json")); report << "{\"passed\":" << (passed ? 2 : 0) << ",\"failed\":" << (passed ? 0 : 1) << ",\"windowsAuthenticationSubmitted\":false}"; report.close();
-        std::cout << "CNG verifies " << (java ? "Java" : "CSharp") << " signature and rejects tampering: " << (passed ? "passed" : "failed") << '\n'; return passed && report ? 0 : 1;
+        std::ofstream report(directory / (phone ? L"native-phone-result.json" : (java ? L"native-java-result.json" : L"native-interop-result.json"))); report << "{\"passed\":" << (passed ? 2 : 0) << ",\"failed\":" << (passed ? 0 : 1) << ",\"windowsAuthenticationSubmitted\":false}"; report.close();
+        std::cout << "CNG verifies " << (phone ? "Android Keystore" : (java ? "Java" : "CSharp")) << " signature and rejects tampering: " << (passed ? "passed" : "failed") << '\n'; return passed && report ? 0 : 1;
     }
     if (argc != 3 && argc != 4) return 2;
     std::vector<std::pair<const char*, bool>> tests;

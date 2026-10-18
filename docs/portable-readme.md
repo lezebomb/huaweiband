@@ -16,6 +16,8 @@
 
 完整技术状态、协议、硬件步骤与登录集成限制见 `docs/`。源工程提供构建、测试和当前用户登录后启动脚本，开发版源码位于原项目目录。
 
+手机实验另有不依赖同一 Wi-Fi 的 USB 开发通道，见 `docs/usb-transport-test.md`。真机 USB / Keystore / HTTPS / CNG 验签已通过合成账户测试，手机到 VM 的实际桌面解锁仍待验证。普通代理的认证后端不因传输通道变化而启用。
+
 另有显式 `--vm-bridge` 手机确认实验入口，仅支持已登记手机公钥的 VMware/build 26300 来宾；在物理机拒绝运行，不自动安装或注册。须使用独立 VM Phone Lab 镜像中的原生安装器，并按 `docs/vm-phone-bridge-test.md` 操作。它不改变普通代理的认证状态；本版本新手机到 VM 解锁仍待实机测试。
 
 只读诊断：`BandKey.exe --probe --seconds 30 --output <绝对路径.json>`；这不会锁屏、配对或写入手环。

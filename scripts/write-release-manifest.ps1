@@ -1,4 +1,4 @@
-param([switch]$PublishedProbeSucceeded)
+param([switch]$PublishedProbeSucceeded,[string]$PhoneUsbReport)
 $ErrorActionPreference='Stop'
 $bandKeyRoot=Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $bandKeyRoot
@@ -13,6 +13,11 @@ if($bandKeyFlow.failed -ne 0 -or !$bandKeyFlow.simulated -or $bandKeyFlow.realWi
 $bandKeyErrors=@($bandKeyLint.issues.issue | Where-Object {$_.severity -in @('Error','Fatal')}).Count
 $bandKeyWarnings=@($bandKeyLint.issues.issue | Where-Object {$_.severity -eq 'Warning'}).Count
 if($bandKeyErrors){throw 'Cannot record a release with Android Lint errors.'}
+$bandKeyUsb=$null
+if($PhoneUsbReport){
+  $bandKeyUsb=Get-Content -LiteralPath $PhoneUsbReport -Raw | ConvertFrom-Json
+  if(!$bandKeyUsb.passed -or $bandKeyUsb.phoneRuns -ne 7 -or $bandKeyUsb.checks -ne 36 -or !$bandKeyUsb.syntheticAccount -or $bandKeyUsb.windowsAuthenticationSubmitted -or $bandKeyUsb.realWearableTested -or $bandKeyUsb.mainApkSha256 -ne (Get-FileHash -LiteralPath artifacts/BandKey-bridge-debug.apk -Algorithm SHA256).Hash.ToLowerInvariant()){throw 'USB evidence failed or belongs to another APK.'}
+}
 $bandKeyFiles=foreach($bandKeyRelative in @('artifacts/BandKey-win-x64.zip','artifacts/BandKey-bridge-debug.apk',
   'artifacts/BandKey-win-x64/BandKey.exe','artifacts/BandKey-win-x64/BandKey.dll','artifacts/BandKey-win-x64/BandKey.Core.dll')){
   $bandKeyItem=Get-Item -LiteralPath $bandKeyRelative
@@ -26,7 +31,10 @@ $bandKeyFiles=foreach($bandKeyRelative in @('artifacts/BandKey-win-x64.zip','art
   referenceProviderRegistered=$false;windowsAuthenticationSubmitted=$false
   windowsSelfContainedProbeSucceeded=[bool]$PublishedProbeSucceeded
   windowsUnlockImplemented=$false;wearableButtonHardwareVerified=$false
-  androidPhonePreviouslyInstalled=$true;androidPublishedApkInstalled=$false
+  androidPhonePreviouslyInstalled=$true;androidPublishedApkInstalled=($null -ne $bandKeyUsb)
+  phoneUsbSyntheticChecksPassed=$(if($bandKeyUsb){$bandKeyUsb.checks}else{0})
+  androidKeystoreReportedSecureHardware=$(if($bandKeyUsb){$bandKeyUsb.keyInsideSecureHardware}else{$null})
+  phoneToVmUnlockTested=$false
   wearEngineAppId='119393073';wearEngineSdk='5.0.3.304'
   huaweiAccountServiceEnabled=$true;wearEngineServiceStatus='under-review-user-reported-2026-10-17'
   wearEngineServiceApproved=$false;wearEngineHardwareDiagnosticError=8

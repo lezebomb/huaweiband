@@ -7,6 +7,17 @@ internal static class Program
     [STAThread]
     public static void Main(string[] args)
     {
+        if(args.Contains("--usb-tunnel"))
+        {
+            try
+            {
+                var address=System.Net.IPAddress.Parse(Arg(args,"--target")??throw new ArgumentException("Missing target"));
+                int seconds=int.TryParse(Arg(args,"--seconds"),out var duration)?Math.Clamp(duration,1,7200):1800;
+                RunUsbTunnel(address,seconds,Arg(args,"--output"),Arg(args,"--ready"),Arg(args,"--stop-file")).GetAwaiter().GetResult();
+            }
+            catch(Exception){Environment.ExitCode=2;}
+            return;
+        }
         if (args.Contains("--vm-bridge"))
         {
             ApplicationConfiguration.Initialize();
@@ -75,6 +86,13 @@ internal static class Program
         if (!first) { MessageBox.Show("BandKey 已在运行，请使用系统托盘图标。"); return; }
         try { Application.Run(new MainForm(new Agent(new Store(data)), args.Contains("--tray"))); }
         catch (Exception e) { MessageBox.Show("BandKey 启动失败：" + e.Message, "BandKey"); Environment.ExitCode = 1; }
+    }
+    private static async Task RunUsbTunnel(System.Net.IPAddress address,int seconds,string? output,string? ready,string? stopFile)
+    {
+        await using var tunnel=new LoopbackTcpTunnel(19443,address,19443);tunnel.Start();
+        if(ready!=null)File.WriteAllText(ready,"ready");
+        for(int elapsed=0;elapsed<seconds && (stopFile==null || !File.Exists(stopFile));elapsed++)await Task.Delay(1000);
+        if(output!=null)File.WriteAllText(output,JsonSerializer.Serialize(new{tunnel.Accepted,tunnel.Rejected,tunnel.Failed,loopbackOnly=true,tlsTerminated=false,windowsAuthenticationSubmitted=false},Store.Json));
     }
     private static async Task ProbeAsync(string[] args)
     {
