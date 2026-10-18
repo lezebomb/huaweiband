@@ -10,13 +10,15 @@
 2. **错误签名：**点击 Arm one INVALID signature，10 秒内锁定，等待约 10 秒应保持锁屏；用原有密码回来。确认客户端已交付错误签名，诊断出现 approval-rejected；没有交付/拒绝证据时不能把结果记作验签反例通过。
 3. **客户端授权超时：**在桌面点击 Arm one valid confirmation，保持未锁屏等待至少 35 秒，客户端显示 Expired 后再锁定，应保持锁屏；用原有密码回来。这只验证客户端 Arm 超时，不代替原生挑战过期的实机测试。
 
-若上述反例中发生自动解锁，停止测试并通过当前安装器 Remove；反馈诊断。这些反例通过后再验证新版完整卸载、重启/睡眠和账户变化边界，尚不部署到主力机。
+**后续反馈：**用户明确回复上述三项均符合预期，记录为本版无确认/重复使用、错误签名和客户端 Arm 超时的用户实测通过；没有独立取得错误签名完整日志，证据等级仍为用户报告。第三项不代表原生挑战超时的来宾实测。下一阶段使用独立的 [手机确认实验](vm-phone-bridge-test.md)，新安装不能直接继承旧版结果。
+
+若反例中发生自动解锁，停止测试并通过当前安装器 Remove；反馈诊断。新版完整卸载、重启/睡眠和账户变化边界仍需验证，尚不部署到主力机。
 
 ## 1. 安装新实验
 
 1. 若旧版 Remove 在重启后仍提示文件占用，先关闭旧安装器和确认客户端，不要反复重启，也不要删除其他登录组件。
 2. 在 VMware 的 **BandKey-Win11** 设置中，将 CD/DVD 的 ISO 换成本次提供的 **BandKey-VM-Signed-Lab-*.iso**，勾选“已连接”。先运行**新光盘**的 `BandKey.VmSetup.exe`，选择 **Remove VM experiment** 并确认 UAC。预期标题含 **cleanup fix 1**，正文为 **Lab registration and files removed**；若仍失败，会列出具体路径和 Windows 错误码，请反馈该提示，先不安装。保留基线快照和 Ubuntu。
-3. 在虚拟机“此电脑”打开 `BANDKEY_LAB` 光盘，运行 `BandKey.VmSetup.exe`。主说明应包含 **lifecycle fix 2 with diagnostics**；选择 **Install signed-confirmation VM experiment**，由你确认 UAC。
+3. 在虚拟机“此电脑”打开 `BANDKEY_LAB` 光盘，运行 `BandKey.VmSetup.exe`。旧已测试镜像选择 **Install signed-confirmation VM experiment**；新安装器对应按钮名为 **Install local simulation experiment**，由你确认 UAC。手机确认模式按单独教程操作。
 4. 弹出凭据登记窗口时，只输入**这台虚拟机本地账户的独立密码**。用户名固定，不能使用 PIN；不要输入宿主机密码，也不要把密码发给开发者。此窗口会验证并加密保存该 VM 密码，供这次实验的系统认证使用。
 5. 预期显示 **Signed-confirmation VM experiment installed**。登记校验成功只说明密码可用，尚未验证桌面解锁。安装器不会自动锁屏、注销或重启。
 

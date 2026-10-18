@@ -27,6 +27,19 @@ if($LASTEXITCODE -ne 0){throw 'CSharp verification of native grant failed.'}
 & (Join-Path $bandKeyOutput 'BandKey.CredentialProvider.Tests.exe') --verify-interop $bandKeyInterop
 if($LASTEXITCODE -ne 0){throw 'Native verification of CSharp grant failed.'}
 Copy-Item -LiteralPath (Join-Path $bandKeyInterop 'csharp-result.json') -Destination (Join-Path $bandKeyOutput 'grant-interop.json') -Force
+$bandKeyJavac=if($env:JAVA_HOME){Join-Path $env:JAVA_HOME 'bin\javac.exe'}else{'javac'}
+$bandKeyJava=if($env:JAVA_HOME){Join-Path $env:JAVA_HOME 'bin\java.exe'}else{'java'}
+$bandKeyJavaClasses=Join-Path $bandKeyInterop 'java-classes'
+New-Item -ItemType Directory -Path $bandKeyJavaClasses | Out-Null
+& $bandKeyJavac -encoding UTF-8 -d $bandKeyJavaClasses (Join-Path $bandKeyRoot 'android\app\src\main\java\dev\bandkey\bridge\WindowsGrantWire.java') (Join-Path $bandKeyRoot 'tests\interop\WindowsGrantInterop.java')
+if($LASTEXITCODE -ne 0){throw 'Android grant codec JDK compilation failed'}
+& $bandKeyJava -cp $bandKeyJavaClasses WindowsGrantInterop $bandKeyInterop
+if($LASTEXITCODE -ne 0){throw 'Android grant codec interoperability failed'}
+& $bandKeyDotnet run --project (Join-Path $bandKeyRoot 'tests\BandKey.Grant.Interop') -c Release --no-build -- --verify-java $bandKeyInterop
+if($LASTEXITCODE -ne 0){throw 'CSharp verification of Java native grant failed'}
+& (Join-Path $bandKeyOutput 'BandKey.CredentialProvider.Tests.exe') --verify-java $bandKeyInterop
+if($LASTEXITCODE -ne 0){throw 'CNG verification of Java native grant failed'}
+Copy-Item -LiteralPath (Join-Path $bandKeyInterop 'java-result.json') -Destination (Join-Path $bandKeyOutput 'java-grant-interop.json') -Force
 $bandKeyDllHash=(Get-FileHash -LiteralPath (Join-Path $bandKeyOutput 'BandKey.CredentialProvider.dll') -Algorithm SHA256).Hash.ToLowerInvariant()
 ('inline constexpr char BandKeyExpectedProviderHash[] = "'+$bandKeyDllHash+'";') | Set-Content -LiteralPath (Join-Path $bandKeyOutput 'ProviderHash.h') -Encoding ascii
 & $bandKeyMsbuild (Join-Path $bandKeyRoot 'src\BandKey.CredentialProvider\BandKey.VmSetup.vcxproj') /nologo /verbosity:minimal /p:RunCodeAnalysis=true /p:CodeAnalysisTreatWarningsAsErrors=true /p:Configuration=Release /p:Platform=x64 "/p:OutDir=$bandKeyOutput\" "/p:IntDir=$bandKeyIntermediates\setup\"

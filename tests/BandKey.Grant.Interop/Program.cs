@@ -2,6 +2,15 @@ using BandKey.Core;
 using System.Security.Cryptography;
 using System.Text.Json;
 
+if (args.Length == 2 && args[0] == "--verify-java")
+{
+    var target = args[1]; var expected = WindowsGrantWire.ReadChallenge(File.ReadAllBytes(Path.Combine(target, "native-challenge.bin")));
+    var signed = File.ReadAllBytes(Path.Combine(target, "java-approval.bin")); var javaKey = File.ReadAllBytes(Path.Combine(target, "java-public.bin"));
+    bool accepted = WindowsGrantWire.Verify(expected, signed, javaKey, 100001); signed[^1] ^= 1;
+    bool refused = !WindowsGrantWire.Verify(expected, signed, javaKey, 100001);
+    File.WriteAllText(Path.Combine(target, "csharp-java-result.json"), JsonSerializer.Serialize(new { passed = accepted && refused ? 2 : 0, failed = accepted && refused ? 0 : 1, realWindowsAuthenticationTested = false }));
+    Console.WriteLine("CSharp verifies Java native grant: " + (accepted && refused)); return accepted && refused ? 0 : 1;
+}
 if (args.Length != 1) return 2;
 var directory = args[0]; var tests = new List<object>(); var failed = 0;
 void Check(string name, bool success) { tests.Add(new { name, passed = success }); if (!success) failed++; }

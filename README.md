@@ -1,11 +1,12 @@
 # BandKey · 华为手环 11 Pro 智能电脑钥匙
 
-这是可继续研发、可构建的 Windows / Android 工程。**隔离 VM 已获用户实测反馈：模拟签名确认触发本地账户实际自动解锁。正式代理和真实手环尚未接入此能力。** 已交付 BLE 距离监控、正规锁屏调用、安全授权协议及官方 Wear Engine Android 桥接程序。
+这是可继续研发、可构建的 Windows / Android 工程。**隔离 VM 已获用户实测反馈：模拟签名确认触发本地账户实际自动解锁，无确认/错误签名/客户端超时反例符合预期。** 新增独立手机确认、固定证书 HTTPS 与原生 Provider 中继，软件测试通过，手机到 VM 的实际桌面解锁待测。正式代理和真实手环尚未接入此能力。
 
 ## 直接运行
 
 - Windows：解压 [BandKey-win-x64.zip](artifacts/BandKey-win-x64.zip)，运行其中的 `BandKey.exe`。当前目录已有 [BandKey.exe](artifacts/BandKey-win-x64/BandKey.exe)，内含 .NET 运行时，无需另装运行时。
-- Android：[BandKey-bridge-debug.apk](artifacts/BandKey-bridge-debug.apk)。已安装并运行在一加实机，正式 App ID、HMS Core 和账号服务已就绪。用户于 2026-10-17 确认 Wear Engine 申请正在审核；最近实机查询仍为错误 8，尚不能向手环发送按钮通知。
+- Android：[BandKey-bridge-debug.apk](artifacts/BandKey-bridge-debug.apk)。旧版已安装并运行在一加实机；本次新增 VM 实验页的 APK 已构建，尚未安装到手机。正式 App ID、HMS Core 和账号服务已就绪；Wear Engine 申请仍按用户反馈记为审核中，最近实机查询错误 8。
+- VM 手机实验：[一步步教程](docs/vm-phone-bridge-test.md)、[中继协议](docs/vm-phone-relay-protocol.md)。新 `BandKey-VM-Phone-Lab-*.iso` 与旧已验证模拟镜像独立保存。只在 VMware/build 26300 来宾手动安装，后续所有 VM 操作由用户执行。
 - 配置、应用身份密钥、授权公钥及日志保存在程序旁的 `runtime/`。可用 `--data <目录>` 改变位置。私钥以当前 Windows 用户的 DPAPI 加密保存；正式托盘代理没有 Windows 密码/PIN输入框，也没有保存它们的代码。独立 VM 新实验由用户登记一次 VM 密码，以机器 DPAPI 和 SYSTEM/管理员专属 ACL 保管；它与正式分发包分开。
 - 关闭窗口会缩到托盘；使用托盘菜单“退出”彻底关闭。首次启动默认关闭自动锁屏和网络监听。
 
@@ -15,9 +16,9 @@
 |---|---|---|
 | Windows Release 编译、自包含发布 | 已实际验证 | .NET 10.0.402；无编译错误/警告 |
 | Windows BLE / Classic 发现 | 已实际验证 | BLE 25 秒和 Classic inquiry 约 8 秒均完成，未观察到已连接手机的目标手环；不能据此证明永远不可发现 |
-| RSSI 滤波、滞回、延迟、重连后的重新就绪 | 模拟测试通过 | 82 项核心测试包含距离轨迹、控制器、协议攻击及认证调度；没有真机走远锁屏测试 |
+| RSSI 滤波、滞回、延迟、重连后的重新就绪 | 模拟测试通过 | 当前 106 项核心测试包含距离轨迹、控制器、协议攻击、认证调度与原生中继；没有真机走远锁屏测试 |
 | 一次性授权、撤权、防重放、认证调度 | 模拟测试通过 | 真实密码学、回环 HTTPS 8/8；锁屏/靠近状态及认证后端为模拟输入，结果明确标记 `simulated` |
-| Windows DPAPI、TLS、Java/.NET 签名互通 | 已实际验证 | 11 项 Windows 集成测试；Java 直接编译 Android 的 `Wire.java` 和固定证书验证器，含错误/过期证书反例 |
+| Windows DPAPI、TLS、原生中继与文件交换 | 已实际验证 | 31 项 Windows 集成测试；包含 v2 真实 HTTPS、签名交付、重放/过期/撤权、错误证书与普通代理无实验路由 |
 | `LockWorkStation`、WTS 锁屏事件、托盘/参数界面 | 仅完成代码实现 | 窗口已离线渲染检查；没有在真实会话中触发锁屏测试 |
 | Android 官方 SDK、环境诊断 | 部分已实际验证 | 一加 Android 16、运动健康 17.0.8.300；正式 App ID + HMS Core 6.16.4.352 后查询返回服务范围错误 8 |
 | Android 前台桥接与按钮处理 | 代码实现及模拟测试通过 | 19 项生命周期/重试测试通过；停止、换设备、过期后取消旧请求，重复点击只消费一次。服务权限、Notify 能力、ColorOS 长期后台尚待验证 |
@@ -25,7 +26,9 @@
 | 电脑同时作为第二个华为协议主机 | 技术上仍存在障碍 | 未拿到已有配对会话的合法认证通道；未重配或重置手环；并发连接能力未知 |
 | Windows 真实身份认证/解锁 | VM 本地账户模拟签名自动解锁获用户反馈通过 | lifecycle fix 2 锁屏后自动返回桌面，无需手动选项或输入密码；来源为用户描述及桌面截图。宿主机 **MicrosoftAccount**、Hello 和真实手环尚未验证 |
 | 微软 V2 Credential Provider 参考接口 | 宿主机接口验证通过，未验证登录 | 控制台和图形入口各 42/42，两个失败场景通过；已生成只读来宾测试 ISO，未注册、未提交系统认证，测试身份为虚构用户 |
-| 独立 BandKey VM Provider | 原生 154/154、C# 互通 15/15、原生反向 2/2；新版有效签名来宾自动解锁获用户反馈通过 | 截图可见 timer-active、approval-verified、refresh-requested 及 credential-unadvise。无确认、防重放、错误签名和新版卸载仍需[补测](docs/vm-signed-confirmation-test.md)；正式后端未启用 |
+| 独立 BandKey VM Provider | 原生 158/158；旧本地模拟模式有效解锁及三项反例获用户反馈通过 | 新增手机公钥绑定/类型变更拒绝测试；手机模式安装/实际解锁与系统边界待测；正式后端未启用 |
+| Android/Java/C#/CNG 原生授权互通 | 普通进程测试通过 | .NET 验原生 15/15、原生验 .NET 2/2、Android 生产 Java 编码 26/26（含 1000 次编码往返）、.NET 与 CNG 各验 Java 2/2；尚未实跑 Android Keystore 新链路 |
+| 手机手动确认 → VM 原生认证 | 已实现，待手机/来宾测试 | 独立测试密钥、前台明确按钮、TLS/电脑身份核对及 30 秒授权；不调用 Wear Engine、不验证距离 |
 | Windows 隔离测试环境 | 来宾参考接口 42/42，基线快照已核实 | 用户截图确认 build 26300 / 26H2；“快照 1”存在，恢复未测；Ubuntu 配置哈希未变 |
 | 登录后启动、崩溃恢复 | 部分已验证 | 监督脚本异常子进程重启、正常退出停止已测；任务计划/真机重启未测，首次登录前不运行用户代理 |
 
@@ -33,7 +36,7 @@
 
 ## 技术选择
 
-Windows 使用 C#/.NET 10、WinForms 托盘、Windows BLE API、Kestrel HTTPS；Android 使用 Java、系统 Activity、Android Keystore 和官方 Wear Engine 5.0.3.304。没有服务器订阅或手机日常确认步骤。
+Windows 使用 C#/.NET 10、WinForms 托盘、Windows BLE API、Kestrel HTTPS；Android 使用 Java、系统 Activity、Android Keystore 和官方 Wear Engine 5.0.3.304。正式目标通过手环按钮确认；新增手机按钮仅用于审批等待期的独立 VM 联调。
 
 距离优先由电脑被动观察手环广播。MAC 地址只选择观测对象，不授予解锁权限；地址轮换、连接后停止广播都会影响距离判断。不会把手机在同一 Wi-Fi 当作手环靠近。
 
@@ -144,4 +147,4 @@ artifacts/                  EXE/APK/测试报告（不纳入版本控制）
 .tooling/                   项目本地 SDK/依赖缓存
 ```
 
-下一步由用户按 [VM 一次性签名确认教程](docs/vm-signed-confirmation-test.md)验证“模拟设备确认 → Windows 实际进入桌面”、拒绝无效确认、防重复及清理。正式登录方案仍受 [Windows 认证实施门槛](docs/windows-authentication.md)约束。Wear Engine 审核通过后，继续验证 **一加 + Band 11 Pro 的 Notify 点击反馈与电脑侧可持续观测性**；VM 模拟私钥不能作为真实手环凭据。
+本地模拟有效解锁及三项反例已有用户反馈。下一步按 [VM 手机确认教程](docs/vm-phone-bridge-test.md)验证新手机链路；旧模式详见 [模拟签名教程](docs/vm-signed-confirmation-test.md)。正式登录仍受 [认证实施门槛](docs/windows-authentication.md)约束。Wear Engine 审核通过后验证一加 + Band 11 Pro 的 Notify 点击反馈与电脑侧可持续观测性；测试密钥不能作为真实手环凭据。

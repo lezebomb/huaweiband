@@ -49,6 +49,7 @@ struct LabPolicy {
     bool enabled = false;
     std::wstring sid;
     DWORD mode = 0; // 0 = manual password; 2 = isolated VM simulated-signature + vault experiment.
+    DWORD signerKind = 0; // 0 = local simulation key; 1 = separately enrolled phone-lab key.
     std::vector<BYTE> publicKey;
     LabPolicy(bool active = false, std::wstring target = {}) : enabled(active), sid(std::move(target)) {}
 };
@@ -65,6 +66,10 @@ inline LabPolicy ReadLabPolicy() {
     if (result != ERROR_SUCCESS && result != ERROR_FILE_NOT_FOUND) return policy;
     if (mode != 0 && mode != 2) return policy;
     if (mode == 2) {
+        DWORD kind = 0; bytes = sizeof(kind);
+        auto kindResult = RegGetValueW(HKEY_LOCAL_MACHINE, BandKeyLabConfig, L"SignerKind", RRF_RT_REG_DWORD | RRF_SUBKEY_WOW6464KEY, nullptr, &kind, &bytes);
+        if ((kindResult != ERROR_SUCCESS && kindResult != ERROR_FILE_NOT_FOUND) || kind > 1) return LabPolicy{};
+        policy.signerKind = kind;
         policy.publicKey.resize(72); bytes = static_cast<DWORD>(policy.publicKey.size());
         if (RegGetValueW(HKEY_LOCAL_MACHINE, BandKeyLabConfig, L"LabPublicKey", RRF_RT_REG_BINARY | RRF_SUBKEY_WOW6464KEY, nullptr, policy.publicKey.data(), &bytes) != ERROR_SUCCESS || bytes != 72) return LabPolicy{};
     }

@@ -52,7 +52,7 @@ public static class WindowsGrantWire
         try
         {
             if (approval.Length != ApprovalSize || !IsCurrent(expected, now) || !approval[..ChallengeSize].SequenceEqual(WriteChallenge(expected))) return false;
-            using var key = ReadNativePublicKey(nativePublicKey);
+            using var key = ImportNativePublicKey(nativePublicKey);
             return key.VerifyData(approval[..ChallengeSize], approval[ChallengeSize..], HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation);
         }
         catch (Exception error) when (error is CryptographicException or FormatException or ArgumentException) { return false; }
@@ -65,7 +65,7 @@ public static class WindowsGrantWire
         var bytes = new byte[72]; BinaryPrimitives.WriteUInt32LittleEndian(bytes, 0x31534345); BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(4), 32);
         parameters.Q.X.CopyTo(bytes, 8); parameters.Q.Y.CopyTo(bytes, 40); return bytes;
     }
-    private static ECDsa ReadNativePublicKey(ReadOnlySpan<byte> bytes)
+    public static ECDsa ImportNativePublicKey(ReadOnlySpan<byte> bytes)
     {
         if (bytes.Length != 72 || BinaryPrimitives.ReadUInt32LittleEndian(bytes) != 0x31534345 || BinaryPrimitives.ReadUInt32LittleEndian(bytes[4..]) != 32) throw new FormatException("Native P-256 key blob");
         return ECDsa.Create(new ECParameters { Curve = ECCurve.NamedCurves.nistP256, Q = new ECPoint { X = bytes.Slice(8, 32).ToArray(), Y = bytes.Slice(40, 32).ToArray() } });

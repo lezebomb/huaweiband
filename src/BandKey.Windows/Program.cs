@@ -7,6 +7,13 @@ internal static class Program
     [STAThread]
     public static void Main(string[] args)
     {
+        if (args.Contains("--vm-bridge"))
+        {
+            ApplicationConfiguration.Initialize();
+            try { VmNativePolicy.RequireGuest(); Application.Run(new VmBridgeForm()); }
+            catch (Exception) { MessageBox.Show("手机确认实验只支持当前 BandKey VMware Windows 11 build 26300 来宾；未修改系统登录配置。", "BandKey VM 实验"); Environment.ExitCode = 2; }
+            return;
+        }
         if (args.Contains("--test-flow"))
         {
             var output = Path.GetFullPath(Arg(args, "--output") ?? "flow-lab.json");

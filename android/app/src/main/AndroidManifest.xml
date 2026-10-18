@@ -13,6 +13,7 @@
   <application android:allowBackup="false" android:fullBackupContent="false" android:dataExtractionRules="@xml/data_extraction_rules" android:icon="@drawable/ic_bandkey" android:label="BandKey 桥接" android:theme="@android:style/Theme.Material.Light.NoActionBar" android:usesCleartextTraffic="false" android:supportsRtl="true">
     <meta-data android:name="com.huawei.hms.client.appid" android:value="${wearEngineAppId}" />
     <activity android:name=".MainActivity" android:exported="true"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity>
+    <activity android:name=".VmLabActivity" android:exported="false" />
     <service android:name=".BridgeService" android:exported="false" android:foregroundServiceType="connectedDevice" />
     <receiver android:name=".BootReceiver" android:exported="true"><intent-filter><action android:name="android.intent.action.BOOT_COMPLETED" /></intent-filter></receiver>
   </application>

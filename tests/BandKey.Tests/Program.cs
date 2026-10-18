@@ -69,6 +69,7 @@ Test("authentication adapter fails closed", () => { var backend = new Unavailabl
 
 SafetyTests.Run(Test);
 AuthenticationTests.Run(Test);
+WindowsGrantRelayTests.Run(Test);
 var report = new { generatedAt = DateTimeOffset.UtcNow, total = tests.Count, passed = tests.Count - failed, failed, tests };
 var output = args.FirstOrDefault() ?? "core-tests.json"; Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(output))!);
 File.WriteAllText(output, JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true }));

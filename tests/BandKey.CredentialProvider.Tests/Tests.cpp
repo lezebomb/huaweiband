@@ -75,20 +75,21 @@ static void FreeSerialization(CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION& resu
     if (result.rgbSerialization) { SecureZeroMemory(result.rgbSerialization, result.cbSerialization); CoTaskMemFree(result.rgbSerialization); result = {}; }
 }
 int wmain(int argc, wchar_t** argv) {
-    if (argc == 3 && wcscmp(argv[1], L"--verify-interop") == 0) {
+    if (argc == 3 && (wcscmp(argv[1], L"--verify-interop") == 0 || wcscmp(argv[1], L"--verify-java") == 0)) {
         auto directory = std::filesystem::path(argv[2]); bool passed = false;
+        bool java = wcscmp(argv[1], L"--verify-java") == 0;
         try {
             auto body = ReadBoundedFile(directory / L"native-challenge.bin", sizeof(WindowsChallenge));
-            auto response = ReadBoundedFile(directory / L"csharp-approval.bin", sizeof(WindowsApproval));
-            auto key = ReadBoundedFile(directory / L"csharp-public.bin", 72);
+            auto response = ReadBoundedFile(directory / (java ? L"java-approval.bin" : L"csharp-approval.bin"), sizeof(WindowsApproval));
+            auto key = ReadBoundedFile(directory / (java ? L"java-public.bin" : L"csharp-public.bin"), 72);
             NativeRequire(body.size() == sizeof(WindowsChallenge) && response.size() == sizeof(WindowsApproval), "interop-wire-size");
             WindowsChallenge challenge; WindowsApproval approval;
             CopyMemory(&challenge, body.data(), sizeof(challenge)); CopyMemory(&approval, response.data(), sizeof(approval));
             OneTimeWindowsGrant grant(challenge, 1000); passed = grant.Verify(approval, key, 100001, 1001);
             approval.signature[0] ^= 1; passed = passed && !grant.Verify(approval, key, 100001, 1001);
         } catch (...) { passed = false; }
-        std::ofstream report(directory / L"native-interop-result.json"); report << "{\"passed\":" << (passed ? 2 : 0) << ",\"failed\":" << (passed ? 0 : 1) << ",\"windowsAuthenticationSubmitted\":false}"; report.close();
-        std::cout << "CNG verifies CSharp signature and rejects tampering: " << (passed ? "passed" : "failed") << '\n'; return passed && report ? 0 : 1;
+        std::ofstream report(directory / (java ? L"native-java-result.json" : L"native-interop-result.json")); report << "{\"passed\":" << (passed ? 2 : 0) << ",\"failed\":" << (passed ? 0 : 1) << ",\"windowsAuthenticationSubmitted\":false}"; report.close();
+        std::cout << "CNG verifies " << (java ? "Java" : "CSharp") << " signature and rejects tampering: " << (passed ? "passed" : "failed") << '\n'; return passed && report ? 0 : 1;
     }
     if (argc != 3 && argc != 4) return 2;
     std::vector<std::pair<const char*, bool>> tests;
@@ -155,7 +156,7 @@ int wmain(int argc, wchar_t** argv) {
                 provider->UnAdvise(); callback->changed = {};
             }
             auto checkRefusal = [&](int action) {
-                runtime.locked = true; runtime.policy.enabled = true; runtime.wall = 100000; runtime.monotonic = 1000;
+                runtime.locked = true; runtime.policy.enabled = true; runtime.policy.signerKind = 0; runtime.wall = 100000; runtime.monotonic = 1000;
                 unsigned reads = runtime.vaultReads;
                 ComPtr<BandKeyCredential> value; value.Attach(new BandKeyCredential(CPUS_UNLOCK_WORKSTATION, TestSid, L"BANDKEYLAB\\TestUser", runtime.policy));
                 value->Ready();
@@ -165,6 +166,8 @@ int wmain(int argc, wchar_t** argv) {
                 if (action == 3) runtime.monotonic = 31000;
                 if (action == 4) runtime.policy.enabled = false;
                 if (action == 5) runtime.locked = false;
+                if (action == 6) runtime.policy.signerKind = 1;
+                if (action == 7) runtime.policy.publicKey[8] ^= 1;
                 CREDENTIAL_PROVIDER_GET_SERIALIZATION_RESPONSE response; CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION serialization{}; PWSTR text = nullptr; CREDENTIAL_PROVIDER_STATUS_ICON icon;
                 auto result = value->GetSerialization(&response, &serialization, &text, &icon); CoTaskMemFree(text);
                 bool refused = SUCCEEDED(result) && !serialization.rgbSerialization && runtime.vaultReads == reads;
@@ -176,6 +179,20 @@ int wmain(int argc, wchar_t** argv) {
             check("UI refresh cannot extend original monotonic expiry", checkRefusal(3));
             check("revocation after UI refresh prevents vault read", checkRefusal(4));
             check("unlock after UI refresh prevents vault read", checkRefusal(5));
+            check("changing signer kind cancels pending proof before vault read", checkRefusal(6));
+            check("changing enrolled public key cancels pending proof before vault read", checkRefusal(7));
+            runtime.policy.publicKey = key.Export(false); runtime.policy.signerKind = 1; runtime.policy.enabled = true; runtime.locked = true;
+            runtime.wall = 100000; runtime.monotonic = 1000;
+            {
+                unsigned reads = runtime.vaultReads;
+                ComPtr<BandKeyCredential> phone; phone.Attach(new BandKeyCredential(CPUS_UNLOCK_WORKSTATION, TestSid, L"BANDKEYLAB\\TestUser", runtime.policy));
+                phone->Ready(); writeApproval(false);
+                check("separately enrolled phone-kind key verifies native signed challenge", phone->Ready() && runtime.vaultReads == reads);
+                CREDENTIAL_PROVIDER_GET_SERIALIZATION_RESPONSE response; CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION serialization{}; PWSTR text = nullptr; CREDENTIAL_PROVIDER_STATUS_ICON icon;
+                auto result = phone->GetSerialization(&response, &serialization, &text, &icon); CoTaskMemFree(text);
+                check("phone-kind proof uses same guarded native serialization", SUCCEEDED(result) && serialization.rgbSerialization && runtime.vaultReads == reads + 1);
+                FreeSerialization(serialization);
+            }
             auto log = runtime.directory / L"Diagnostics" / L"provider.log";
             auto bytes = ReadBoundedFile(log, 262304); std::string messages(bytes.begin(), bytes.end());
             check("diagnostics distinguish accepted signature and serialized credential", messages.find("approval-verified") != std::string::npos && messages.find("serialization-prepared") != std::string::npos);

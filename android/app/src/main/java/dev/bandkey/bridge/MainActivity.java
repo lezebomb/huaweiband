@@ -58,7 +58,9 @@ public final class MainActivity extends Activity {
         });
         button(column,"停止并关闭开机启动",()->{BridgeService.stop(this);show("桥接已停止，旧请求不再接受点击");});
         button(column,"ColorOS 后台设置",()->{startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,android.net.Uri.parse("package:"+getPackageName())));});
+        button(column,"VM 手机确认实验（不需要 Wear Engine）",()->startActivity(new Intent(this,VmLabActivity.class)));
         try{identity=new Identity();}catch(Exception e){show("密钥初始化失败："+e.getClass().getSimpleName());}
+        if(getIntent().getBooleanExtra("bandkeyVmLab",false))startActivity(new Intent(this,VmLabActivity.class));
     }
     private void authorize(){
         if(Build.VERSION.SDK_INT>=31 && checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)!=PackageManager.PERMISSION_GRANTED){requestPermissions(new String[]{Manifest.permission.BLUETOOTH_CONNECT},20);return;}

@@ -40,7 +40,7 @@ final class BridgeClient {
         String text=Identity.join("bandkey.approval.v1",Identity.b64(Identity.challengeText(c).getBytes(StandardCharsets.UTF_8)),c.getString("signature"),approved?"1":"0","wearengine-button");
         a.put("signature",identity.sign(text)); return post("/v1/approval",a);
     }
-    private JSONObject post(String path,JSONObject body)throws Exception {
+    JSONObject post(String path,JSONObject body)throws Exception {
         HttpsURLConnection connection=(HttpsURLConnection)new URL(config.getString("endpoint").replaceAll("/$","")+path).openConnection();
         connection.setSSLSocketFactory(sockets);
         // Exact leaf-certificate pin authenticates the origin; no CA/hostname fallback is allowed.
@@ -52,7 +52,7 @@ final class BridgeClient {
         try {
             try(OutputStream output=connection.getOutputStream()){output.write(bytes);}
             int code=connection.getResponseCode(); if(code==204)return null;
-            if(code!=200 && !(path.equals("/v1/approval") && code==403))throw new IOException("PC HTTP "+code);
+            if(code!=200 && !((path.equals("/v1/approval") || path.equals("/v2/windows/decision")) && code==403))throw new IOException("PC HTTP "+code);
             try(InputStream input=code==200?connection.getInputStream():connection.getErrorStream()) {
                 if(input==null)throw new IOException("Empty PC response");
                 byte[] response=Wire.readBounded(input,8192);

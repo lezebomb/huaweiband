@@ -20,7 +20,7 @@ Windows LogonUI 从 Credential Provider 取得序列化凭据，再交给 LSA/�
 
 已阅读微软 V2 示例 `CSampleCredential::GetSerialization`：本地账户分支打包 `KERB_INTERACTIVE_UNLOCK_LOGON`；非本地身份分支使用带身份提供方标志的 `CredPackAuthenticationBuffer`，然后选择 Negotiate。两者都仍然需要系统可认可的凭据。这个示例不是外部签名登录适配器。[官方示例源码](https://github.com/microsoft/Windows-classic-samples/blob/main/Samples/CredentialProvider/cpp/CSampleCredential.cpp)
 
-当前正式代理只使用 `UnavailableAuthenticationBackend`。新增的认证调度接口能传递验证后的请求、处理错误/超时并核对系统会话；独立测试模式的模拟后端不能报告 Windows 已解锁。没有可调用的真实解锁路径。
+当前正式代理只使用 `UnavailableAuthenticationBackend`。新增的认证调度接口能传递验证后的请求、处理错误/超时并核对系统会话；独立测试模式的模拟后端不能报告 Windows 已解锁。正式代理没有可调用的真实解锁路径；独立 VM 原生实验的后续用户结果见下文。
 
 ## 已完成的独立接口测试
 
@@ -107,3 +107,11 @@ Provider 在自己的内存中持有随机挑战，验证固定公钥的 P-256 �
 必须验证：正确/错误凭据、无授权、重复签名、过期、撤权、篡改、服务不可用、蓝牙离线、重启首次登录、普通锁屏解锁、快速用户切换、RDP、睡眠恢复、账户密码变更、MSA离线登录、Hello-only 策略、组件崩溃、系统升级后回归。旧模式正确/错误密码与移除已有用户反馈，其余尚无新模式真实 Windows 登录证据；原生签名攻击模拟通过不能代替来宾行为测试。
 
 回滚方案应先在虚拟机中验证：通过 VM 专用安装器仅移除 BandKey 实验 CLSID/COM 注册及文件、保留系统 Provider；若登录界面不可用，通过 VMware 控制台回退快照。真实电脑上的注册/安装不在本实验范围，安装器会拒绝当前宿主机。本仓库没有通用注册脚本或自动执行注册入口。
+
+## 手机确认阶段的最新状态
+
+本地模拟模式的有效自动解锁、无确认/防重复、错误签名和客户端 Arm 超时已有用户符合预期的反馈；不是独立的完整 Windows-result/WTS 证据，也不是原生挑战过期或正式宿主机认证验证。
+
+新增 `SignerKind=1` 手机实验模式：由用户在 VM 安装器导入并核对独立手机公钥，不生成旧本地签名私钥；原生 Provider 在授权前后核对类型、公钥、SID、锁屏与有效期。手机手动确认页和显式 `--vm-bridge` 中继传递公开挑战/签名，不访问 Vault。正式代理的不可用认证后端保持原样。
+
+原生 158/158、核心 106/106、Windows 31/31 与 Android 生产 Java 格式互通 26/26 通过；网络与文件交换是实际 API，系统上下文/密码是合成输入，没有在这些测试中提交 Windows 账户认证。手机到 VM 的 Keystore 签名、网络、安装/卸载和实际返回桌面仍需用户按 [新教程](vm-phone-bridge-test.md)执行。本轮不操作 VM，ADB 无设备；不将旧本地模拟结果沿用到手机模式。

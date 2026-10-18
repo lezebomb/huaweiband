@@ -69,6 +69,8 @@ internal static class Program
         { using var response = await client.PostAsJsonAsync("/v1/poll", Poll() with { Signature = "AAAA" }); Assert(response.StatusCode == HttpStatusCode.Unauthorized); });
         await Test("HTTPS no configuration / enrollment route", async () =>
         { using var response = await client.PostAsJsonAsync("/v1/enroll", device); Assert(response.StatusCode == HttpStatusCode.NotFound); });
+        await Test("normal agent does not expose VM native grant routes", async () =>
+        { using var response = await client.PostAsJsonAsync("/v2/windows/poll", Poll()); Assert(response.StatusCode == HttpStatusCode.NotFound); });
         await Test("malformed JSON is rejected", async () =>
         { using var response = await client.PostAsync("/v1/approval", new StringContent("{}", System.Text.Encoding.UTF8, "application/json")); Assert((int)response.StatusCode is >= 400 and < 500); });
         await Test("HTTPS refuses a wrong certificate pin", async () =>
@@ -115,6 +117,7 @@ internal static class Program
             await stdout; if (process.ExitCode != 0) throw new Exception(await stderr);
             Assert(File.ReadAllText(Path.Combine(state, "fixture-count.txt")) == "2");
         });
+        await WindowsGrantRelayIntegrationTests.RunAsync(Test, dir);
         var report = new { generatedAt = DateTimeOffset.UtcNow, total = tests.Count, passed = tests.Count - failed, failed, tests };
         File.WriteAllText(args.FirstOrDefault() ?? "artifacts/windows-tests.json", JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true }));
         Console.WriteLine($"{tests.Count - failed}/{tests.Count} passed"); return failed == 0 ? 0 : 1;

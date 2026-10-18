@@ -93,7 +93,7 @@ class BandKeyCredential final : public ICredentialProviderCredential2 {
     }
     bool CurrentPolicy() const {
         auto current = GrantPolicy();
-        return current.enabled && current.mode == 2 && current.sid == sid && current.publicKey == policy.publicKey;
+        return current.enabled && current.mode == 2 && current.signerKind == policy.signerKind && current.sid == sid && current.publicKey == policy.publicKey;
     }
     void EnsureChallenge() {
         if (policy.mode != 2 || attempted || grant || !GrantIsSystem() || !CurrentPolicy()) return;

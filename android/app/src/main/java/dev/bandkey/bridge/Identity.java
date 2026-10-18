@@ -11,19 +11,24 @@ import org.json.JSONObject;
 
 final class Identity {
     private final KeyStore store;
-    Identity() throws Exception {
+    private final String alias;
+    Identity() throws Exception {this("bandkey-identity-v1");}
+    Identity(String alias) throws Exception {
+        this.alias=alias;
         store = KeyStore.getInstance("AndroidKeyStore"); store.load(null);
-        if (!store.containsAlias("bandkey-identity-v1")) {
+        if (!store.containsAlias(alias)) {
             KeyPairGenerator gen = KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, "AndroidKeyStore");
-            gen.initialize(new KeyGenParameterSpec.Builder("bandkey-identity-v1", KeyProperties.PURPOSE_SIGN | KeyProperties.PURPOSE_VERIFY)
+            gen.initialize(new KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_SIGN | KeyProperties.PURPOSE_VERIFY)
                 .setAlgorithmParameterSpec(new ECGenParameterSpec("secp256r1")).setDigests(KeyProperties.DIGEST_SHA256)
                 .setUserAuthenticationRequired(false).build()); gen.generateKeyPair();
         }
     }
-    String publicKey() throws Exception { return b64(store.getCertificate("bandkey-identity-v1").getPublicKey().getEncoded()); }
+    String publicKey() throws Exception { return b64(store.getCertificate(alias).getPublicKey().getEncoded()); }
+    byte[] nativePublicKey()throws Exception{return WindowsGrantWire.exportNative(store.getCertificate(alias).getPublicKey());}
+    byte[] signNative(byte[] body)throws Exception{return WindowsGrantWire.sign(body,(PrivateKey)store.getKey(alias,null));}
     String deviceId() throws Exception { return hex(MessageDigest.getInstance("SHA-256").digest(Base64.decode(publicKey(), Base64.NO_WRAP))); }
     String sign(String text) throws Exception {
-        return Wire.sign((PrivateKey)store.getKey("bandkey-identity-v1", null),text);
+        return Wire.sign((PrivateKey)store.getKey(alias, null),text);
     }
     JSONObject export() throws Exception {
         return new JSONObject().put("deviceId",deviceId()).put("name", android.os.Build.MODEL + " · BandKey").put("publicKey",publicKey());

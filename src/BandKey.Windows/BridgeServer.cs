@@ -17,7 +17,7 @@ public sealed class BridgeServer : IAsyncDisposable
 {
     private WebApplication? app;
     public async Task StartAsync(AppSettings settings, X509Certificate2 cert, AuthorizationBroker broker,
-        Action<ApprovalResult> result, CancellationToken cancellationToken = default, AuthenticationCoordinator? authentication = null)
+        Action<ApprovalResult> result, CancellationToken cancellationToken = default, AuthenticationCoordinator? authentication = null, WindowsGrantRelay? windowsRelay = null)
     {
         var builder = WebApplication.CreateSlimBuilder();
         builder.Logging.ClearProviders();
@@ -59,6 +59,23 @@ public sealed class BridgeServer : IAsyncDisposable
             catch (Exception e) when (e is ArgumentException or FormatException or NullReferenceException)
             { return Results.BadRequest(); }
         });
+        // This route exists only in the explicitly started, VM-guarded phone experiment.
+        if (windowsRelay != null)
+        {
+            app.MapPost("/v2/windows/poll", (PollRequest request) =>
+            {
+                try { var prompt = windowsRelay.Poll(request); return prompt == null ? Results.NoContent() : Results.Json(prompt); }
+                catch (UnauthorizedAccessException) { return Results.Unauthorized(); }
+                catch (Exception error) when (error is ArgumentException or FormatException or System.Security.Cryptography.CryptographicException) { return Results.BadRequest(); }
+                catch (IOException) { return Results.StatusCode(503); }
+            });
+            app.MapPost("/v2/windows/decision", (WindowsGrantDecision request) =>
+            {
+                try { var status = windowsRelay.Decide(request); return Results.Json(status, statusCode: status.Authorized || status.Code == "user-denied" ? 200 : 403); }
+                catch (Exception error) when (error is ArgumentException or FormatException or System.Security.Cryptography.CryptographicException) { return Results.BadRequest(); }
+                catch (IOException) { return Results.StatusCode(503); }
+            });
+        }
         await app.StartAsync(cancellationToken);
     }
     public async ValueTask DisposeAsync()

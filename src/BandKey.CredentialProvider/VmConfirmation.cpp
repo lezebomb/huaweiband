@@ -31,7 +31,7 @@ static void Disarm(const wchar_t* status) { signer.reset(); armedAt = 0; Status(
 static void Arm(bool invalidSignature) {
     signer.reset(); armedAt = 0;
     NativeRequire(IsSupportedVmwareGuest() && !GetSystemMetrics(SM_REMOTESESSION), "supported-local-VM-required");
-    auto current = ReadLabPolicy(); NativeRequire(current.enabled && current.mode == 2 && current.sid == policy.sid && current.publicKey == policy.publicKey, "experiment-not-installed-or-changed");
+    auto current = ReadLabPolicy(); NativeRequire(current.enabled && current.mode == 2 && current.signerKind == 0 && current.sid == policy.sid && current.publicKey == policy.publicKey, "experiment-not-installed-or-changed");
     auto root = LabInstallDirectory(); auto exchange = root / L"Exchange"; CheckNoReparseDirectory(root); CheckNoReparseDirectory(exchange);
     auto encrypted = ReadBoundedFile(exchange / L"signer.dpapi", 16384); ProtectedBytes privateKey; DecryptSecret(encrypted, policy.sid, privateKey);
     auto key = std::make_unique<SigningKey>(); key->Import(privateKey.blob.pbData, privateKey.blob.cbData, true);
