@@ -33,3 +33,11 @@ Wear Engine 申请状态为用户反馈的“审核中”。本阶段不重复�
 本阶段核心测试 82/82、Windows 集成 11/11。新增测试的系统状态及后端由测试替身提供，不是实际解锁证据。首次在受限上下文启动独立测试时遇到 Windows 加密组件异常，正常用户环境运行成功；已补上命令行失败报告与退出码，受限环境重测返回失败而不弹崩溃框。
 
 Windows 11 专用虚拟机已创建；微软官方中文 x64 Enterprise 评估镜像尚在下载，完成后需先核验官方 SHA-256。现有 Ubuntu22.04 的 VMX 哈希在创建前后保持一致。虚拟磁盘、镜像、加密材料和本机测试报告全部排除 Git。真实登录组件只在完成安装、建立基线快照后继续验证。
+
+## 虚拟机准备阶段
+
+官方 Windows 11 Enterprise 26H2 中文 x64 评估 ISO 下载完成，大小 8,548,628,480 字节，整份文件 SHA-256 为 `b37a06d5121eee017826c0b133250bbd21bec694c2d607c60edd29090e667a84`，与[微软公布值](https://support.microsoft.com/en-us/servicing/os/windows/docs/2026/09/verify-the-authenticity-of-a-windows-11-enterprise-evaluation-iso-file)一致。本地 `virtualmachine/iso-verification.json` 保存来源及校验时间，不进入 Git。
+
+镜像只挂载到新建的 BandKey-Win11。该虚拟机的磁盘为自身独立的 80 GiB VMDK，没有物理磁盘或 Ubuntu 磁盘附件；正常用户上下文的 VMware CLI 确认仅该新虚拟机在运行。现有 Ubuntu22.04 配置校验仍保持原值。
+
+用户已手动通过 EFI 光驱引导，Windows 安装程序已打开。当前 VMware 窗口缩成约 344×406，自动化放大操作未生效，已暂停输入，请用户先最大化窗口以便完整核对选项。Windows 安装、首次账户配置、Guest Tools、系统基线快照以及真实登录验证仍未完成；不能把准备好镜像视为已安装 Windows。
