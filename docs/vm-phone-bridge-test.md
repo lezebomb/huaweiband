@@ -2,7 +2,9 @@
 
 本阶段交付的是「手机明确点击 → 固定证书 HTTPS → 原生一次性签名 → VM 本地账户认证」的软件链路。手机测试按钮代替手环；不验证距离，不调用 Wear Engine。旧版 **lifecycle fix 2 本地模拟确认**已获用户有效解锁及三项反例反馈；本次手机链路是新版本，必须重新在 VM 验证，不能沿用旧结果。
 
-所有 VM 操作由用户执行。保留 BandKey-Win11 的基线快照和原有系统密码登录；不要选择 Ubuntu。不要在主力 Windows 安装实验 Provider，也不要输入宿主机密码或 PIN。
+下文提供可手动执行的完整步骤。保留 BandKey-Win11 的基线快照和原有系统密码登录；不要选择 Ubuntu。不要在主力 Windows 安装实验 Provider，也不要输入宿主机密码或 PIN。
+
+不要求同一 Wi-Fi：[USB 开发传输](usb-transport-test.md)已有合成账户真机通过记录，[独立 BLE 传输](ble-phone-transport.md)已完成软件实现与模拟测试、尚未硬件验证。使用这些通道时，手机配置 endpoint 为本机回环地址，仍核对实际 VM 的完整电脑公钥与 TLS 指纹；来宾中继依然监听 VM 私网。
 
 ## 1. 准备文件和手机公钥
 

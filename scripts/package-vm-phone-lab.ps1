@@ -9,7 +9,7 @@ if(!$SkipBuild){
 }
 $bandKeyInput=Join-Path $bandKeyRoot 'artifacts\bandkey-provider-lab'
 $bandKeyPublished=Join-Path $bandKeyRoot 'artifacts\BandKey-win-x64'
-$bandKeyReports=@('artifacts/core-tests.json','artifacts/windows-tests.json','artifacts/bandkey-provider-lab/tests.json','artifacts/bandkey-provider-lab/grant-interop.json','artifacts/bandkey-provider-lab/java-grant-interop.json','artifacts/android-runtime-tests.json')
+$bandKeyReports=@('artifacts/core-tests.json','artifacts/windows-tests.json','artifacts/bandkey-provider-lab/tests.json','artifacts/bandkey-provider-lab/grant-interop.json','artifacts/bandkey-provider-lab/java-grant-interop.json','artifacts/android-runtime-tests.json','artifacts/android-ble-codec-tests.json','artifacts/ble-codec-interop/interop.json')
 foreach($bandKeyReportPath in $bandKeyReports){
     $bandKeyReport=Get-Content -LiteralPath $bandKeyReportPath -Raw | ConvertFrom-Json
     if($bandKeyReport.failed -ne 0 -or $bandKeyReport.passed -le 0){throw "Failed/missing verification: $bandKeyReportPath"}
@@ -39,6 +39,7 @@ if(!(Test-Path -LiteralPath (Join-Path $bandKeyBridge 'BandKey.exe')) -or !(Test
 Copy-Item -LiteralPath (Join-Path $bandKeyRoot 'artifacts\BandKey-bridge-debug.apk') -Destination $bandKeyOutput
 Copy-Item -LiteralPath (Join-Path $bandKeyRoot 'docs\vm-phone-bridge-test.md') -Destination (Join-Path $bandKeyOutput 'READ-ME-FIRST.txt')
 Copy-Item -LiteralPath (Join-Path $bandKeyRoot 'docs\vm-phone-relay-protocol.md') -Destination $bandKeyOutput
+foreach($bandKeyTransportDoc in @('usb-transport-test.md','ble-phone-transport.md')){Copy-Item -LiteralPath (Join-Path $bandKeyRoot ('docs\'+$bandKeyTransportDoc)) -Destination $bandKeyOutput}
 $bandKeyFiles=@(Get-ChildItem -LiteralPath $bandKeyOutput -Recurse -File | Sort-Object FullName | ForEach-Object {
     $bandKeyName=[IO.Path]::GetRelativePath($bandKeyOutput,$_.FullName) -replace '\\','/'
     if($bandKeyName -match '(?i)(^|/)(runtime|Vault|Exchange)/|\.(dpapi|pfx|p12|key|keystore|jks)$'){throw "Unexpected runtime/private material: $bandKeyName"}
@@ -51,6 +52,7 @@ $bandKeyFiles=@(Get-ChildItem -LiteralPath $bandKeyOutput -Recurse -File | Sort-
     signerKind=1;phoneKeyIncluded=$false;localSimulationSignerCreatedInPhoneMode=$false
     nativeStaticAnalysisPassed=$true;guestTested=$false;androidKeystoreHardwareTested=$false
     phoneToGuestUnlockTested=$false;hostRegistrationPerformed=$false;productionBackendEnabled=$false
+    blePhoneTransportImplemented=$true;blePhysicalHardwareVerified=$false;currentApkInstalledOnPhone=$false
     previousLocalSimulationGuestResult='user reported valid automatic unlock, no-confirm/replay refusal, invalid signature refusal, client Arm expiry refusal; not this phone mode'
     tests=@($bandKeyReports | ForEach-Object { $bandKeyReport=Get-Content -LiteralPath $_ -Raw | ConvertFrom-Json; [ordered]@{report=$_;passed=$bandKeyReport.passed;failed=$bandKeyReport.failed} })
     files=$bandKeyFiles

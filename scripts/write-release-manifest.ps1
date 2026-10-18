@@ -5,9 +5,12 @@ Set-Location -LiteralPath $bandKeyRoot
 $bandKeyCore=Get-Content artifacts/core-tests.json -Raw | ConvertFrom-Json
 $bandKeyWindows=Get-Content artifacts/windows-tests.json -Raw | ConvertFrom-Json
 $bandKeyAndroidRuntime=Get-Content artifacts/android-runtime-tests.json -Raw | ConvertFrom-Json
+$bandKeyBleCodec=Get-Content artifacts/android-ble-codec-tests.json -Raw | ConvertFrom-Json
+$bandKeyBleInterop=Get-Content artifacts/ble-codec-interop/interop.json -Raw | ConvertFrom-Json
 $bandKeyFlow=Get-Content artifacts/flow-lab.json -Raw | ConvertFrom-Json
 $bandKeyProvider=Get-Content artifacts/credential-provider-lab/tests.json -Raw | ConvertFrom-Json
 if($bandKeyCore.failed -ne 0 -or $bandKeyWindows.failed -ne 0 -or $bandKeyAndroidRuntime.failed -ne 0){throw 'Cannot record a release with failing tests.'}
+if($bandKeyBleCodec.failed -ne 0 -or $bandKeyBleCodec.passed -ne 22 -or $bandKeyBleInterop.failed -ne 0 -or $bandKeyBleInterop.passed -ne 1001 -or $bandKeyBleInterop.physicalBleTested){throw 'Missing or inaccurate BLE software verification.'}
 if($bandKeyFlow.failed -ne 0 -or !$bandKeyFlow.simulated -or $bandKeyFlow.realWindowsAuthenticationTested -or $bandKeyProvider.failed -ne 0 -or $bandKeyProvider.registered -or $bandKeyProvider.windowsAuthenticationSubmitted){throw 'Unsafe or failing lab report.'}
 [xml]$bandKeyLint=Get-Content android/app/build/reports/lint-results-debug.xml -Raw
 $bandKeyErrors=@($bandKeyLint.issues.issue | Where-Object {$_.severity -in @('Error','Fatal')}).Count
@@ -27,6 +30,8 @@ $bandKeyFiles=foreach($bandKeyRelative in @('artifacts/BandKey-win-x64.zip','art
   generatedAt=[DateTimeOffset]::Now.ToString('O');version='0.1.0'
   coreTestsPassed=$bandKeyCore.passed;windowsTestsPassed=$bandKeyWindows.passed
   androidRuntimeTestsPassed=$bandKeyAndroidRuntime.passed
+  androidBleCodecChecksPassed=$bandKeyBleCodec.passed;bleCrossLanguageChecksPassed=$bandKeyBleInterop.passed
+  blePhysicalHardwareVerified=$false
   simulatedFlowTestsPassed=$bandKeyFlow.passed;referenceProviderInterfaceChecksPassed=$bandKeyProvider.passed
   referenceProviderRegistered=$false;windowsAuthenticationSubmitted=$false
   windowsSelfContainedProbeSucceeded=[bool]$PublishedProbeSucceeded

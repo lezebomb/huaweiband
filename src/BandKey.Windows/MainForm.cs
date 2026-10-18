@@ -48,6 +48,7 @@ public sealed class MainForm : Form
         var s = agent.Settings; autoLock.Checked = s.AutoLock; missingLock.Checked = s.Presence.LockOnMissingSignal; bridge.Checked = s.BridgeEnabled;
         near.Value = s.Presence.NearRssi; far.Value = s.Presence.FarRssi; delay.Value = (decimal)s.Presence.FarSeconds; missingDelay.Value = (decimal)s.Presence.MissingSeconds; listen.Text = s.ListenAddress;
         var menu = new ContextMenuStrip(); menu.Items.Add("打开 BandKey", null, (_, _) => { Show(); WindowState = FormWindowState.Normal; Activate(); });
+        menu.Items.Add("手机 BLE 通信实验",null,(_,_)=>{using var helper=new BleBridgeForm(new Store(Path.Combine(agent.Store.DirectoryPath,"ble-bridge")));helper.ShowDialog(this);});
         menu.Items.Add("退出", null, (_, _) => { exiting = true; Close(); });
         tray = new NotifyIcon { Text = "BandKey", Icon = SystemIcons.Shield, ContextMenuStrip = menu, Visible = true };
         tray.DoubleClick += (_, _) => { Show(); Activate(); };

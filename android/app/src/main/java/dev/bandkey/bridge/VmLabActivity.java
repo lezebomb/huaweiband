@@ -23,6 +23,9 @@ public final class VmLabActivity extends Activity {
     private volatile boolean active;
     private boolean configDialogOpen;
     private boolean pollingRequested;
+    private BlePhonePeripheral ble;
+    private TextView bleStatus;
+    private int bleGeneration;
     private String nativeFingerprint="";
     private android.content.SharedPreferences prefs(){return getSharedPreferences("bandkey-vm-phone-lab",MODE_PRIVATE);}
     @Override public void onCreate(Bundle saved){
@@ -39,6 +42,9 @@ public final class VmLabActivity extends Activity {
         approve=button(column,"确认本次 VM 解锁（测试按钮）",()->decide(true));deny=button(column,"拒绝本次请求",()->decide(false));approve.setEnabled(false);deny.setEnabled(false);
         button(column,"停止轮询并取消待确认请求",()->{pollingRequested=false;stopWork();show("已停止。已经交付的签名不能由此撤回；原生一次性及有效期检查仍适用。");});
         button(column,"启动轮询",this::startWork);
+        bleStatus=new TextView(this);bleStatus.setText("BLE 传输未启动；仅在此页面前台运行。");column.addView(bleStatus);
+        button(column,"启动前台 BLE 传输（不需要同一 Wi-Fi）",this::startBle);
+        button(column,"停止 BLE 传输",()->{bleGeneration++;if(ble!=null)ble.close();ble=null;bleStatus.setText("BLE 已停止；待处理连接已取消。");});
         try{
             identity=new Identity("bandkey-vm-lab-identity-v1");byte[] publicKey=identity.nativePublicKey();nativeFingerprint=Identity.hex(MessageDigest.getInstance("SHA-256").digest(publicKey));
             try(OutputStream out=openFileOutput("vm-lab-public.bandkeypub",MODE_PRIVATE)){out.write(publicKey);}
@@ -76,7 +82,12 @@ public final class VmLabActivity extends Activity {
         try{worker.execute(()->{try{if(!active || gate!=current || !current.canSubmit(selected))return;JSONObject result=target.decide(prompt,yes);showCurrent(current,result.optBoolean("submitted")?"签名已交给原生组件；请观察 VM 是否实际进入桌面。此响应不宣称 Windows 已解锁。":"请求结果："+result.optString("code","unknown"));}catch(Exception error){showCurrent(current,"提交失败或已过期："+errorCode(error));}});}catch(RejectedExecutionException ignored){}
     }
     @Override protected void onResume(){super.onResume();if(pollingRequested && !configDialogOpen && identity!=null && prefs().getString("pc",null)!=null)startWork();}
-    @Override protected void onPause(){stopWork();super.onPause();}
+    private void startBle(){
+        if(Build.VERSION.SDK_INT>=31 && (checkSelfPermission(android.Manifest.permission.BLUETOOTH_ADVERTISE)!=android.content.pm.PackageManager.PERMISSION_GRANTED || checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT)!=android.content.pm.PackageManager.PERMISSION_GRANTED)){requestPermissions(new String[]{android.Manifest.permission.BLUETOOTH_ADVERTISE,android.Manifest.permission.BLUETOOTH_CONNECT},30);return;}
+        final int generation=++bleGeneration;if(ble!=null)ble.close();ble=new BlePhonePeripheral(this,19443,text->runOnUiThread(()->{if(generation==bleGeneration)bleStatus.setText(text);}));
+        try{ble.start();bleStatus.setText("正在启动 BLE；电脑需显式连接 BandKey 手机服务。配置 endpoint 应为 https://127.0.0.1:19443，保留实际 VM TLS 和电脑身份。回环连接自动禁用 HTTP 长连接。");}catch(Exception error){ble.close();ble=null;bleStatus.setText("BLE 不可用："+error.getClass().getSimpleName());}
+    }
+    @Override protected void onPause(){stopWork();bleGeneration++;if(ble!=null)ble.close();ble=null;if(bleStatus!=null)bleStatus.setText("已离开页面，BLE 传输已停止。返回后需重新启动。");super.onPause();}
     @Override protected void onActivityResult(int request,int result,Intent data){
         super.onActivityResult(request,result,data);if(result!=RESULT_OK || data==null || data.getData()==null || identity==null)return;
         try{

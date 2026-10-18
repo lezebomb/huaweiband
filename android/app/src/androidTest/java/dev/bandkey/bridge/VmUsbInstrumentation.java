@@ -29,13 +29,14 @@ public final class VmUsbInstrumentation extends Instrumentation {
             // this explicit, foreground test alive without changing battery policy.
             runOnMainSync(()->getTargetContext().startActivity(new android.content.Intent(getTargetContext(),MainActivity.class).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK).putExtra("bandkeyVmLab",true)));
             android.os.PowerManager power=(android.os.PowerManager)getTargetContext().getSystemService(android.content.Context.POWER_SERVICE);
-            wake=power.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK,"BandKey:UsbInstrumentation");wake.acquire(90000);
+            wake=power.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK,"BandKey:UsbInstrumentation");wake.acquire(arguments.getString("mode","").equals("ble")?180000:90000);
             String mode=arguments.getString("mode","export");Identity normal=new Identity();String original=normal.deviceId();Identity lab=new Identity("bandkey-vm-lab-identity-v1");
             write("phone-public.bin",lab.nativePublicKey());check("phone lab key differs from normal bridge identity",!lab.deviceId().equals(original));
             KeyStore store=KeyStore.getInstance("AndroidKeyStore");store.load(null);PrivateKey privateKey=(PrivateKey)store.getKey("bandkey-vm-lab-identity-v1",null);
             KeyInfo info=KeyFactory.getInstance(privateKey.getAlgorithm(),"AndroidKeyStore").getKeySpec(privateKey,KeyInfo.class);
             report.put("keyInsideSecureHardware",info.isInsideSecureHardware());
-            if(!mode.equals("export")){
+            if(mode.equals("ble")){report.put("ble",VmBleInstrumentation.run(getTargetContext(),lab,arguments.getString("runId",""),checks));}
+            else if(!mode.equals("export")){
                 String text;try(InputStream input=new FileInputStream(output("pc.json"))){text=new String(Wire.readBounded(input,8192),StandardCharsets.UTF_8);}
                 JSONObject config=new JSONObject(text);
                 check("test is restricted to the USB loopback synthetic fixture",config.getString("endpoint").equals("https://127.0.0.1:19444") && config.optString("purpose").equals("bandkey-usb-instrumentation-v1"));

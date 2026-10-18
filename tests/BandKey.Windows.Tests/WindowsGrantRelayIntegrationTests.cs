@@ -8,7 +8,7 @@ internal static class WindowsGrantRelayIntegrationTests
 {
     private const string Sid = "S-1-5-21-111-222-333-1001";
     private static void Check(bool value) { if (!value) throw new Exception("VM relay assertion failed"); }
-    private sealed class Fixture : IAsyncDisposable
+    internal sealed class Fixture : IAsyncDisposable
     {
         internal readonly ECDsa Pc = ECDsa.Create(ECCurve.NamedCurves.nistP256), Phone = ECDsa.Create(ECCurve.NamedCurves.nistP256);
         internal readonly BridgeServer Server = new();

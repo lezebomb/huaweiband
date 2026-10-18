@@ -7,6 +7,23 @@ internal static class Program
     [STAThread]
     public static void Main(string[] args)
     {
+        if(args.Contains("--ble-bridge") || args.Contains("--render-ble-settings"))
+        {
+            ApplicationConfiguration.Initialize();
+            try{
+                var output=Arg(args,"--output");var bleData=Arg(args,"--data")??Path.Combine(AppContext.BaseDirectory,"runtime","ble-bridge");
+                using var form=new BleBridgeForm(new Store(bleData));
+                if(args.Contains("--render-ble-settings")){
+                    if(output==null)throw new ArgumentException("Missing render output");form.ShowInTaskbar=false;form.Opacity=0;form.Show();Application.DoEvents();form.PerformLayout();var surface=form.Controls[0];using var bitmap=new Bitmap(surface.Width,surface.Height);surface.DrawToBitmap(bitmap,new Rectangle(Point.Empty,surface.Size));bitmap.Save(output);form.Close();
+                }else Application.Run(form);
+            }catch(Exception){Environment.ExitCode=2;}
+            return;
+        }
+        if(args.Contains("--ble-tunnel"))
+        {
+            var output=Arg(args,"--output");
+            RunBleTunnel(args,output).GetAwaiter().GetResult();return;
+        }
         if(args.Contains("--usb-tunnel"))
         {
             try
@@ -93,6 +110,16 @@ internal static class Program
         if(ready!=null)File.WriteAllText(ready,"ready");
         for(int elapsed=0;elapsed<seconds && (stopFile==null || !File.Exists(stopFile));elapsed++)await Task.Delay(1000);
         if(output!=null)File.WriteAllText(output,JsonSerializer.Serialize(new{tunnel.Accepted,tunnel.Rejected,tunnel.Failed,loopbackOnly=true,tlsTerminated=false,windowsAuthenticationSubmitted=false},Store.Json));
+    }
+    private static async Task RunBleTunnel(string[] args,string? output)
+    {
+        await using var tunnel=new BlePhoneTunnel();bool passed=false;string? error=null;
+        try{
+            var target=System.Net.IPAddress.Parse(Arg(args,"--target")??throw new ArgumentException("Missing private target"));
+            var seconds=int.TryParse(Arg(args,"--seconds"),out var value)?Math.Clamp(value,1,7200):1800;
+            await tunnel.RunAsync(target,19443,TimeSpan.FromSeconds(seconds),Arg(args,"--ready"),Arg(args,"--stop-file"));passed=true;
+        }catch(Exception failure){error=failure.GetType().Name;Environment.ExitCode=2;}
+        if(output!=null)File.WriteAllText(output,JsonSerializer.Serialize(new{passed,error,tunnel.Stage,tunnel.Mtu,tunnel.Streams,tunnel.SentBytes,tunnel.ReceivedBytes,tlsTerminated=false,windowsAuthenticationSubmitted=false},Store.Json));
     }
     private static async Task ProbeAsync(string[] args)
     {

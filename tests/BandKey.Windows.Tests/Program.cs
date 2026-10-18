@@ -11,6 +11,7 @@ internal static class Program
     [STAThread]
     public static int Main(string[] args)
     {
+        if(args.Length==2 && args[0]=="--phone-ble-tunnel")return PhoneBleTunnelLab.Run(args[1]).GetAwaiter().GetResult();
         if(args.Contains("--phone-usb-lab")) return PhoneUsbLab.RunAsync(args).GetAwaiter().GetResult();
         if (args.Contains("--tray"))
         {
@@ -120,6 +121,7 @@ internal static class Program
         });
         await WindowsGrantRelayIntegrationTests.RunAsync(Test, dir);
         await UsbTunnelIntegrationTests.RunAsync(Test);
+        await BleBridgeIntegrationTests.RunAsync(Test,dir);
         var report = new { generatedAt = DateTimeOffset.UtcNow, total = tests.Count, passed = tests.Count - failed, failed, tests };
         File.WriteAllText(args.FirstOrDefault() ?? "artifacts/windows-tests.json", JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true }));
         Console.WriteLine($"{tests.Count - failed}/{tests.Count} passed"); return failed == 0 ? 0 : 1;

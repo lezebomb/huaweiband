@@ -10,3 +10,7 @@ New-Item -ItemType Directory -Force -Path $bandKeyClasses | Out-Null
 if($LASTEXITCODE -ne 0){throw 'Android runtime test compilation failed'}
 & $bandKeyJava -cp $bandKeyClasses dev.bandkey.bridge.BridgeRuntimeTests 'artifacts/android-runtime-tests.json'
 if($LASTEXITCODE -ne 0){throw 'Android runtime lifecycle tests failed'}
+& $bandKeyJavac -encoding UTF-8 -d $bandKeyClasses 'android/app/src/main/java/dev/bandkey/bridge/BlePipeFrame.java' 'tests/interop/BlePipeCodecTests.java'
+if($LASTEXITCODE -ne 0){throw 'BLE production codec compilation failed'}
+& $bandKeyJava -cp $bandKeyClasses dev.bandkey.bridge.BlePipeCodecTests 'artifacts/android-ble-codec-tests.json'
+if($LASTEXITCODE -ne 0){throw 'BLE production codec tests failed'}

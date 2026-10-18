@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using BandKey.Core;
 
+if(args.Length==2 && args[0] is "--ble-vectors" or "--verify-ble-java")return BleCodecInterop.Run(args[0],Path.GetFullPath(args[1]));
 var tests = new List<object>(); int failed = 0;
 void Test(string name, Action action)
 {
@@ -70,6 +71,7 @@ Test("authentication adapter fails closed", () => { var backend = new Unavailabl
 SafetyTests.Run(Test);
 AuthenticationTests.Run(Test);
 WindowsGrantRelayTests.Run(Test);
+BlePipeTests.Run(Test);
 var report = new { generatedAt = DateTimeOffset.UtcNow, total = tests.Count, passed = tests.Count - failed, failed, tests };
 var output = args.FirstOrDefault() ?? "core-tests.json"; Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(output))!);
 File.WriteAllText(output, JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true }));

@@ -30,11 +30,11 @@ internal static class PhoneUsbLab
         bool Current()=>!File.Exists(Path.Combine(root,"revoked"));
         var exchange=new RecordingExchange(new(root,Sid,5,Current),root);var relay=new WindowsGrantRelay(pc,device,exchange,Current);
         await using var server=new BridgeServer();await server.StartAsync(new AppSettings{ListenAddress=IPAddress.Loopback.ToString(),Port=19445},cert,new AuthorizationBroker(relay.PcId,pc),_=>{},windowsRelay:relay);
-        await using var tunnel=new LoopbackTcpTunnel(19444,IPAddress.Loopback,19445);tunnel.Start();
-        File.WriteAllText(Path.Combine(root,"pc.json"),JsonSerializer.Serialize(new{endpoint="https://127.0.0.1:19444",pcId=relay.PcId,pcPublicKey=Protocol.ExportPublicKey(pc),certificateSha256=BridgeServer.CertificatePin(cert),protocol="bandkey-vm-phone-v1",testOnly=true,purpose="bandkey-usb-instrumentation-v1"},Store.Json));
+        bool ble=args.Contains("--ble");await using var tunnel=ble?null:new LoopbackTcpTunnel(19444,IPAddress.Loopback,19445);tunnel?.Start();
+        File.WriteAllText(Path.Combine(root,"pc.json"),JsonSerializer.Serialize(new{endpoint="https://127.0.0.1:19444",pcId=relay.PcId,pcPublicKey=Protocol.ExportPublicKey(pc),certificateSha256=BridgeServer.CertificatePin(cert),protocol="bandkey-vm-phone-v1",testOnly=true,purpose=ble?"bandkey-ble-instrumentation-v1":"bandkey-usb-instrumentation-v1",singleConnectionTransport=ble},Store.Json));
         NewRequest(root);File.WriteAllText(Path.Combine(root,"ready"),"ready");
         try {for(int i=0;i<600 && !File.Exists(Path.Combine(root,"stop"));i++)await Task.Delay(1000);}
-        finally {relay.Revoke();File.WriteAllText(Path.Combine(root,"host-result.json"),JsonSerializer.Serialize(new{submissions=exchange.Submissions,tunnelAccepted=tunnel.Accepted,loopbackOnly=true,tlsTerminated=false,syntheticAccount=true,windowsAuthenticationSubmitted=false,realWearableTested=false},Store.Json));}
+        finally {relay.Revoke();File.WriteAllText(Path.Combine(root,"host-result.json"),JsonSerializer.Serialize(new{submissions=exchange.Submissions,tunnelAccepted=tunnel?.Accepted??0,bleFixture=ble,loopbackOnly=true,tlsTerminated=false,syntheticAccount=true,windowsAuthenticationSubmitted=false,realWearableTested=false},Store.Json));}
         return 0;
     }
     private static void NewRequest(string root)

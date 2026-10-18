@@ -48,6 +48,7 @@ final class BridgeClient {
         connection.setHostnameVerifier((host,session)->host.equalsIgnoreCase(expectedHost));
         connection.setInstanceFollowRedirects(false);connection.setConnectTimeout(5000);connection.setReadTimeout(5000);
         connection.setRequestMethod("POST");connection.setDoOutput(true);connection.setRequestProperty("Content-Type","application/json");
+        if(config.optBoolean("singleConnectionTransport") || "127.0.0.1".equals(expectedHost)){connection.setRequestProperty("Connection","close");connection.setReadTimeout(15000);connection.setConnectTimeout(15000);}
         byte[] bytes=body.toString().getBytes(StandardCharsets.UTF_8);connection.setFixedLengthStreamingMode(bytes.length);
         try {
             try(OutputStream output=connection.getOutputStream()){output.write(bytes);}
