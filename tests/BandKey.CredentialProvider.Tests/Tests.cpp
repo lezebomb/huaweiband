@@ -1,5 +1,6 @@
 #define BANDKEY_UNIT_TEST
 #include "../../src/BandKey.CredentialProvider/Provider.cpp"
+#include "../../src/BandKey.CredentialProvider/LabCleanup.h"
 #include <bcrypt.h>
 #include <fstream>
 #include <filesystem>
@@ -75,6 +76,46 @@ int wmain(int argc, wchar_t** argv) {
     HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     try {
         check("COM initialized", SUCCEEDED(com));
+        {
+            auto root = std::filesystem::absolute(std::filesystem::path(argv[2]).parent_path()) / (L"cleanup-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
+            NativeRequire(CreateDirectoryW(root.c_str(), nullptr) != FALSE, "cleanup-fixture-unavailable");
+            const BYTE sample[] = {1, 2, 3}; auto source = root / L"source.bin", copied = root / L"copied.bin";
+            WriteNewFile(source, sample, sizeof(sample)); NativeRequire(SetFileAttributesW(source.c_str(), FILE_ATTRIBUTE_READONLY) != FALSE, "fixture-readonly-failed");
+            NativeRequire(CopyFileW(source.c_str(), copied.c_str(), TRUE) != FALSE, "fixture-copy-failed");
+            check("copy reproduces optical-disc read-only inheritance", (GetFileAttributesW(copied.c_str()) & FILE_ATTRIBUTE_READONLY) != 0);
+            BOOL oldDeleted = DeleteFileW(copied.c_str()); DWORD oldError = oldDeleted ? ERROR_SUCCESS : GetLastError();
+            check("old deletion fails on read-only copy with access denied", !oldDeleted && oldError == ERROR_ACCESS_DENIED);
+            check("fixed removal deletes read-only copy", RemoveOrdinaryLabFile(copied) == ERROR_SUCCESS && GetFileAttributesW(copied.c_str()) == INVALID_FILE_ATTRIBUTES);
+            NativeRequire(CopyFileW(source.c_str(), copied.c_str(), TRUE) != FALSE, "fixture-copy-failed");
+            check("installation clears copied file read-only attribute", PrepareCopiedLabFile(copied) == ERROR_SUCCESS && !(GetFileAttributesW(copied.c_str()) & FILE_ATTRIBUTE_READONLY));
+            check("installation leaves source attributes unchanged", (GetFileAttributesW(source.c_str()) & FILE_ATTRIBUTE_READONLY) != 0);
+            NativeHandle held; held.value = CreateFileW(copied.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+            NativeRequire(held.value != INVALID_HANDLE_VALUE, "fixture-hold-failed");
+            check("real sharing violation remains distinguishable", RemoveOrdinaryLabFile(copied) == ERROR_SHARING_VIOLATION);
+            CloseHandle(held.value); held.value = INVALID_HANDLE_VALUE;
+            check("removal succeeds after actual handle closes", RemoveOrdinaryLabFile(copied) == ERROR_SUCCESS);
+            check("repeated removal is idempotent", RemoveOrdinaryLabFile(copied) == ERROR_SUCCESS);
+            auto link = root / L"linked.bin"; NativeRequire(CreateHardLinkW(link.c_str(), source.c_str(), nullptr) != FALSE, "fixture-hardlink-failed");
+            check("hard-linked files refused before attribute mutation", RemoveOrdinaryLabFile(link) == ERROR_TOO_MANY_LINKS && PrepareCopiedLabFile(link) == ERROR_TOO_MANY_LINKS && (GetFileAttributesW(source.c_str()) & FILE_ATTRIBUTE_READONLY));
+            NativeRequire(SetFileAttributesW(source.c_str(), FILE_ATTRIBUTE_NORMAL) && DeleteFileW(link.c_str()), "fixture-hardlink-cleanup-failed");
+            check("single-link source can be removed", RemoveOrdinaryLabFile(source) == ERROR_SUCCESS);
+            auto unknown = root / L"notes.txt"; WriteNewFile(unknown, sample, sizeof(sample));
+            NativeHandle parentGuard; LabCleanupResult guarded;
+            NativeRequire(CheckCleanupDirectory(root, guarded, &parentGuard), "fixture-directory-guard-failed");
+            NativeHandle writeParent; writeParent.value = CreateFileW(root.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+            DWORD guardError = writeParent.value == INVALID_HANDLE_VALUE ? GetLastError() : ERROR_SUCCESS;
+            check("parent guard prevents directory substitution while permitting owned child removal", writeParent.value == INVALID_HANDLE_VALUE && guardError == ERROR_SHARING_VIOLATION && RemoveOrdinaryLabFile(unknown) == ERROR_SUCCESS);
+            CloseHandle(parentGuard.value); parentGuard.value = INVALID_HANDLE_VALUE;
+            WriteNewFile(unknown, sample, sizeof(sample));
+            LabCleanupResult result; result.Directory(root);
+            check("nonempty directory reports exact error without recursive deletion", !result.complete && result.issues.size() == 1 && result.issues[0].error == ERROR_DIR_NOT_EMPTY && GetFileAttributesW(unknown.c_str()) != INVALID_FILE_ATTRIBUTES);
+            check("exchange cleanup accepts only owned message names", IsLabExchangeFile(L"signer.dpapi") && IsLabExchangeFile(std::wstring(64, L'a') + L".request.approval") && !IsLabExchangeFile(L"notes.txt") && !IsLabExchangeFile(L"..\\other.request") && !IsLabExchangeFile(std::wstring(64, L'g') + L".request"));
+            LabCleanupResult invalidDirectory;
+            check("cleanup refuses wrong path types", RemoveOrdinaryLabFile(root) != ERROR_SUCCESS && (GetFileAttributesW(root.c_str()) & FILE_ATTRIBUTE_DIRECTORY) && !CheckCleanupDirectory(unknown, invalidDirectory) && !invalidDirectory.complete);
+            NativeRequire(RemoveOrdinaryLabFile(unknown) == ERROR_SUCCESS, "fixture-file-cleanup-failed");
+            LabCleanupResult empty; empty.Directory(root);
+            check("empty fixture directory removed", empty.complete && GetFileAttributesW(root.c_str()) == INVALID_FILE_ATTRIBUTES);
+        }
         {
             SigningKey key; key.Generate(); auto publicKey = key.Export(false);
             auto challenge = NewWindowsChallenge(TestSid, 5, 100000);

@@ -15,6 +15,7 @@
 #include <wincred.h>
 #include <strsafe.h>
 #include "SignedGrant.h"
+#include "LabCleanup.h"
 #include "LabPolicy.h"
 #include "ProviderHash.h"
 #pragma comment(linker, "/manifestdependency:\"type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='amd64' publicKeyToken='6595b64144ccf1df' language='*'\"")
@@ -125,25 +126,27 @@ static void EnrollVault(const std::filesystem::path& directory, const std::wstri
     SecureZeroMemory(privateKey.data(), privateKey.size());
     WriteNewFile(exchange / L"signer.dpapi", protectedKey.blob.pbData, protectedKey.blob.cbData);
 }
-static bool RemoveExperimentFiles(const std::filesystem::path& directory) {
-    bool removed = true;
+static void RemoveExperimentFiles(const std::filesystem::path& directory, LabCleanupResult& result) {
     auto vault = directory / L"Vault"; auto exchange = directory / L"Exchange";
-    if (GetFileAttributesW(vault.c_str()) != INVALID_FILE_ATTRIBUTES) {
-        CheckNoReparseDirectory(vault);
-        if (!DeleteFileW((vault / L"credential.dpapi").c_str()) && GetLastError() != ERROR_FILE_NOT_FOUND) removed = false;
-        if (!RemoveDirectoryW(vault.c_str())) removed = false;
+    NativeHandle vaultGuard;
+    if (CheckCleanupDirectory(vault, result, &vaultGuard)) {
+        result.File(vault / L"credential.dpapi");
+        CloseHandle(vaultGuard.value); vaultGuard.value = INVALID_HANDLE_VALUE;
+        result.Directory(vault);
     }
-    if (GetFileAttributesW(exchange.c_str()) != INVALID_FILE_ATTRIBUTES) {
-        CheckNoReparseDirectory(exchange);
-        // No recursion: only ordinary files within this owned exchange directory.
+    NativeHandle exchangeGuard;
+    if (CheckCleanupDirectory(exchange, result, &exchangeGuard)) {
+        // No recursion: only known experiment message names. Unknown leftovers stay visible.
         WIN32_FIND_DATAW entry{}; HANDLE find = FindFirstFileW((exchange / L"*").c_str(), &entry);
         if (find != INVALID_HANDLE_VALUE) {
-            do { if (!(entry.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && !DeleteFileW((exchange / entry.cFileName).c_str())) removed = false; } while (FindNextFileW(find, &entry));
+            do { if (!(entry.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && IsLabExchangeFile(entry.cFileName)) result.File(exchange / entry.cFileName); } while (FindNextFileW(find, &entry));
             FindClose(find);
+        } else {
+            auto error = GetLastError(); if (error != ERROR_FILE_NOT_FOUND) result.Record(exchange, error);
         }
-        if (!RemoveDirectoryW(exchange.c_str())) removed = false;
+        CloseHandle(exchangeGuard.value); exchangeGuard.value = INVALID_HANDLE_VALUE;
+        result.Directory(exchange);
     }
-    return removed;
 }
 static std::string FileHash(const std::filesystem::path& path) {
     BCRYPT_ALG_HANDLE algorithm = nullptr; BCRYPT_HASH_HANDLE hash = nullptr;
@@ -182,6 +185,8 @@ static void Install() {
         CheckOrdinaryDirectory(directory); ProtectDirectory(directory);
         BOOL copied = CopyFileW(source.c_str(), destination.c_str(), TRUE);
         Require(copied != FALSE, L"Cannot copy provider DLL", copied ? ERROR_SUCCESS : GetLastError()); fileCopied = true;
+        auto attributeError = PrepareCopiedLabFile(destination);
+        Require(attributeError == ERROR_SUCCESS, L"Cannot normalize the copied DLL attributes", attributeError);
         Require(FileHash(destination) == BandKeyExpectedProviderHash, L"Copied DLL hash mismatch");
         std::vector<BYTE> publicKey; EnrollVault(directory, sid, account, publicKey);
         Key config; NewKey(BandKeyLabConfig, config); configCreated = true;
@@ -203,26 +208,40 @@ static void Install() {
         if (registrationCreated) DeleteOwnedKey(BandKeyLabRegistration);
         if (configCreated) DeleteOwnedKey(BandKeyLabConfig);
         if (comCreated) DeleteOwnedKey(BandKeyLabCom);
-        try { RemoveExperimentFiles(directory); } catch (...) {}
-        if (fileCopied) DeleteFileW(destination.c_str());
+        try { LabCleanupResult cleanup; RemoveExperimentFiles(directory, cleanup); } catch (...) {}
+        if (fileCopied) RemoveOrdinaryLabFile(destination);
         RemoveDirectoryW(directory.c_str()); throw;
     }
 }
-static bool Remove() {
-    // Only this lab's three exact registry subtrees and two fixed filesystem names.
+static LabCleanupResult Remove() {
+    // Only this lab's exact registry subtrees, fixed files and known message names.
     DWORD firstError = ERROR_SUCCESS;
     for (auto path : { BandKeyLabRegistration, BandKeyLabConfig, BandKeyLabCom }) {
         auto code = DeleteOwnedKey(path); if (code && !firstError) firstError = code;
     }
     Require(firstError == ERROR_SUCCESS, L"Could not remove all lab registration; restore the baseline snapshot if necessary", firstError);
     auto directory = InstallDirectory();
-    if (GetFileAttributesW(directory.c_str()) == INVALID_FILE_ATTRIBUTES) return true;
-    CheckOrdinaryDirectory(directory);
-    bool experimentRemoved = RemoveExperimentFiles(directory);
-    auto dll = directory / L"BandKey.CredentialProvider.dll";
-    if (!DeleteFileW(dll.c_str()) && GetLastError() != ERROR_FILE_NOT_FOUND) return false;
-    if (!RemoveDirectoryW(directory.c_str()) && GetLastError() != ERROR_PATH_NOT_FOUND) return false;
-    return experimentRemoved;
+    LabCleanupResult result;
+    NativeHandle directoryGuard;
+    if (!CheckCleanupDirectory(directory, result, &directoryGuard)) return result;
+    RemoveExperimentFiles(directory, result);
+    result.File(directory / L"BandKey.CredentialProvider.dll");
+    CloseHandle(directoryGuard.value); directoryGuard.value = INVALID_HANDLE_VALUE;
+    result.Directory(directory);
+    return result;
+}
+static std::wstring RemovalMessage(const LabCleanupResult& result) {
+    if (result.complete) return L"Lab registration and files removed. System providers were preserved.";
+    std::wstring text = L"Lab registration removed; some files remain. System providers were preserved.\n";
+    for (const auto& issue : result.issues) {
+        text += L"\n" + issue.path.wstring() + L"\nWindows error: " + std::to_wstring(issue.error);
+        if (issue.error == ERROR_SHARING_VIOLATION || issue.error == ERROR_LOCK_VIOLATION) text += L" (file in use: close the confirmation client; restart the VM if necessary)";
+        else if (issue.error == ERROR_ACCESS_DENIED) text += L" (access denied; do not change unrelated system permissions)";
+        else if (issue.error == ERROR_DIR_NOT_EMPTY) text += L" (directory contains remaining files; no recursive deletion was performed)";
+        else if (issue.error == ERROR_TOO_MANY_LINKS) text += L" (hard-linked file refused)";
+    }
+    text += L"\n\nUse this updated setup to retry. If it still fails, report this message; do not repeatedly restart without a sharing/lock error.";
+    return text;
 }
 int WINAPI wWinMain(_In_ HINSTANCE, _In_opt_ HINSTANCE, _In_ PWSTR, _In_ int) {
     int argc = 0; PWSTR* args = CommandLineToArgvW(GetCommandLineW(), &argc);
@@ -259,7 +278,7 @@ int WINAPI wWinMain(_In_ HINSTANCE, _In_opt_ HINSTANCE, _In_ PWSTR, _In_ int) {
         }
         Require(IsAdmin(), L"Administrator approval is required for this action");
         if (operation == L"--install") { Install(); MessageBoxW(nullptr, L"Signed-confirmation VM experiment installed. Enrollment credentials were verified; desktop unlock is still untested.\n\nStart BandKey.VmConfirmation.exe from the lab disc. Arm one confirmation, then manually lock the VM within 10 seconds.\n\nKeep the system password sign-in option. To roll back, run this setup and choose Remove.", L"BandKey VM lab", MB_OK | MB_ICONINFORMATION); }
-        else { bool filesRemoved = Remove(); MessageBoxW(nullptr, filesRemoved ? L"Lab registration and files removed. System providers were preserved." : L"Lab registration removed. The DLL or directory is still in use or not empty; restart the VM, then run Remove again. System providers were preserved.", L"BandKey VM lab", MB_OK | MB_ICONINFORMATION); }
+        else { auto result = Remove(); auto text = RemovalMessage(result); MessageBoxW(nullptr, text.c_str(), L"BandKey VM lab - cleanup fix 1", MB_OK | (result.complete ? MB_ICONINFORMATION : MB_ICONWARNING)); if (!result.complete) return 1; }
         return 0;
     } catch (const SetupFailure& error) { auto text = error.text + L"\nWindows error: " + std::to_wstring(error.code); MessageBoxW(nullptr, text.c_str(), L"BandKey VM lab - action not completed", MB_OK | MB_ICONERROR); }
     catch (const std::exception&) { MessageBoxW(nullptr, L"Setup failed. Use Remove or the VM baseline snapshot for recovery.", L"BandKey VM lab", MB_OK | MB_ICONERROR); }

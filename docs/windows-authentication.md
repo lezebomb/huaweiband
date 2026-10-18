@@ -59,6 +59,8 @@ Windows LogonUI 从 Credential Provider 取得序列化凭据，再交给 LSA/�
 
 用户随后反馈旧版安装、正确密码进入桌面、错误密码被拒绝、系统登录保留及移除正常。它是 [手动密码实验](vm-provider-test.md) 的用户反馈；组件故障和快照恢复仍未测。本轮模式 2 的自动认证必须另测，不能沿用旧版结果。
 
+**最新更正：**用户后续截图显示移除注册后仍有文件残留，重启也不能解决，因此完整卸载尚未通过。已实际复现 CopyFile 保留只读属性使旧 DeleteFile 访问拒绝，修复安装/卸载的属性处理并提供具体路径/错误码，原生回归现为 134/134；来宾清理结果待用户用 cleanup fix 1 版本验证。[复制属性语义](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-copyfilew)、[只读删除语义](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-deletefilew)。
+
 ## 新增：VM 加密保管与模拟签名
 
 安装器现在登记一次当前 VM 本地密码，通过 LogonUser 核对返回 SID；不接收宿主机密码或 PIN。密码以机器 DPAPI 加密，放在 Program Files 独立 Vault，所有者与 DACL 限制为 SYSTEM/管理员。Provider 仅在 SYSTEM 身份读取，并检查实际文件权限、大小、非重解析点及严格字符串边界。机器 DPAPI 若密文可读，同机其他用户也可能解密，故文件 ACL 是必需权限边界；管理员和系统被控制无法由此防护。[DPAPI 机器范围说明](https://learn.microsoft.com/en-us/windows/win32/seccrypto/example-c-program-using-cryptprotectdata)

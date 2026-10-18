@@ -2,12 +2,12 @@
 
 本包只支持 BandKey-Win11：VMware、Windows 11 x64 build 26300、当前独立本地账户。所有虚拟机操作由用户手动执行，保留 Ubuntu 和“快照 1”。
 
-上一阶段的安装、正确密码进入桌面、错误密码被拒绝、原有登录可用及卸载，已由用户反馈通过。这次验证新增的“模拟设备签名确认 → Windows 凭据提交 → 实际回到桌面”。它没有接入真实手环、Wear Engine、BLE 距离或正式 BandKey 代理。成功也不能记为手环实测。
+上一阶段的安装、正确密码进入桌面、错误密码被拒绝及原有登录可用，已由用户反馈通过。此前笼统的卸载正常反馈已由后续截图纠正：注册项移除后文件仍有残留，重启无效；新版清理修复仍待来宾确认。这次验证新增的“模拟设备签名确认 → Windows 凭据提交 → 实际回到桌面”，没有接入真实手环、Wear Engine、BLE 距离或正式代理。
 
 ## 1. 安装新实验
 
-1. 如果旧 BandKey 测试选项还在，先运行旧光盘的 `BandKey.VmSetup.exe`，选择 Remove；若提示文件在用，重启虚拟机后再 Remove。不要叠加安装。
-2. 在 VMware 的 **BandKey-Win11** 设置中，将 CD/DVD 的 ISO 换成本次提供的 **BandKey-VM-Signed-Lab-*.iso**，勾选“已连接”。保留现有基线快照；也可在干净桌面另建快照。不要操作 Ubuntu。
+1. 若旧版 Remove 在重启后仍提示文件占用，先关闭旧安装器和确认客户端，不要反复重启，也不要删除其他登录组件。
+2. 在 VMware 的 **BandKey-Win11** 设置中，将 CD/DVD 的 ISO 换成本次提供的 **BandKey-VM-Signed-Lab-*.iso**，勾选“已连接”。先运行**新光盘**的 `BandKey.VmSetup.exe`，选择 **Remove VM experiment** 并确认 UAC。预期标题含 **cleanup fix 1**，正文为 **Lab registration and files removed**；若仍失败，会列出具体路径和 Windows 错误码，请反馈该提示，先不安装。保留基线快照和 Ubuntu。
 3. 在虚拟机“此电脑”打开 `BANDKEY_LAB` 光盘，运行 `BandKey.VmSetup.exe`，选择 **Install signed-confirmation VM experiment**，由你确认 UAC。
 4. 弹出凭据登记窗口时，只输入**这台虚拟机本地账户的独立密码**。用户名固定，不能使用 PIN；不要输入宿主机密码，也不要把密码发给开发者。此窗口会验证并加密保存该 VM 密码，供这次实验的系统认证使用。
 5. 预期显示 **Signed-confirmation VM experiment installed**。登记校验成功只说明密码可用，尚未验证桌面解锁。安装器不会自动锁屏、注销或重启。
@@ -37,7 +37,7 @@
 ## 4. 卸载与回滚
 
 1. 关闭确认客户端，运行**本次光盘**的 `BandKey.VmSetup.exe`，选择 **Remove VM experiment**，确认 UAC。
-2. 它删除本实验的注册项、DLL、加密 VM 密码和模拟私钥，保留系统登录方式。若提示文件在用，重启虚拟机后再 Remove。随后锁定一次，用原有系统方式登录，确认 BandKey 实验选项已消失。
+2. 它清除已知实验文件的只读属性，再删除注册项、DLL、加密 VM 密码和模拟私钥，保留系统登录方式。失败时逐项显示路径/错误码：只有 32/33 表示共享/锁冲突，才需要关闭占用程序或重启；5 是访问拒绝，145 是目录非空，不要仅凭旧提示一直重启。随后锁定一次，用原有系统方式登录，确认 BandKey 实验选项已消失。
 3. 若登录界面异常，按 Ctrl+Alt 释放键鼠，在 VMware 对 **BandKey-Win11** 进入“虚拟机 → 快照 → 快照管理器 → 快照 1 → 转到”。这会丢弃该快照之后的来宾状态；快照存在已核实，恢复操作本身尚未测试。不要选择 Ubuntu。
 
 VM 密码变更后应 Remove 并重新登记；本版不会自动同步密码，也不会反复尝试过期密码。不要更改 VM 密码后继续本实验。

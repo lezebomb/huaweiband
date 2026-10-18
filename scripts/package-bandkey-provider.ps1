@@ -21,9 +21,10 @@ $bandKeyFiles=@(Get-ChildItem -LiteralPath $bandKeyOutput -File | Sort-Object Na
     csharpGrantInteropChecksPassed=$bandKeyInteropReport.passed
     nativeReverseInteropChecksPassed=2
     nativeStaticAnalysisPassed=$true
+    cleanupFixVersion=1
     credentialStorage='Machine DPAPI plus SYSTEM/administrator-only vault ACL; VM password entered locally by user'
     simulatedDeviceEvent=$true
-    previousManualStage=[ordered]@{evidence='user-reported';install=$true;correctPasswordDesktop=$true;incorrectPasswordRejected=$true;systemSignInPreserved=$true;uninstall=$true}
+    previousManualStage=[ordered]@{evidence='user-reported';install=$true;correctPasswordDesktop=$true;incorrectPasswordRejected=$true;systemSignInPreserved=$true;uninstall=$false;uninstallStatus='later screenshot: registration removed but file cleanup incomplete'}
     hostRegistrationPerformed=$false
     guestInstallationTested=$false
     windowsAuthenticationTested=$false
