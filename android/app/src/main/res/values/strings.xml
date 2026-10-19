@@ -3,4 +3,11 @@
   <string name="diagnostic_band_address" translatable="false"></string>
   <string name="status_format">\n手机公钥指纹：\n%1$s\n手环：%2$s\n自动桥接：%3$s\n状态：%4$s\n</string>
   <string name="status_error">状态读取失败</string>
+  <string name="vm_lab_status">手机实验公钥 SHA-256：\n%1$s\n\n%2$s</string>
+  <string name="vm_ble_idle">BLE 传输未启动；仅在此页面前台运行。</string>
+  <string name="vm_ble_stopped">BLE 已停止；待处理连接已取消。</string>
+  <string name="vm_ble_background_requested">后台 BLE 已请求启动，状态见下方。离开页面会取消本页轮询和待确认；返回后仍需明确点击确认。</string>
+  <string name="vm_ble_starting">正在启动 BLE；电脑需显式连接 BandKey 手机服务。配置 endpoint 应为 https://127.0.0.1:19443，保留实际 VM TLS 和电脑身份。回环连接自动禁用 HTTP 长连接。</string>
+  <string name="vm_ble_error">BLE 不可用：%1$s</string>
+  <string name="vm_ble_page_paused">已离开页面，轮询及页面 BLE 已停止；若显式启动后台 BLE，可通过通知停止。</string>
 </resources>
