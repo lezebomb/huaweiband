@@ -4,7 +4,7 @@
 
 当前功能：被动 BLE 扫描、滤波/滞回/延迟判断、离开后调用 Windows 正规锁屏接口、设备授权管理、签名 HTTPS 手机桥接。首次默认关闭自动锁屏和网络监听。
 
-**当前不提供真正的 Windows 解锁。** 手环按钮及 ColorOS 后台尚需真机验证；验证通过的授权消息也不会使 Windows 自动进入桌面。请继续使用原有 PIN/密码。
+**普通托盘代理当前不提供 Windows 解锁。** 手环按钮及 ColorOS 后台尚需真机验证；普通代理验证授权后仍需原有 PIN/密码。独立 VM 实验已有手机 USB / BLE 自动返回桌面的用户确认，见下文；它不启用宿主机认证后端。
 
 1. 打开后先核对手环广播地址，关闭自动锁屏观察近/远状态并校准。
 2. 确认广播稳定后，手动开启自动锁屏。默认信号消失只显示 Unknown，以避免设备静默导致误锁。
@@ -16,10 +16,10 @@
 
 完整技术状态、协议、硬件步骤与登录集成限制见 `docs/`。源工程提供构建、测试和当前用户登录后启动脚本，开发版源码位于原项目目录。
 
-手机实验另有不依赖同一 Wi-Fi 的 USB 开发通道，见 `docs/usb-transport-test.md`。真机 USB / Keystore / HTTPS / CNG 验签已通过合成账户测试，手机到 VM 的实际桌面解锁仍待验证。普通代理的认证后端不因传输通道变化而启用。
+手机实验另有不依赖同一 Wi-Fi 的 USB 开发通道，见 `docs/usb-transport-test.md`。真机 USB / Keystore / HTTPS / CNG 验签已通过合成账户测试；随后实际 VM 的一次确认解锁及未确认／拒绝保持锁屏获用户确认。普通代理的认证后端不因传输通道变化而启用。
 
-新增 `BandKey.exe --ble-bridge` 和托盘“手机 BLE 通信实验”，见 `docs/ble-phone-transport.md`。当前 APK 已在 Mate60 通过 USB 七轮 36 项、真实 BLE 11 项及两条链路各 CNG 2/2。BLE MTU 517，两端计数一致，无需同一 Wi-Fi；USB 只作本轮部署与测试控制。使用合成账户，尚未验证手机到 VM 桌面解锁或长期后台。完整范围见 `docs/mate60-validation-20261019.md`。
+新增 `BandKey.exe --ble-bridge` 和托盘“手机 BLE 通信实验”，见 `docs/ble-phone-transport.md`。Mate60 合成账户检查为 USB 七轮 36 项、BLE 11 项及两路 CNG 各 2/2，BLE 两端计数一致。随后实际 VM 的 BLE 正例和未确认／拒绝反例也获用户确认，未建立 USB 数据映射，无需同一 Wi-Fi。最后拒绝后出现一次流错误，持续连接稳定性尚未通过；没有拔线或长期后台验收。完整范围见 `docs/mate60-validation-20261019.md`。
 
-另有显式 `--vm-bridge` 手机确认实验入口，仅支持已登记手机公钥的 VMware/build 26300 来宾；在物理机拒绝运行，不自动安装或注册。须使用独立 VM Phone Lab 镜像中的原生安装器，并按 `docs/vm-phone-bridge-test.md` 操作。它不改变普通代理的认证状态；本版本新手机到 VM 解锁仍待实机测试。
+另有显式 `--vm-bridge` 手机确认实验入口，仅支持已登记手机公钥的 VMware/build 26300 来宾；在物理机拒绝运行，不自动安装或注册。须使用独立 VM Phone Lab 镜像中的原生安装器，并按 `docs/vm-phone-bridge-test.md` 操作。实际返回桌面的结果由用户确认，工具仅观察到手机请求与交付，未独立采集 WTS。它不改变普通代理的认证状态，真实手环、MSA/Hello 和认证恢复边界仍待验证。
 
 只读诊断：`BandKey.exe --probe --seconds 30 --output <绝对路径.json>`；这不会锁屏、配对或写入手环。
