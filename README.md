@@ -2,12 +2,12 @@
 
 这是可继续研发、可构建的 Windows / Android 工程。**隔离 VM 已获用户实测反馈：模拟签名确认触发本地账户实际自动解锁，无确认/错误签名/客户端超时反例符合预期。** 新增独立手机确认、固定证书 HTTPS 与原生 Provider 中继，软件测试通过，手机到 VM 的实际桌面解锁待测。正式代理和真实手环尚未接入此能力。
 
-最新进展：上一版 APK 的一加 Keystore → 实际 USB → TCP 转发 → TLS → CNG 完成七轮 36 项真机检查。新增无需同一 Wi-Fi 的手机 BLE 服务、Windows 连接助手及双向 TLS 传输；核心 115/115、Windows 47/47、Java 编码和双向 1000 帧互通通过。BLE 使用模拟 GATT 测试，新 APK 未安装；真实 BLE 与手机到 VM 解锁待测。见 [USB 记录](docs/usb-transport-test.md)、[BLE 实现与验收](docs/ble-phone-transport.md)。
+最新进展：当前 APK 已在备用 Mate60 上通过 USB 七轮 36 项、真实 BLE 11 项及两条链路各 CNG 2/2 验签。BLE 的 MTU 为 517，两端字节计数一致，授权数据不经过 USB 或同一 Wi-Fi。核心 115/115、Windows 47/47、Java 编码和双向 1000 帧互通通过。手机到 VM 解锁、真实手环按钮及长期后台仍待验证。见 [Mate60 实测记录](docs/mate60-validation-20261019.md)、[BLE 实现与验收](docs/ble-phone-transport.md)。
 
 ## 直接运行
 
 - Windows：解压 [BandKey-win-x64.zip](artifacts/BandKey-win-x64.zip)，运行其中的 `BandKey.exe`。当前目录已有 [BandKey.exe](artifacts/BandKey-win-x64/BandKey.exe)，内含 .NET 运行时，无需另装运行时。
-- Android：[BandKey-bridge-debug.apk](artifacts/BandKey-bridge-debug.apk)。当前 BLE 版本仅完成构建，未安装；手机保留上一 USB 实测版本及原应用身份。正式 App ID、HMS Core 和账号服务已就绪；Wear Engine 申请仍按用户反馈记为审核中，最近实机查询错误 8。
+- Android：[BandKey-bridge-debug.apk](artifacts/BandKey-bridge-debug.apk)。当前版本已在 Mate60 安装并通过 USB / BLE 合成授权检查，普通应用身份保持不变。一加仍保留上一 USB 实测版本，手环继续与一加配对。正式 App ID、HMS Core 和账号服务已就绪；Wear Engine 申请仍按用户反馈记为审核中，最近实机查询错误 8。
 - VM 手机实验：[一步步教程](docs/vm-phone-bridge-test.md)、[中继协议](docs/vm-phone-relay-protocol.md)。新 `BandKey-VM-Phone-Lab-*.iso` 与旧已验证模拟镜像独立保存。仅在 VMware/build 26300 来宾安装；保留原登录选项和快照，本阶段未更改 VM。
 - 配置、应用身份密钥、授权公钥及日志保存在程序旁的 `runtime/`。可用 `--data <目录>` 改变位置。私钥以当前 Windows 用户的 DPAPI 加密保存；正式托盘代理没有 Windows 密码/PIN输入框，也没有保存它们的代码。独立 VM 新实验由用户登记一次 VM 密码，以机器 DPAPI 和 SYSTEM/管理员专属 ACL 保管；它与正式分发包分开。
 - 关闭窗口会缩到托盘；使用托盘菜单“退出”彻底关闭。首次启动默认关闭自动锁屏和网络监听。
@@ -21,7 +21,7 @@
 | RSSI 滤波、滞回、延迟、重连后的重新就绪 | 模拟测试通过 | 当前 115 项核心测试包含距离轨迹、控制器、协议攻击、认证调度、原生中继及 BLE 帧；没有真机走远锁屏测试 |
 | 一次性授权、撤权、防重放、认证调度 | 模拟测试通过 | 真实密码学、回环 HTTPS 8/8；锁屏/靠近状态及认证后端为模拟输入，结果明确标记 `simulated` |
 | Windows DPAPI、TLS、原生中继与文件交换 | 已实际验证，GATT 为模拟 | 47 项 Windows 集成测试；含 v2 HTTPS、原生交付、TCP 及模拟 BLE 中的完整 TLS / 授权和失败清理 |
-| 手机到 Windows 的独立 BLE 传输 | 实现及模拟测试通过，硬件待测 | 手机广播/GATT 服务、Windows 中央设备、双向流、设置/日志；不要求同一 Wi-Fi，不操作手环配对 |
+| 手机到 Windows 的独立 BLE 传输 | Mate60 实机 11 项通过 | MTU 517，两端 GATT 计数一致，TLS / 签名 / 重放 / 错误证书及 CNG 验签通过；合成账户，不要求同一 Wi-Fi，VM 解锁待测 |
 | `LockWorkStation`、WTS 锁屏事件、托盘/参数界面 | 仅完成代码实现 | 窗口已离线渲染检查；没有在真实会话中触发锁屏测试 |
 | Android 官方 SDK、环境诊断 | 部分已实际验证 | 一加 Android 16、运动健康 17.0.8.300；正式 App ID + HMS Core 6.16.4.352 后查询返回服务范围错误 8 |
 | Android 前台桥接与按钮处理 | 代码实现及模拟测试通过 | 19 项生命周期/重试测试通过；停止、换设备、过期后取消旧请求，重复点击只消费一次。服务权限、Notify 能力、ColorOS 长期后台尚待验证 |
@@ -30,7 +30,7 @@
 | Windows 真实身份认证/解锁 | VM 本地账户模拟签名自动解锁获用户反馈通过 | lifecycle fix 2 锁屏后自动返回桌面，无需手动选项或输入密码；来源为用户描述及桌面截图。宿主机 **MicrosoftAccount**、Hello 和真实手环尚未验证 |
 | 微软 V2 Credential Provider 参考接口 | 宿主机接口验证通过，未验证登录 | 控制台和图形入口各 42/42，两个失败场景通过；已生成只读来宾测试 ISO，未注册、未提交系统认证，测试身份为虚构用户 |
 | 独立 BandKey VM Provider | 原生 158/158；旧本地模拟模式有效解锁及三项反例获用户反馈通过 | 新增手机公钥绑定/类型变更拒绝测试；手机模式安装/实际解锁与系统边界待测；正式后端未启用 |
-| Android/Java/C#/CNG 原生授权互通 | 软件及实机 USB 验签通过 | .NET 验原生 15/15、原生验 .NET 2/2、Java 编码 26/26、.NET 与 CNG 各验 Java 2/2；另有一加 Keystore 真实签名及 CNG 篡改拒绝，非账户认证 |
+| Android/Java/C#/CNG 原生授权互通 | 软件及实机 USB / BLE 验签通过 | .NET 验原生 15/15、原生验 .NET 2/2、Java 编码 26/26、.NET 与 CNG 各验 Java 2/2；一加 USB、Mate60 USB / BLE Keystore 真实签名及 CNG 篡改拒绝，非账户认证 |
 | 手机手动确认 → VM 原生认证 | 已实现，待手机/来宾测试 | 独立测试密钥、前台明确按钮、TLS/电脑身份核对及 30 秒授权；不调用 Wear Engine、不验证距离 |
 | Windows 隔离测试环境 | 来宾参考接口 42/42，基线快照已核实 | 用户截图确认 build 26300 / 26H2；“快照 1”存在，恢复未测；Ubuntu 配置哈希未变 |
 | 登录后启动、崩溃恢复 | 部分已验证 | 监督脚本异常子进程重启、正常退出停止已测；任务计划/真机重启未测，首次登录前不运行用户代理 |

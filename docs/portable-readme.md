@@ -18,7 +18,7 @@
 
 手机实验另有不依赖同一 Wi-Fi 的 USB 开发通道，见 `docs/usb-transport-test.md`。真机 USB / Keystore / HTTPS / CNG 验签已通过合成账户测试，手机到 VM 的实际桌面解锁仍待验证。普通代理的认证后端不因传输通道变化而启用。
 
-新增 `BandKey.exe --ble-bridge` 和托盘“手机 BLE 通信实验”，见 `docs/ble-phone-transport.md`。这是无需同一 Wi-Fi 的前台 BLE 通信实现，已完成生产帧/转发器、实际 TLS 和合成授权的软件测试，尚无 BLE 硬件通过证据。当前新 APK 未安装，手机仍保留上一 USB 实测版本。
+新增 `BandKey.exe --ble-bridge` 和托盘“手机 BLE 通信实验”，见 `docs/ble-phone-transport.md`。当前 APK 已在 Mate60 通过 USB 七轮 36 项、真实 BLE 11 项及两条链路各 CNG 2/2。BLE MTU 517，两端计数一致，无需同一 Wi-Fi；USB 只作本轮部署与测试控制。使用合成账户，尚未验证手机到 VM 桌面解锁或长期后台。完整范围见 `docs/mate60-validation-20261019.md`。
 
 另有显式 `--vm-bridge` 手机确认实验入口，仅支持已登记手机公钥的 VMware/build 26300 来宾；在物理机拒绝运行，不自动安装或注册。须使用独立 VM Phone Lab 镜像中的原生安装器，并按 `docs/vm-phone-bridge-test.md` 操作。它不改变普通代理的认证状态；本版本新手机到 VM 解锁仍待实机测试。
 

@@ -1,6 +1,6 @@
 # 手机与 Windows 的独立 BLE 传输
 
-本阶段实现 Android 外围服务、Windows 中央设备连接、双向字节流、Windows 设置窗口和模拟集成测试。**尚未用手机和电脑适配器验证 BLE 连接。** 用户需要使用手机后，已停止全部手机操作；最新 APK 没有安装到手机。
+已实现 Android 外围服务、Windows 中央设备连接、双向字节流、Windows 设置窗口和模拟集成测试。2026-10-19 当前 APK 在备用 Mate60 上完成真实 BLE 11 项及独立 CNG 2/2，MTU 517、两端字节计数一致。使用合成账户和自动测试确认，手机到 VM 的实际解锁仍待测试。详见 [本轮实测与修复记录](mate60-validation-20261019.md)。
 
 它与已有 USB 通道分别保留，避免要求手机和电脑连接同一 Wi-Fi。最终目标仍为真实手环按钮；此模块不访问华为手环 GATT、不解除配对，也不把手机信号当作手环距离。
 
@@ -12,7 +12,7 @@
 
 手机只广播自定义服务 UUID，不广播设备名或账户标识。Windows 只查询该服务和两个特征，不探测手环。发现相同服务的冒充者可能干扰可用性，TLS 和签名仍用于阻止其授权；此实现没有将广播识别当作可信设备登记。
 
-## 使用步骤（待硬件验证）
+## 手机到 VM 使用步骤（实际解锁待验证）
 
 1. 按 [VM 手机实验教程](vm-phone-bridge-test.md)登记手机实验公钥、VM 密码保管和中继。保持系统原有登录选项及可恢复快照。宿主机不安装 Provider。
 2. VM 中继监听来宾的私网 IPv4、端口 19443；宿主机必须能访问它。手机配对 JSON 的 endpoint 使用 `https://127.0.0.1:19443`，保留实际 VM 的电脑 ID、公钥和证书指纹。无需 VMware NAT 入站映射。
@@ -55,8 +55,8 @@ Android 另用独立计时器关闭超时 Socket，避免只设置读超时却�
 
 独立跨语言命令：`./scripts/test-ble-interop.ps1 -JavaHome '<JDK目录>'`。先运行常规构建；测试产物仅在 `artifacts/`，不进入 Git。
 
-另已准备 `scripts/test-phone-ble.ps1 -AdbPath '<platform-tools目录>\adb.exe'` 与独立 Android BLE instrumentation；**已编译及检查，尚未执行硬件测试**。脚本会安装本工程及临时测试 APK，需要手机暂时专供测试；可显式添加 `-GrantNearbyPermissions` 授予本应用 CONNECT / ADVERTISE，否则先在页面授予。不要更新系统安装器。USB 只传公钥、测试配置和控制标记；拒绝已有相关 ADB 数据映射，不创建任何反向映射。GATT 就绪后才生成新挑战，测试限制为固定虚构 SID / 会话，检查双向 BLE 字节、签名交付/重放、错误 TLS，并由 CNG 独立核验签名。退出清理测试 APK 和自己的进程，保留应用身份；这仍不是 VM 或真实手环解锁测试。
+`scripts/test-phone-ble.ps1 -AdbPath '<platform-tools目录>\adb.exe'` 与独立 Android BLE instrumentation 已完成 Mate60 实测。脚本先校验 APK 哈希，相同版本跳过安装；连续测试默认保留测试 APK，显式 `-RemoveTestPackage` 才卸载测试组件。可添加 `-GrantNearbyPermissions` 授予本应用 CONNECT / ADVERTISE，否则先在页面授予。不要更新系统安装器。USB 只传公钥、测试配置和控制标记；拒绝已有相关 ADB 数据映射，不创建任何反向映射。GATT 就绪后才生成新挑战，测试限制为固定虚构 SID / 会话，检查双向 BLE 字节、签名交付/重放、明确的错误证书原因，并由 CNG 独立核验签名。退出清理自己的进程；这仍不是 VM 或真实手环解锁测试。
 
-上一 USB 阶段的实际 Keystore / USB 36 项与 CNG 验签保持为历史证据，绑定的是上一 APK。BLE APK 改变后，发布清单明确标记它尚未安装，不复用旧报告冒充新版实机通过。真实 BLE、手机到 VM 解锁、真实手环点击、距离和后台恢复仍待验证。
+一加上一 USB 阶段的报告继续作为历史证据保留。当前 APK 另有 Mate60 的 USB 36 项及 BLE 11 项报告；发布清单按 APK 哈希和两端/TLS/CNG 交叉结果登记。14 项报告变异检查与 5 项 TLS 错误分类检查属于软件测试。手机到 VM 解锁、一加 BLE、真实手环点击、距离和后台恢复仍待验证。
 
 官方 API 依据：[Android GATT server](https://developer.android.com/reference/android/bluetooth/BluetoothGattServer)、[BLE 广播](https://developer.android.com/reference/android/bluetooth/le/BluetoothLeAdvertiser)、[Windows GATT MTU](https://learn.microsoft.com/en-us/uwp/api/windows.devices.bluetooth.genericattributeprofile.gattsession.maxpdusize?view=winrt-26100)。

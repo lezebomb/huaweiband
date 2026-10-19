@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][string]$AdbPath,[string]$Serial)
+param([Parameter(Mandatory=$true)][string]$AdbPath,[string]$Serial,[switch]$RemoveTestPackage)
 $ErrorActionPreference='Stop'
 $bandKeyRoot=Split-Path -Parent $PSScriptRoot
 $bandKeyAdb=(Resolve-Path -LiteralPath $AdbPath).Path
@@ -102,8 +102,9 @@ try{
             if($bandKeyHostResult.submissions -ne 1 -or $bandKeyHostResult.windowsAuthenticationSubmitted -or $bandKeyHostResult.tlsTerminated -or !$bandKeyHostResult.loopbackOnly){$bandKeyPassed=$false}
         }else{$bandKeyPassed=$false}
     }
-    # Only remove this transient instrumentation package; preserve BandKey, its keys and user data.
-    if($bandKeyTestInstalled){Invoke-BandKeyAdb @('uninstall','dev.bandkey.bridge.test') | Out-Null}
+    # Retain the same-hash test APK for repeated local runs. Removal is explicit
+    # so switching USB/BLE does not repeatedly invoke the phone's installer.
+    if($bandKeyTestInstalled -and $RemoveTestPackage){Invoke-BandKeyAdb @('uninstall','dev.bandkey.bridge.test') | Out-Null}
     [ordered]@{passed=$bandKeyPassed;mainApkSha256=(Get-FileHash -LiteralPath (Join-Path $bandKeyRoot 'android\app\build\outputs\apk\debug\app-debug.apk') -Algorithm SHA256).Hash.ToLowerInvariant();phoneRuns=$bandKeyResults.Count;checks=@($bandKeyResults | ForEach-Object {$_.checks}).Count;keyInsideSecureHardware=@($bandKeyResults | Where-Object {$_.keyInsideSecureHardware -eq $true}).Count -eq $bandKeyResults.Count;transport='USB ADB reverse + opaque TCP tunnel + pinned loopback HTTPS';syntheticAccount=$true;automaticTestConfirmation=$true;windowsAuthenticationSubmitted=$false;vmOperated=$false;realWearableTested=$false;results=$bandKeyResults} |
         ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $bandKeyOutput 'summary.json') -Encoding utf8
     $bandKeyOutput | Set-Content -LiteralPath (Join-Path $bandKeyRoot 'artifacts\latest-phone-usb-test.txt') -Encoding utf8

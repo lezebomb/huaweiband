@@ -14,3 +14,7 @@ if($LASTEXITCODE -ne 0){throw 'Android runtime lifecycle tests failed'}
 if($LASTEXITCODE -ne 0){throw 'BLE production codec compilation failed'}
 & $bandKeyJava -cp $bandKeyClasses dev.bandkey.bridge.BlePipeCodecTests 'artifacts/android-ble-codec-tests.json'
 if($LASTEXITCODE -ne 0){throw 'BLE production codec tests failed'}
+& $bandKeyJavac -encoding UTF-8 -d $bandKeyClasses 'android/app/src/androidTest/java/dev/bandkey/bridge/TlsFailureClassifier.java' 'tests/interop/TlsFailureClassifierTests.java'
+if($LASTEXITCODE -ne 0){throw 'TLS error classification compilation failed'}
+& $bandKeyJava -cp $bandKeyClasses dev.bandkey.bridge.TlsFailureClassifierTests 'artifacts/android-tls-error-tests.json'
+if($LASTEXITCODE -ne 0){throw 'TLS error classification tests failed'}

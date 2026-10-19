@@ -42,7 +42,7 @@ public final class VmUsbInstrumentation extends Instrumentation {
                 check("test is restricted to the USB loopback synthetic fixture",config.getString("endpoint").equals("https://127.0.0.1:19444") && config.optString("purpose").equals("bandkey-usb-instrumentation-v1"));
                 VmRelayClient client=new VmRelayClient(config,lab);
                 if(mode.equals("wrong-pin")){
-                    config.put("certificateSha256",new String(new char[64]).replace('\0','0'));boolean refused=false;try{new VmRelayClient(config,lab).poll();}catch(javax.net.ssl.SSLException error){refused=true;}
+                    config.put("certificateSha256",new String(new char[64]).replace('\0','0'));boolean refused=false;try{new VmRelayClient(config,lab).poll();}catch(javax.net.ssl.SSLException error){refused=TlsFailureClassifier.isPinMismatch(error);}
                     check("wrong TLS pin fails on physical Android device",refused);
                 }else if(mode.equals("link-down") || mode.equals("revoked")){
                     boolean refused=false;try{client.poll();}catch(IOException error){refused=true;}

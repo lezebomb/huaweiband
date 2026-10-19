@@ -4,7 +4,7 @@ $bandKeyOutput=Join-Path $bandKeyRoot 'artifacts\BandKey-win-x64'
 if(!(Test-Path -LiteralPath (Join-Path $bandKeyOutput 'BandKey.exe'))){throw 'Publish Windows first.'}
 Copy-Item -LiteralPath (Join-Path $bandKeyRoot 'docs\portable-readme.md') -Destination (Join-Path $bandKeyOutput 'README.md') -Force
 Copy-Item -LiteralPath (Join-Path $bandKeyRoot 'THIRD_PARTY_NOTICES.md') -Destination $bandKeyOutput -Force
-$bandKeyPublicDocs=@('development-20261018.md','hardware-checklist.md','portable-readme.md','protocol.md','research.md','verification.md','windows-authentication.md','vm-provider-test.md','vm-signed-confirmation-test.md','windows-grant-wire.md','vm-phone-bridge-test.md','vm-phone-relay-protocol.md','usb-transport-test.md','ble-phone-transport.md')
+$bandKeyPublicDocs=@('development-20261018.md','hardware-checklist.md','portable-readme.md','protocol.md','research.md','verification.md','windows-authentication.md','vm-provider-test.md','vm-signed-confirmation-test.md','windows-grant-wire.md','vm-phone-bridge-test.md','vm-phone-relay-protocol.md','usb-transport-test.md','ble-phone-transport.md','mate60-validation-20261019.md')
 $bandKeyPackages=Join-Path $bandKeyRoot '.tooling\nuget'
 foreach($bandKeyPackage in @('microsoft.netcore.app.runtime.win-x64','microsoft.windowsdesktop.app.runtime.win-x64','microsoft.aspnetcore.app.runtime.win-x64')){
   $bandKeyPackagePath=Join-Path $bandKeyPackages $bandKeyPackage

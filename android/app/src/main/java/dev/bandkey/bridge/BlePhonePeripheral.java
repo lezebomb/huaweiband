@@ -20,6 +20,7 @@ public final class BlePhonePeripheral implements AutoCloseable {
     private final CountDownLatch advertising=new CountDownLatch(1);
     private final Semaphore notification=new Semaphore(0);
     private final ArrayBlockingQueue<BlePipeFrame> incoming=new ArrayBlockingQueue<>(128);
+    private final Object streamState=new Object();
     private final ExecutorService workers=Executors.newCachedThreadPool();
     private final ScheduledExecutorService deadlines=Executors.newSingleThreadScheduledExecutor();
     private volatile boolean closed,enabled;private volatile String failure="";private volatile int mtu=23;
@@ -41,6 +42,7 @@ public final class BlePhonePeripheral implements AutoCloseable {
     }
     public boolean awaitAdvertising(long milliseconds)throws InterruptedException{return advertising.await(milliseconds,TimeUnit.MILLISECONDS) && failure.isEmpty() && !closed;}
     public boolean isConnected(){return peer!=null && enabled && !closed;}
+    public boolean isStreamActive(){synchronized(streamState){return activeSession!=0;}}
     public String failure(){return failure;}
     private void problem(String code){failure=code;status.accept(code);closeSocket();}
     private void closeSocket(){Socket current=socket;if(current!=null)try{current.close();}catch(IOException ignored){};}
@@ -69,8 +71,10 @@ public final class BlePhonePeripheral implements AutoCloseable {
         @Override public void onCharacteristicWriteRequest(BluetoothDevice device,int request,BluetoothGattCharacteristic characteristic,boolean prepared,boolean response,int offset,byte[] value){
             if(closed)return;
             boolean okay=false;
-            try{BlePipeFrame frame=BlePipeFrame.decode(value);okay=device.equals(peer) && enabled && RX.equals(characteristic.getUuid()) && response && !prepared && offset==0 && activeSession!=0 && frame.session==activeSession && incoming.offer(frame);}catch(IllegalArgumentException ignored){}
-            if(response)gatt.sendResponse(device,request,okay?BluetoothGatt.GATT_SUCCESS:BluetoothGatt.GATT_FAILURE,0,null);
+            synchronized(streamState){
+                try{BlePipeFrame frame=BlePipeFrame.decode(value);okay=device.equals(peer) && enabled && RX.equals(characteristic.getUuid()) && response && !prepared && offset==0 && activeSession!=0 && frame.session==activeSession && incoming.offer(frame);if(okay)receivedBytes+=frame.payload.length;}catch(IllegalArgumentException ignored){}
+                if(response)gatt.sendResponse(device,request,okay?BluetoothGatt.GATT_SUCCESS:BluetoothGatt.GATT_FAILURE,0,null);
+            }
             if(!okay && device.equals(peer))problem("BLE frame or queue rejected");
         }
         @Override public void onNotificationSent(BluetoothDevice device,int result){if(!closed && device.equals(peer)){if(result!=BluetoothGatt.GATT_SUCCESS)problem("BLE notification failed");notification.release();}}
@@ -86,17 +90,17 @@ public final class BlePhonePeripheral implements AutoCloseable {
     private void acceptLoop(){
         while(!closed){
             try{Socket client=listener.accept();socket=client;serve(client);}catch(SocketTimeoutException ignored){}catch(Exception error){if(!closed){problem("BLE stream ended: "+error.getClass().getSimpleName()+"; reconnect required");enabled=false;BluetoothDevice target=peer;if(target!=null)try{gatt.cancelConnection(target);}catch(RuntimeException ignored){}}}
-            finally{closeSocket();socket=null;activeSession=0;incoming.clear();}
+            finally{closeSocket();socket=null;synchronized(streamState){activeSession=0;incoming.clear();}}
         }
     }
     private void serve(Socket client)throws Exception{
         if(!enabled || peer==null){client.close();return;}failure="";client.setSoTimeout(1000);client.setTcpNoDelay(true);
-        long random;do{random=new SecureRandom().nextLong();}while(random==0);final long id=random;activeSession=id;incoming.clear();AtomicInteger sequence=new AtomicInteger();
+        long random;do{random=new SecureRandom().nextLong();}while(random==0);final long id=random;synchronized(streamState){activeSession=id;incoming.clear();}AtomicInteger sequence=new AtomicInteger();
         BlePipeFrame.Receiver receiver=new BlePipeFrame.Receiver(id,BlePipeFrame.READY);send(BlePipeFrame.OPEN,id,sequence,new byte[0]);
         BlePipeFrame ready=incoming.poll(8,TimeUnit.SECONDS);if(ready==null)throw new IOException("BLE remote ready timeout");receiver.accept(ready);connections++;
         long deadline=SystemClock.elapsedRealtime()+45000;
         Future<?> download=workers.submit(()->{
-            try{while(!closed && !client.isClosed() && SystemClock.elapsedRealtime()<deadline){BlePipeFrame frame=incoming.poll(1,TimeUnit.SECONDS);if(frame==null)continue;receiver.accept(frame);if(frame.kind==BlePipeFrame.ABORT)throw new IOException("BLE abort");if(frame.kind==BlePipeFrame.EOF){client.shutdownOutput();return;}client.getOutputStream().write(frame.payload);receivedBytes+=frame.payload.length;}throw new IOException("BLE stream lifetime");}
+            try{while(!closed && !client.isClosed() && SystemClock.elapsedRealtime()<deadline){BlePipeFrame frame=incoming.poll(1,TimeUnit.SECONDS);if(frame==null)continue;receiver.accept(frame);if(frame.kind==BlePipeFrame.ABORT)throw new IOException("BLE abort");if(frame.kind==BlePipeFrame.EOF){client.shutdownOutput();return;}client.getOutputStream().write(frame.payload);}throw new IOException("BLE stream lifetime");}
             catch(Exception error){try{client.close();}catch(IOException ignored){}throw new CompletionException(error);}
         });
         // A socket write can block even when SO_TIMEOUT bounds reads. Closing it

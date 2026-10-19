@@ -20,8 +20,9 @@ public sealed class BlePhoneTunnel : IAsyncDisposable
     private int disposed;
     private int started;
     private string? linkFailure;
+    private long receivedBytes;
     private ushort lastMtu=23;
-    public long SentBytes{get;private set;}public long ReceivedBytes{get;private set;}public int Streams{get;private set;}
+    public long SentBytes{get;private set;}public long ReceivedBytes=>Interlocked.Read(ref receivedBytes);public int Streams{get;private set;}
     public ushort Mtu{get{try{lastMtu=service?.Session.MaxPduSize??lastMtu;}catch(Exception){/* The radio may disappear before final diagnostics. */}return lastMtu;}}
     public string Stage{get;private set;}="not-started";
     public async Task ConnectAsync(CancellationToken cancellation)
@@ -61,11 +62,12 @@ public sealed class BlePhoneTunnel : IAsyncDisposable
     {
         if(Volatile.Read(ref disposed)!=0)return;
         try{
-            if(args.CharacteristicValue.Length is <BlePipeFrame.Header or >BlePipeFrame.Header+BlePipeFrame.MaxPayload || !received.Writer.TryWrite(args.CharacteristicValue.ToArray()))
-            Fail("BLE receive queue/frame limit");
+            var bytes=args.CharacteristicValue.ToArray();var frame=BlePipeFrame.Decode(bytes);
+            Interlocked.Add(ref receivedBytes,frame.Payload.Length);
+            if(!received.Writer.TryWrite(bytes)){Interlocked.Add(ref receivedBytes,-frame.Payload.Length);Fail("BLE receive queue/frame limit");}
         }catch(Exception){Fail("BLE receive callback failed");}
     }
-    private async Task<BlePipeFrame> ReadAsync(CancellationToken token){var frame=BlePipeFrame.Decode(await received.Reader.ReadAsync(token));ReceivedBytes+=frame.Payload.Length;return frame;}
+    private async Task<BlePipeFrame> ReadAsync(CancellationToken token)=>BlePipeFrame.Decode(await received.Reader.ReadAsync(token));
     private async Task WriteAsync(BlePipeFrame frame,CancellationToken token)
     {
         byte[] bytes=frame.Encode();using var budget=CancellationTokenSource.CreateLinkedTokenSource(token);budget.CancelAfter(TimeSpan.FromSeconds(5));

@@ -1,6 +1,6 @@
 # 不依赖同一 Wi-Fi 的 USB 通信
 
-当前提供 USB 调试传输，适合开发和隔离 VM 联调。手机仍可通过蓝牙连接运动健康与手环，无需修改已有配对。USB 是已验证的开发通道，最终无线使用仍需单独验证。
+当前提供 USB 调试传输，适合开发和隔离 VM 联调。手机仍可通过蓝牙连接运动健康与手环，无需修改已有配对。USB 是已验证的开发通道；Mate60 的 BLE 合成授权链路也已实测，手机到 VM 的无线实际解锁仍需单独验证。
 
 ## 数据路径
 
@@ -35,3 +35,8 @@ TLS 仍终止于 VM，宿主机只转发字节。手机继续核对 VM 的精确
 尚未完成手机按钮经 USB 到 VM 的实际桌面解锁、来宾手机模式安装/回滚、长期后台、真实手环按钮及距离测试。当前 VM 未启动新手机中继；预检查已拒绝不可达的来宾端口且无残留映射。旧模拟签名自动解锁的用户反馈不能沿用为 USB 解锁结果。
 
 官方依据：[ADB reverse 命令](https://android.googlesource.com/platform/packages/modules/adb/+/refs/heads/main/docs/user/adb.1.md)、[Android Instrumentation](https://developer.android.com/reference/android/app/Instrumentation)、[KeyInfo](https://developer.android.com/reference/android/security/keystore/KeyInfo)。
+# 2026-10-19 Mate60 当前版本补测
+
+备用 Mate60 的当前 BLE APK 已完成 USB 七轮 36 项，以及 CNG 验签/篡改拒绝 2/2。错误证书判定已收紧，要求实际证书指纹不匹配原因；普通 TLS 断开不能算拒绝成功。普通应用身份保留，KeyInfo 报告安全硬件 true，未验证 attestation。仍使用合成账户，不提交 Windows 认证。当前版本绑定和 BLE 实测见 [Mate60 记录](mate60-validation-20261019.md)，以下一加记录保留原测试范围。
+
+连续 USB / BLE 回归先比对已安装 APK 哈希，相同文件不重复安装。默认保留测试 APK；仅显式 `-RemoveTestPackage` 时卸载 `dev.bandkey.bridge.test`，主应用和密钥保留。运行进程和本轮 USB 映射仍按原规则清理。

@@ -26,7 +26,11 @@ final class VmBleInstrumentation {
             JSONObject replay=client.decide(prompt,true);check(checks,"BLE approval replay rejected",!replay.getBoolean("authorized") && !replay.getBoolean("submitted"));
             check(checks,"both GATT directions carried bytes",ble.sentBytes>0 && ble.receivedBytes>0 && ble.connections>=3);
             JSONObject wrong=new JSONObject(config.toString()).put("certificateSha256",new String(new char[64]).replace('\0','0'));boolean refused=false;
-            try{new VmRelayClient(wrong,lab).poll();}catch(javax.net.ssl.SSLException error){refused=true;}check(checks,"wrong TLS certificate refused over BLE",refused);
+            try{new VmRelayClient(wrong,lab).poll();}catch(javax.net.ssl.SSLException error){refused=TlsFailureClassifier.isPinMismatch(error);}check(checks,"wrong TLS certificate refused over BLE",refused);
+            // Let the deliberately rejected TLS connection finish its transport
+            // teardown before taking final GATT counters; no approval is retried.
+            long settling=SystemClock.elapsedRealtime()+5000;
+            while(ble.isStreamActive() && SystemClock.elapsedRealtime()<settling)Thread.sleep(50);
             return new JSONObject().put("sentBytes",ble.sentBytes).put("receivedBytes",ble.receivedBytes).put("streams",ble.connections).put("usbForControlOnly",true);
         }
     }
