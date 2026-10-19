@@ -32,6 +32,7 @@ internal sealed class BlePhoneTransport
     public string Stage=>current?.Stage??stage;
     public ushort Mtu=>current?.Mtu??mtu;
     public int Streams=>streams+(current?.Streams??0);
+    public int CurrentAttemptStreams=>current?.Streams??0;
     public long SentBytes=>sent+(current?.SentBytes??0);
     public long ReceivedBytes=>received+(current?.ReceivedBytes??0);
     public int Attempts{get;private set;}

@@ -28,7 +28,24 @@ public sealed class BleBridgeForm : Form
         FormClosed+=(_,_)=>timer.Dispose();
     }
     private void Log(string code){try{store.Log("ble-transport",code);}catch(IOException){}catch(UnauthorizedAccessException){}}
-    private void RefreshStatus(){if(tunnel!=null)status.Text=$"阶段：{tunnel.Stage}；连接尝试：{tunnel.Attempts}\r\nMTU：{tunnel.Mtu}；完成数据流：{tunnel.Streams}\r\n发往手机：{tunnel.SentBytes} 字节；来自手机：{tunnel.ReceivedBytes} 字节\r\n最近故障：{tunnel.Failure?.Code??"无"}；未据此判断手环距离或 Windows 解锁。";}
+    private void RefreshStatus()
+    {
+        if(tunnel==null)return;
+        var phase=tunnel.Stage;var completed=tunnel.CurrentAttemptStreams;
+        string current=phase switch
+        {
+            "waiting-stream" when tunnel.Attempts>1 && completed==0=>"BLE 已重新连接，等待新数据验证",
+            "waiting-stream" when tunnel.Attempts>1=>"传输已恢复，等待下一条数据",
+            "waiting-stream"=>"BLE 已连接，等待数据",
+            "forwarding"=>"正在转发数据",
+            "reconnecting"=>"连接中断，正在等待重连",
+            "failed" or "link-failed" or "stream-failed"=>"连接异常",
+            "stopped"=>"已停止",
+            _=>"正在建立 BLE 连接"
+        };
+        string history=tunnel.Failure==null?"历史故障：无":$"历史故障：{tunnel.Failure.Code}（累计 {tunnel.Failures.Length} 次，原记录保留）";
+        status.Text=$"当前：{current}\r\n阶段：{phase}；连接尝试：{tunnel.Attempts}\r\nMTU：{tunnel.Mtu}；完成流：总计 {tunnel.Streams}／本次连接 {completed}\r\n发往手机：{tunnel.SentBytes} 字节；来自手机：{tunnel.ReceivedBytes} 字节\r\n{history}";
+    }
     private async Task StartTransport()
     {
         if(running is {IsCompleted:false})return;
