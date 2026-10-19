@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Diagnostics;
 using System.Runtime.InteropServices.WindowsRuntime;
 using System.Threading.Channels;
 using BandKey.Core;
@@ -16,6 +17,8 @@ public sealed class BlePhoneTunnel : IBlePhoneConnection
     public static readonly Guid ServiceId=new("ab7c1101-5d18-4e0b-9aba-30ad640be001"),RxId=new("ab7c1102-5d18-4e0b-9aba-30ad640be001"),TxId=new("ab7c1103-5d18-4e0b-9aba-30ad640be001");
     private readonly Channel<byte[]> received=Channel.CreateBounded<byte[]>(new BoundedChannelOptions(128){SingleReader=true,SingleWriter=false,FullMode=BoundedChannelFullMode.Wait});
     private BluetoothLEDevice? device;private GattDeviceService? service;private GattCharacteristic? rx,tx;
+    private GattDescriptor? healthDescriptor;
+    private long lastValue=Stopwatch.GetTimestamp();
     private readonly CancellationTokenSource stop=new();
     private int disposed;
     private int started;
@@ -50,6 +53,10 @@ public sealed class BlePhoneTunnel : IBlePhoneConnection
         if(!rx.CharacteristicProperties.HasFlag(GattCharacteristicProperties.Write) || !tx.CharacteristicProperties.HasFlag(GattCharacteristicProperties.Notify))throw new IOException("Phone characteristic properties");
         tx.ValueChanged+=OnValue;Stage="subscribe";
         if(await tx.WriteClientCharacteristicConfigurationDescriptorAsync(GattClientCharacteristicConfigurationDescriptorValue.Notify).AsTask(token)!=GattCommunicationStatus.Success)throw new IOException("BLE subscription refused");
+        Stage="health-descriptor";
+        var descriptors=await tx.GetDescriptorsForUuidAsync(new Guid("00002902-0000-1000-8000-00805f9b34fb"),BluetoothCacheMode.Uncached).AsTask(token);
+        if(descriptors.Status!=GattCommunicationStatus.Success || descriptors.Descriptors.Count!=1)throw new IOException("BLE health descriptor unavailable");
+        healthDescriptor=descriptors.Descriptors[0];Interlocked.Exchange(ref lastValue,Stopwatch.GetTimestamp());
         Stage="connected";
     }
     private void Cancel(){try{stop.Cancel();}catch(ObjectDisposedException){}}
@@ -64,11 +71,29 @@ public sealed class BlePhoneTunnel : IBlePhoneConnection
         if(Volatile.Read(ref disposed)!=0)return;
         try{
             var bytes=args.CharacteristicValue.ToArray();var frame=BlePipeFrame.Decode(bytes);
+            Interlocked.Exchange(ref lastValue,Stopwatch.GetTimestamp());
             Interlocked.Add(ref receivedBytes,frame.Payload.Length);
             if(!received.Writer.TryWrite(bytes)){Interlocked.Add(ref receivedBytes,-frame.Payload.Length);Fail("receive-queue-limit");}
         }catch(Exception){Fail("receive-frame-invalid");}
     }
-    private async Task<BlePipeFrame> ReadAsync(CancellationToken token)=>BlePipeFrame.Decode(await received.Reader.ReadAsync(token));
+    private Task<BlePipeFrame> ReadAsync(CancellationToken token)=>ReadFrameAsync(received.Reader,token);
+    internal static async Task<BlePipeFrame> ReadFrameAsync(ChannelReader<byte[]> frames,CancellationToken token)
+    {
+        try{return BlePipeFrame.Decode(await frames.ReadAsync(token));}
+        // Channel completion wins races with cancellation. Preserve the actual BLE failure
+        // as an IOException so the transport supervisor can apply its retry policy.
+        catch(ChannelClosedException error)when(error.InnerException is BleTransportException reason){throw new BleTransportException(reason.Code,error);}
+        catch(ChannelClosedException)when(token.IsCancellationRequested){throw new OperationCanceledException(token);}
+    }
+    private async Task ProbeIdleAsync(CancellationToken token)
+    {
+        // An uncached descriptor read checks the phone, not Windows' remembered subscription.
+        var result=await healthDescriptor!.ReadValueAsync(BluetoothCacheMode.Uncached).AsTask(token);
+        if(result.Status==GattCommunicationStatus.AccessDenied)throw new BleTransportException("gatt-permission-denied");
+        if(result.Status!=GattCommunicationStatus.Success)throw new BleTransportException("gatt-health-"+result.Status.ToString().ToLowerInvariant());
+        var bytes=result.Value.ToArray();
+        if(bytes.Length!=2 || bytes[0]!=1 || bytes[1]!=0)throw new BleTransportException("gatt-idle-subscription-lost");
+    }
     private async Task WriteAsync(BlePipeFrame frame,CancellationToken token)
     {
         byte[] bytes=frame.Encode();using var budget=CancellationTokenSource.CreateLinkedTokenSource(token);budget.CancelAfter(TimeSpan.FromSeconds(5));
@@ -93,6 +118,13 @@ public sealed class BlePhoneTunnel : IBlePhoneConnection
         // A stop file is polled independently so a quiet BLE connection can stop promptly.
         async Task WatchStop(){while(!token.IsCancellationRequested){if(stopFile!=null && File.Exists(stopFile)){lifetime.Cancel();return;}try{await Task.Delay(250,token);}catch(OperationCanceledException){return;}}}
         var watching=WatchStop();
+        async Task WatchHealth()
+        {
+            try{await BleIdleWatchdog.RunAsync(()=>Stage=="waiting-stream" && Stopwatch.GetElapsedTime(Interlocked.Read(ref lastValue))>=TimeSpan.FromSeconds(10),ProbeIdleAsync,token);}
+            catch(OperationCanceledException)when(token.IsCancellationRequested){}
+            catch(BleTransportException error){Fail(error.Code);}
+        }
+        var health=WatchHealth();
         try
         {
             while(!token.IsCancellationRequested)
@@ -116,7 +148,7 @@ public sealed class BlePhoneTunnel : IBlePhoneConnection
         }
         catch(OperationCanceledException)when(lifetime.IsCancellationRequested){if(linkFailure!=null){Stage="link-failed";throw new BleTransportException(linkFailure);}Stage="stopped";}
         catch(Exception error){Failure??=BleTransportFailure.From(error);throw;}
-        finally{lifetime.Cancel();await watching;}
+        finally{lifetime.Cancel();await Task.WhenAll(watching,health);}
     }
     public async ValueTask DisposeAsync()
     {

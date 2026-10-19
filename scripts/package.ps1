@@ -1,9 +1,11 @@
+param([string]$PublishDirectory,[string]$ZipPath)
 $ErrorActionPreference='Stop'
 $bandKeyRoot=Split-Path -Parent $PSScriptRoot
-$bandKeyOutput=Join-Path $bandKeyRoot 'artifacts\BandKey-win-x64'
+$bandKeyOutput=if($PublishDirectory){[IO.Path]::GetFullPath($PublishDirectory,$bandKeyRoot)}else{Join-Path $bandKeyRoot 'artifacts\BandKey-win-x64'}
 if(!(Test-Path -LiteralPath (Join-Path $bandKeyOutput 'BandKey.exe'))){throw 'Publish Windows first.'}
 Copy-Item -LiteralPath (Join-Path $bandKeyRoot 'docs\portable-readme.md') -Destination (Join-Path $bandKeyOutput 'README.md') -Force
 Copy-Item -LiteralPath (Join-Path $bandKeyRoot 'THIRD_PARTY_NOTICES.md') -Destination $bandKeyOutput -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'start-ble-bridge.cmd') -Destination (Join-Path $bandKeyOutput 'Start-BLE.cmd') -Force
 $bandKeyPublicDocs=@('development-20261018.md','hardware-checklist.md','portable-readme.md','protocol.md','research.md','verification.md','windows-authentication.md','vm-provider-test.md','vm-signed-confirmation-test.md','windows-grant-wire.md','vm-phone-bridge-test.md','vm-phone-relay-protocol.md','usb-transport-test.md','ble-phone-transport.md','mate60-validation-20261019.md')
 $bandKeyPackages=Join-Path $bandKeyRoot '.tooling\nuget'
 foreach($bandKeyPackage in @('microsoft.netcore.app.runtime.win-x64','microsoft.windowsdesktop.app.runtime.win-x64','microsoft.aspnetcore.app.runtime.win-x64')){
@@ -14,7 +16,7 @@ foreach($bandKeyPackage in @('microsoft.netcore.app.runtime.win-x64','microsoft.
   New-Item -ItemType Directory -Force -Path $bandKeyLicenses | Out-Null
   Get-ChildItem -LiteralPath $bandKeyVersion.FullName -File | Where-Object { $_.Name -match 'license|third.*part.*notice' } | Copy-Item -Destination $bandKeyLicenses -Force
 }
-$bandKeyZipPath=Join-Path $bandKeyRoot 'artifacts\BandKey-win-x64.zip'
+$bandKeyZipPath=if($ZipPath){[IO.Path]::GetFullPath($ZipPath,$bandKeyRoot)}else{Join-Path $bandKeyRoot 'artifacts\BandKey-win-x64.zip'}
 $bandKeyZipStream=[IO.File]::Open($bandKeyZipPath,[IO.FileMode]::Create)
 $bandKeyZip=[IO.Compression.ZipArchive]::new($bandKeyZipStream,[IO.Compression.ZipArchiveMode]::Create)
 try {

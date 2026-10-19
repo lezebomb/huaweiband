@@ -52,6 +52,7 @@ public sealed class LoopbackTcpTunnel : IAsyncDisposable
         }
         catch(OperationCanceledException)when(stop.IsCancellationRequested){}
         catch(SocketException)when(stop.IsCancellationRequested){}
+        catch(ObjectDisposedException)when(stop.IsCancellationRequested){}
     }
     private async Task ForwardAsync(TcpClient client)
     {

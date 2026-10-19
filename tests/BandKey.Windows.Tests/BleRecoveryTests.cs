@@ -1,4 +1,5 @@
 using System.Net;
+using System.Threading.Channels;
 using BandKey.Windows;
 
 // Fault-injection tests of production supervision; these are not physical BLE evidence.
@@ -18,6 +19,42 @@ internal static class BleRecoveryTests
     }
     internal static async Task RunAsync(Func<string,Func<Task>,Task> test,string directory)
     {
+        await test("BLE closed incoming channel retains its fault and reaches automatic reconnection",async()=>
+        {
+            int created=0,disposed=0;using var stop=new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            var transport=new BlePhoneTransport(()=>
+            {
+                int id=++created;return new Connection(async(_,_,token)=>
+                {
+                    if(id==2){stop.Cancel();token.ThrowIfCancellationRequested();return;}
+                    var frames=Channel.CreateBounded<byte[]>(1);var reading=BlePhoneTunnel.ReadFrameAsync(frames.Reader,token);
+                    frames.Writer.TryComplete(new BleTransportException("gatt-idle-subscription-lost"));
+                    await reading;
+                },()=>disposed++);
+            },(_,token)=>{token.ThrowIfCancellationRequested();return Task.CompletedTask;});
+            await transport.RunAsync(IPAddress.Loopback,19443,TimeSpan.FromSeconds(2),cancellation:stop.Token);
+            Check(created==2 && disposed==2 && transport.Failures.Length==1 && transport.Failure?.Code=="gatt-idle-subscription-lost");
+        });
+        await test("BLE idle watchdog reports a lost remote subscription without an OS disconnect callback",async()=>
+        {
+            using var stop=new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            try{await BleIdleWatchdog.RunAsync(()=>true,_=>throw new BleTransportException("gatt-idle-subscription-lost"),stop.Token,TimeSpan.FromMilliseconds(1));throw new Exception("Expected lost subscription");}
+            catch(BleTransportException error){Check(error.Code=="gatt-idle-subscription-lost");}
+        });
+        await test("BLE idle watchdog bounds a stalled GATT read",async()=>
+        {
+            using var stop=new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            var blocked=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            try{await BleIdleWatchdog.RunAsync(()=>true,_=>blocked.Task,stop.Token,TimeSpan.FromMilliseconds(1),TimeSpan.FromMilliseconds(20));throw new Exception("Expected probe timeout");}
+            catch(BleTransportException error){Check(error.Code=="gatt-health-timeout");}
+            finally{blocked.TrySetResult();}
+        });
+        await test("BLE idle watchdog skips active traffic and treats user stop as cancellation",async()=>
+        {
+            using var stop=new CancellationTokenSource(TimeSpan.FromMilliseconds(50));int probes=0;
+            try{await BleIdleWatchdog.RunAsync(()=>false,_=>{probes++;return Task.CompletedTask;},stop.Token,TimeSpan.FromMilliseconds(1));throw new Exception("Expected user stop");}
+            catch(OperationCanceledException){Check(probes==0 && stop.IsCancellationRequested);}
+        });
         await test("BLE reconnect disposes old connection and removes readiness before creating fresh state",async()=>
         {
             int created=0,disposed=0;using var stop=new CancellationTokenSource(TimeSpan.FromSeconds(3));
