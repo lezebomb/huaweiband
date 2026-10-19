@@ -124,6 +124,7 @@ internal static class Program
         await UsbTunnelIntegrationTests.RunAsync(Test);
         await BleBridgeIntegrationTests.RunAsync(Test,dir);
         await BleRecoveryTests.RunAsync(Test,dir);
+        await SessionLabTests.RunAsync(Test);
         var report = new { generatedAt = DateTimeOffset.UtcNow, total = tests.Count, passed = tests.Count - failed, failed, tests };
         File.WriteAllText(args.FirstOrDefault() ?? "artifacts/windows-tests.json", JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true }));
         Console.WriteLine($"{tests.Count - failed}/{tests.Count} passed"); return failed == 0 ? 0 : 1;

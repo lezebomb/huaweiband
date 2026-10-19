@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
+    <UseWindowsForms>true</UseWindowsForms>
+    <AssemblyName>BandKey.SessionLab</AssemblyName>
+    <ApplicationManifest>../BandKey.Windows/app.manifest</ApplicationManifest>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../BandKey.Windows/BandKey.Windows.csproj" />
+    <InternalsVisibleTo Include="BandKey.Windows.Tests" />
+  </ItemGroup>
+</Project>
