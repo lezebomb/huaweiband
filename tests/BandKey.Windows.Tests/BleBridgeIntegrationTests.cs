@@ -61,6 +61,21 @@ internal static class BleBridgeIntegrationTests
                 await Task.WhenAll(Upload(),Server(),Download());var stats=await forwarding;Check(stats.SentBytes==60000 && stats.ReceivedBytes==60000);
             }finally{target.Stop();}
         });
+        await test("BLE target closes first and delayed phone EOF completes without another target shutdown",async()=>
+        {
+            var target=new TcpListener(IPAddress.Loopback,0);target.Start();using var budget=new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            try
+            {
+                var wire=new Wire();var forwarding=BleStreamForwarder.RunAsync(new(1,22,0,[]),IPAddress.Loopback,((IPEndPoint)target.LocalEndpoint).Port,wire.PcRead,wire.PcSend,()=>160,budget.Token);
+                using var server=await target.AcceptTcpClientAsync(budget.Token);await wire.PhoneRead(budget.Token);
+                await server.GetStream().WriteAsync(new byte[]{4,5,6},budget.Token);server.Client.Shutdown(SocketShutdown.Send);
+                var data=await wire.PhoneRead(budget.Token);var eof=await wire.PhoneRead(budget.Token);Check(data.Payload.SequenceEqual(new byte[]{4,5,6}) && eof.Kind==BlePipeFrame.Eof);
+                server.Client.Dispose();
+                await wire.PhoneSend(new(BlePipeFrame.Eof,22,1,[]),budget.Token);
+                var stats=await forwarding;Check(stats.SentBytes==3 && stats.ReceivedBytes==0);
+            }
+            finally{target.Stop();}
+        });
         foreach(string fault in new[]{"sequence","session","abort","overflow","idle","cancel"})
         await test("BLE production forwarder stops on simulated "+fault,async()=>
         {
@@ -76,8 +91,65 @@ internal static class BleBridgeIntegrationTests
                     _=Task.Run(async()=>{try{await server.GetStream().CopyToAsync(Stream.Null,budget.Token);}catch(OperationCanceledException){}catch(IOException){}},budget.Token);
                     for(uint seq=1;seq<=820;seq++)await wire.PhoneSend(new(3,9,seq,new byte[160]),budget.Token);
                 }
-                bool refused=false;try{await forwarding.WaitAsync(TimeSpan.FromSeconds(3));}catch(Exception error)when(error is IOException or OperationCanceledException){refused=true;}Check(refused);
+                bool refused=false;try{await forwarding.WaitAsync(TimeSpan.FromSeconds(3));}
+                catch(Exception error)when(error is IOException or OperationCanceledException)
+                {
+                    refused=true;
+                    if(fault=="cancel")Check(error is OperationCanceledException);
+                    else Check(error is BleTransportException failure && failure.Code==(fault=="idle"?"stream-timeout":fault=="abort"?"phone-aborted":"phone-frame-invalid"));
+                }
+                Check(refused);
             }finally{target.Stop();}
+        });
+        await test("BLE diagnostics preserve download failure before cancelling upload and redact exception text",async()=>
+        {
+            var target=new TcpListener(IPAddress.Loopback,0);target.Start();using var budget=new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            try
+            {
+                var wire=new Wire();
+                Task Write(BlePipeFrame frame,CancellationToken token)=>frame.Kind==BlePipeFrame.Data?Task.FromException(new IOException("untrusted-private-peer-message")):wire.PcSend(frame,token);
+                var forwarding=BleStreamForwarder.RunAsync(new(1,19,0,[]),IPAddress.Loopback,((IPEndPoint)target.LocalEndpoint).Port,wire.PcRead,Write,()=>160,budget.Token);
+                using var server=await target.AcceptTcpClientAsync(budget.Token);await wire.PhoneRead(budget.Token);
+                await server.GetStream().WriteAsync(new byte[]{1,2,3},budget.Token);
+                try{await forwarding;throw new Exception("Expected download failure");}
+                catch(BleTransportException error)
+                {
+                    var failure=BleTransportFailure.From(error);
+                    Check(failure.Code=="phone-write" && failure.ExceptionType==nameof(IOException));
+                    Check(!System.Text.Json.JsonSerializer.Serialize(failure).Contains("untrusted-private-peer-message"));
+                }
+            }
+            finally{target.Stop();}
+        });
+        await test("BLE target TCP reset reports numeric socket cause instead of sibling cancellation",async()=>
+        {
+            var target=new TcpListener(IPAddress.Loopback,0);target.Start();using var budget=new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            try
+            {
+                var wire=new Wire();var forwarding=BleStreamForwarder.RunAsync(new(1,20,0,[]),IPAddress.Loopback,((IPEndPoint)target.LocalEndpoint).Port,wire.PcRead,wire.PcSend,()=>160,budget.Token);
+                using var server=await target.AcceptTcpClientAsync(budget.Token);await wire.PhoneRead(budget.Token);
+                server.Client.LingerState=new(true,0);server.Client.Dispose();
+                try{await forwarding;throw new Exception("Expected TCP reset");}
+                catch(BleTransportException error)
+                {
+                    var failure=BleTransportFailure.From(error);
+                    Check(failure.Code=="target-read" && failure.SocketError==(int)SocketError.ConnectionReset);
+                }
+            }
+            finally{target.Stop();}
+        });
+        await test("BLE READY write failure has a distinct safe diagnostic",async()=>
+        {
+            var target=new TcpListener(IPAddress.Loopback,0);target.Start();using var budget=new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            try
+            {
+                var wire=new Wire();
+                var forwarding=BleStreamForwarder.RunAsync(new(1,21,0,[]),IPAddress.Loopback,((IPEndPoint)target.LocalEndpoint).Port,wire.PcRead,(_,_)=>Task.FromException(new IOException("not for logs")),()=>160,budget.Token);
+                using var server=await target.AcceptTcpClientAsync(budget.Token);
+                try{await forwarding;throw new Exception("Expected READY failure");}
+                catch(BleTransportException error){Check(BleTransportFailure.From(error).Code=="ready-write");}
+            }
+            finally{target.Stop();}
         });
         foreach(string mode in new[]{"approve-replay","deny","wrong-pin","invalid-signature","revoked"})
         await test("BLE simulated TLS native authorization: "+mode,async()=>

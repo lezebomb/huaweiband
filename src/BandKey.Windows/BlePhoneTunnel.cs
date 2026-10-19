@@ -11,7 +11,7 @@ using Windows.Storage.Streams;
 namespace BandKey.Windows;
 
 /// <summary>Connects only to BandKey's phone service. No band protocol or pairing API.</summary>
-public sealed class BlePhoneTunnel : IAsyncDisposable
+public sealed class BlePhoneTunnel : IBlePhoneConnection
 {
     public static readonly Guid ServiceId=new("ab7c1101-5d18-4e0b-9aba-30ad640be001"),RxId=new("ab7c1102-5d18-4e0b-9aba-30ad640be001"),TxId=new("ab7c1103-5d18-4e0b-9aba-30ad640be001");
     private readonly Channel<byte[]> received=Channel.CreateBounded<byte[]>(new BoundedChannelOptions(128){SingleReader=true,SingleWriter=false,FullMode=BoundedChannelFullMode.Wait});
@@ -25,6 +25,7 @@ public sealed class BlePhoneTunnel : IAsyncDisposable
     public long SentBytes{get;private set;}public long ReceivedBytes=>Interlocked.Read(ref receivedBytes);public int Streams{get;private set;}
     public ushort Mtu{get{try{lastMtu=service?.Session.MaxPduSize??lastMtu;}catch(Exception){/* The radio may disappear before final diagnostics. */}return lastMtu;}}
     public string Stage{get;private set;}="not-started";
+    public BleTransportFailure? Failure{get;private set;}
     public async Task ConnectAsync(CancellationToken cancellation)
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed)!=0,this);
@@ -52,11 +53,11 @@ public sealed class BlePhoneTunnel : IAsyncDisposable
         Stage="connected";
     }
     private void Cancel(){try{stop.Cancel();}catch(ObjectDisposedException){}}
-    private void Fail(string code){linkFailure=code;received.Writer.TryComplete(new IOException(code));Cancel();}
+    private void Fail(string code){linkFailure=code;Failure??=BleTransportFailure.From(new BleTransportException(code));received.Writer.TryComplete(new BleTransportException(code));Cancel();}
     private void OnConnection(BluetoothLEDevice sender,object args)
     {
-        try{if(Volatile.Read(ref disposed)==0 && sender.ConnectionStatus==BluetoothConnectionStatus.Disconnected)Fail("BLE phone disconnected");}
-        catch(Exception){Fail("BLE connection callback failed");}
+        try{if(Volatile.Read(ref disposed)==0 && sender.ConnectionStatus==BluetoothConnectionStatus.Disconnected)Fail("gatt-disconnected");}
+        catch(Exception){Fail("connection-callback");}
     }
     private void OnValue(GattCharacteristic sender,GattValueChangedEventArgs args)
     {
@@ -64,21 +65,31 @@ public sealed class BlePhoneTunnel : IAsyncDisposable
         try{
             var bytes=args.CharacteristicValue.ToArray();var frame=BlePipeFrame.Decode(bytes);
             Interlocked.Add(ref receivedBytes,frame.Payload.Length);
-            if(!received.Writer.TryWrite(bytes)){Interlocked.Add(ref receivedBytes,-frame.Payload.Length);Fail("BLE receive queue/frame limit");}
-        }catch(Exception){Fail("BLE receive callback failed");}
+            if(!received.Writer.TryWrite(bytes)){Interlocked.Add(ref receivedBytes,-frame.Payload.Length);Fail("receive-queue-limit");}
+        }catch(Exception){Fail("receive-frame-invalid");}
     }
     private async Task<BlePipeFrame> ReadAsync(CancellationToken token)=>BlePipeFrame.Decode(await received.Reader.ReadAsync(token));
     private async Task WriteAsync(BlePipeFrame frame,CancellationToken token)
     {
         byte[] bytes=frame.Encode();using var budget=CancellationTokenSource.CreateLinkedTokenSource(token);budget.CancelAfter(TimeSpan.FromSeconds(5));
-        if(await rx!.WriteValueAsync(bytes.AsBuffer(),GattWriteOption.WriteWithResponse).AsTask(budget.Token)!=GattCommunicationStatus.Success)throw new IOException("BLE write refused");
+        GattCommunicationStatus result;
+        try{result=await rx!.WriteValueAsync(bytes.AsBuffer(),GattWriteOption.WriteWithResponse).AsTask(budget.Token);}
+        catch(OperationCanceledException)when(!token.IsCancellationRequested){throw new BleTransportException("gatt-write-timeout");}
+        if(result!=GattCommunicationStatus.Success)throw new BleTransportException("gatt-write-"+result.ToString().ToLowerInvariant());
         SentBytes+=frame.Payload.Length;
     }
     public async Task RunAsync(IPAddress target,int port,TimeSpan duration,string? readyFile=null,string? stopFile=null,CancellationToken cancellation=default)
     {
         if(!LoopbackTcpTunnel.IsLocalTarget(target) || port is <1 or >65535 || duration<=TimeSpan.Zero || duration>TimeSpan.FromHours(2))throw new ArgumentException("BLE target/duration");
         using var lifetime=CancellationTokenSource.CreateLinkedTokenSource(cancellation,stop.Token);lifetime.CancelAfter(duration);var token=lifetime.Token;
-        await ConnectAsync(token);if(readyFile!=null)File.WriteAllText(readyFile,"connected");
+        try{await ConnectAsync(token);}
+        catch(OperationCanceledException)when(token.IsCancellationRequested){throw;}
+        catch(Exception error)
+        {
+            string code=error is UnauthorizedAccessException?"gatt-permission-denied":"connect-"+Stage;
+            Failure??=BleTransportFailure.From(error,code);throw new BleTransportException(code,error);
+        }
+        if(readyFile!=null)File.WriteAllText(readyFile,"connected");
         // A stop file is polled independently so a quiet BLE connection can stop promptly.
         async Task WatchStop(){while(!token.IsCancellationRequested){if(stopFile!=null && File.Exists(stopFile)){lifetime.Cancel();return;}try{await Task.Delay(250,token);}catch(OperationCanceledException){return;}}}
         var watching=WatchStop();
@@ -97,11 +108,14 @@ public sealed class BlePhoneTunnel : IAsyncDisposable
                 {
                     // The peer must reconnect after an ambiguous stream failure; queued
                     // data can never be interpreted as a new TLS session.
-                    Stage="stream-failed";throw;
+                    Stage="stream-failed";
+                    if(error is not OperationCanceledException || !token.IsCancellationRequested)Failure??=BleTransportFailure.From(error);
+                    throw;
                 }
             }
         }
-        catch(OperationCanceledException)when(lifetime.IsCancellationRequested){if(linkFailure!=null){Stage="link-failed";throw new IOException(linkFailure);}Stage="stopped";}
+        catch(OperationCanceledException)when(lifetime.IsCancellationRequested){if(linkFailure!=null){Stage="link-failed";throw new BleTransportException(linkFailure);}Stage="stopped";}
+        catch(Exception error){Failure??=BleTransportFailure.From(error);throw;}
         finally{lifetime.Cancel();await watching;}
     }
     public async ValueTask DisposeAsync()

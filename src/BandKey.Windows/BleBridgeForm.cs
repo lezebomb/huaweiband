@@ -11,7 +11,7 @@ public sealed class BleBridgeForm : Form
     private readonly Button start=new(){Text="连接手机 BLE",AutoSize=true},stop=new(){Text="停止并断开",AutoSize=true,Enabled=false};
     private readonly TextBox status=new(){Multiline=true,ReadOnly=true,Width=650,Height=180,ScrollBars=ScrollBars.Vertical};
     private readonly System.Windows.Forms.Timer timer=new(){Interval=500};
-    private CancellationTokenSource? cancellation;private BlePhoneTunnel? tunnel;private Task? running;private bool closing;
+    private CancellationTokenSource? cancellation;private BlePhoneTransport? tunnel;private Task? running;private bool closing;
     private sealed record Settings(string GuestAddress="",int Minutes=30);
     public BleBridgeForm(Store store)
     {
@@ -21,14 +21,14 @@ public sealed class BleBridgeForm : Form
         var fields=new FlowLayoutPanel{AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,WrapContents=false};fields.Controls.Add(new Label{Text="VM 私网 IP",AutoSize=true,Padding=new(0,6,0,0)});fields.Controls.Add(target);fields.Controls.Add(new Label{Text="最长分钟",AutoSize=true,Padding=new(0,6,0,0)});fields.Controls.Add(minutes);column.Controls.Add(fields);
         var actions=new FlowLayoutPanel{AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,WrapContents=false};actions.Controls.Add(start);actions.Controls.Add(stop);column.Controls.Add(actions);column.Controls.Add(status);
         try{var saved=store.Read<Settings>("transport.json");if(saved!=null){target.Text=saved.GuestAddress;minutes.Value=Math.Clamp(saved.Minutes,1,120);}}catch(Exception){status.Text="上次设置不可读取，请重新输入。";}
-        if(status.Text.Length==0)status.Text="尚未连接。当前 BLE 实现已通过软件模拟测试，等待手机与电脑适配器实测。";
+        if(status.Text.Length==0)status.Text="尚未连接。先在手机启动前台 BLE，再连接本助手；连接成功后仍须验证 TLS 和本次请求。";
         start.Click+=async(_,_)=>await StartTransport();stop.Click+=async(_,_)=>await StopTransport();
         timer.Tick+=(_,_)=>RefreshStatus();timer.Start();
         FormClosing+=async(_,args)=>{if(closing)return;if(running!=null && !running.IsCompleted){args.Cancel=true;await StopTransport();closing=true;Close();}};
         FormClosed+=(_,_)=>timer.Dispose();
     }
     private void Log(string code){try{store.Log("ble-transport",code);}catch(IOException){}catch(UnauthorizedAccessException){}}
-    private void RefreshStatus(){if(tunnel!=null)status.Text=$"阶段：{tunnel.Stage}\r\nMTU：{tunnel.Mtu}；完成数据流：{tunnel.Streams}\r\n发往手机：{tunnel.SentBytes} 字节；来自手机：{tunnel.ReceivedBytes} 字节\r\n未据此判断手环距离或 Windows 解锁。";}
+    private void RefreshStatus(){if(tunnel!=null)status.Text=$"阶段：{tunnel.Stage}；连接尝试：{tunnel.Attempts}\r\nMTU：{tunnel.Mtu}；完成数据流：{tunnel.Streams}\r\n发往手机：{tunnel.SentBytes} 字节；来自手机：{tunnel.ReceivedBytes} 字节\r\n最近故障：{tunnel.Failure?.Code??"无"}；未据此判断手环距离或 Windows 解锁。";}
     private async Task StartTransport()
     {
         if(running is {IsCompleted:false})return;
@@ -37,13 +37,13 @@ public sealed class BleBridgeForm : Form
         cancellation=new();tunnel=new();start.Enabled=target.Enabled=minutes.Enabled=false;stop.Enabled=true;Log("start");
         running=RunTransport(tunnel,address,cancellation.Token);await running;
     }
-    private async Task RunTransport(BlePhoneTunnel current,IPAddress address,CancellationToken token)
+    private async Task RunTransport(BlePhoneTransport current,IPAddress address,CancellationToken token)
     {
         string result;
-        try{await current.RunAsync(address,19443,TimeSpan.FromMinutes((int)minutes.Value),cancellation:token);result="通信已停止。";Log("stopped");}
+        try{await current.RunAsync(address,19443,TimeSpan.FromMinutes((int)minutes.Value),cancellation:token);result=$"通信已停止；连接尝试 {current.Attempts}，故障记录 {current.Failures.Length}；最近故障：{current.Failure?.Code??"无"}。";Log("stopped");}
         catch(OperationCanceledException){result="已取消连接。";Log("cancelled");}
-        catch(Exception error){result="通信停止："+error.GetType().Name+"（"+current.Stage+"）。检查手机前台 BLE、蓝牙状态和 VM 监听，之后重新连接。";Log(error.GetType().Name);}
-        finally{await current.DisposeAsync();tunnel=null;cancellation?.Dispose();cancellation=null;start.Enabled=target.Enabled=minutes.Enabled=true;stop.Enabled=false;}
+        catch(Exception error){var failure=current.Failure??BleTransportFailure.From(error);result="通信停止："+failure.Code+"（"+current.Stage+"）。检查手机前台 BLE、蓝牙状态和 VM 监听，之后重新连接。";Log(failure.Code);}
+        finally{foreach(var failure in current.Failures)Log($"attempt-{failure.Attempt}:{failure.Failure.Code}");tunnel=null;cancellation?.Dispose();cancellation=null;start.Enabled=target.Enabled=minutes.Enabled=true;stop.Enabled=false;}
         status.Text=result;
     }
     private async Task StopTransport(){cancellation?.Cancel();var active=running;if(active!=null)await active;}

@@ -113,13 +113,13 @@ internal static class Program
     }
     private static async Task RunBleTunnel(string[] args,string? output)
     {
-        await using var tunnel=new BlePhoneTunnel();bool passed=false;string? error=null;
+        var tunnel=new BlePhoneTransport();bool passed=false;string? error=null;
         try{
             var target=System.Net.IPAddress.Parse(Arg(args,"--target")??throw new ArgumentException("Missing private target"));
             var seconds=int.TryParse(Arg(args,"--seconds"),out var value)?Math.Clamp(value,1,7200):1800;
             await tunnel.RunAsync(target,19443,TimeSpan.FromSeconds(seconds),Arg(args,"--ready"),Arg(args,"--stop-file"));passed=true;
         }catch(Exception failure){error=failure.GetType().Name;Environment.ExitCode=2;}
-        if(output!=null)File.WriteAllText(output,JsonSerializer.Serialize(new{passed,error,tunnel.Stage,tunnel.Mtu,tunnel.Streams,tunnel.SentBytes,tunnel.ReceivedBytes,tlsTerminated=false,windowsAuthenticationSubmitted=false},Store.Json));
+        if(output!=null)File.WriteAllText(output,JsonSerializer.Serialize(new{passed,error,tunnel.Stage,tunnel.Failure,tunnel.Attempts,tunnel.Failures,tunnel.Mtu,tunnel.Streams,tunnel.SentBytes,tunnel.ReceivedBytes,tlsTerminated=false,windowsAuthenticationSubmitted=false},Store.Json));
     }
     private static async Task ProbeAsync(string[] args)
     {

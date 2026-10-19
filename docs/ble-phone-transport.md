@@ -21,7 +21,7 @@
 5. 手机点击启动轮询，保持本页前台。手动锁定 VM；收到经过核验的请求后点击本次确认，观察 VM 是否实际返回桌面。客户端“已交付”不等于 Windows 已解锁。
 6. 补测不确认、错误证书/签名、拒绝、超过 30 秒、断开蓝牙、撤权与重新锁定。每次确认只应消费一次。最后恢复普通登录、移除实验组件或按快照回滚。
 
-手机离开页面即关闭 BLE 服务、广播和当前 TCP 连接；返回后需手动重新启动。该版不声称 ColorOS 长期后台可用。异常流会要求重新连接，避免将残余数据解释为新会话。手机关闭蓝牙、撤回权限及 Windows 适配器移除仍须硬件补测。
+手机离开页面即关闭 BLE 服务、广播和当前 TCP 连接；返回后需手动重新启动。该版不声称 ColorOS 长期后台可用。Windows 助手现对可用性故障最多重连三次，分别等待 11／12／14 秒，为 v1 手机最长 8 秒的旧 READY 等待及系统 GATT 释放留出时间。每次销毁旧订阅、队列和 TCP，再创建新连接，不延长总运行时限或授权有效期；停止可中断等待。错误帧、会话／顺序违规和权限拒绝立即终止，不自动重试，也不重发应用授权。手机关闭蓝牙、撤回权限及适配器移除仍须硬件补测。
 
 命令行助手仅连接 RFC1918 私网或回环目标，端口固定为 19443：
 
@@ -29,7 +29,7 @@
 BandKey.exe --ble-tunnel --target <VM私网IPv4> --seconds 1800 --output <绝对路径.json>
 ```
 
-可提供 `--ready <文件>` 和 `--stop-file <文件>` 做开发编排；停止文件应使用本轮独立路径。日志仅记录固定阶段、异常类型和数量，不记录 MAC、载荷、nonce、密钥或 Windows 凭据。普通代理认证后端保持不可用。
+可提供 `--ready <文件>` 和 `--stop-file <文件>` 做开发编排；停止文件应使用本轮独立路径。重连和最终停止会移除 readiness 文件，不能沿用首次连接的旧就绪状态。最终报告记录尝试次数及全部失败；`passed=true` 只表示按要求正常结束，仍须检查 `failures`，不能用它证明全程没有故障。日志包含固定错误码、异常类型、数值 HResult／Socket 错误及 EOF／字节计数，不记录 MAC、载荷、nonce、密钥或 Windows 凭据。普通代理认证后端保持不可用。
 
 ## v1 帧格式与限制
 
@@ -49,7 +49,7 @@ Android 另用独立计时器关闭超时 Socket，避免只设置读超时却�
 ## 已完成的软件验证
 
 - C# 核心 115/115，新增 9 项 BLE 格式/状态/上限测试，含 1000 次随机往返。
-- Windows 47/47，新增 12 项：最小 MTU 模拟通道中双向各 60KB 与半关闭；乱序、错会话、ABORT、超额、空闲超时、取消；真实回环 TLS 下的有效签名/重放、拒绝、错误证书、错误签名与撤权。只模拟 GATT，生产转发器、Socket、TLS、密码学与文件交换实际执行，账户/会话为合成输入。
+- Windows 58/58：保留最小 MTU 双向各 60KB／半关闭、乱序、错会话、ABORT、超额、超时、取消和真实回环 TLS 授权反例。本阶段新增 11 项，覆盖目标先 EOF、实际 TCP RST、保留首个双向故障、诊断脱敏、重连释放旧状态／次数上限、停止、共享期限及协议错误不重试。GATT 与重连调度为模拟；Socket、TLS、密码学和文件交换实际执行，账户／会话为合成输入。
 - Android 生产 Java BLE 编码 22 项（含 1000 次往返）；独立跨语言测试验证 C# → Java 1000 帧、Java → C# 1000 帧、完整重新编码一致性。Java 互通报告 1022 项，C# 互通报告 1001 项，避免将这些向量计为独立硬件测试。
 - Windows Release / 自包含发布成功，零编译错误/警告；Android APK 构建、签名检查、Lint 零错误。窗口已离线渲染检查。没有在本阶段连接手机或操作 VM。
 
@@ -62,3 +62,21 @@ Android 另用独立计时器关闭超时 Socket，避免只设置读超时却�
 随后实际 VM 轮次中，工具观察真实 GATT 就绪及手机签名交付，用户确认自动回桌面；再锁后等待 8 秒再拒绝，用户确认始终锁屏。BLE 数据不经 USB 映射，USB 仍用于控制，未做拔线验收。该轮主机记录 MTU 517、完成 56 条流、发送 33742／接收 70293 有效载荷字节，但最后报 `stream-failed / IOException`（先于人工停止），不能作为正常结束或两端精确计数一致的证据；根因尚未确定。保留失败并要求重新连接，不放宽跨会话或一次性授权检查。后续应先排查流中断，再测一加 BLE、长期后台／恢复、真实手环点击和距离。
 
 官方 API 依据：[Android GATT server](https://developer.android.com/reference/android/bluetooth/BluetoothGattServer)、[BLE 广播](https://developer.android.com/reference/android/bluetooth/le/BluetoothLeAdvertiser)、[Windows GATT MTU](https://learn.microsoft.com/en-us/uwp/api/windows.devices.bluetooth.genericattributeprofile.gattsession.maxpdusize?view=winrt-26100)。
+
+## 流错误排查与故障恢复入口
+
+最早实际 VM 报告只有 `IOException`，无法补推唯一根因。新增固定诊断后分别实际捕获 VM TCP 建连超时、`target-half-close / 10054` 和 `target-read / 10053`。修复双 EOF 后重复调用 Shutdown 的结束竞态，并在双向任务取消前保留首个故障，防止把次生取消当作根因。未完整结束的真实 TCP 重置仍然失败，不伪装成 EOF。
+
+修复后的较长轮询完成 100 条流，仍有一次 `target-read / 10053`（手机 EOF=true、目标 EOF=false），该失败保留，不能把重连策略称为消除了所有底层中止。首次人为断路只重建了 GATT、没有恢复新流；随后发现 VM 自身不可达，不能独立将失败归因于旧的 1 秒等待。代码显示 v1 手机旧 READY 等待最长 8 秒，因此加入清理等待，并用不依赖 VM 的隔离服务重新验证。
+
+```powershell
+# 显式硬件实验；手机先启动 BLE，PC 就绪后在原实验页启动轮询。
+# 仅中断本测试自己的宿主机回环转发器，不改 VM、NAT 或防火墙。
+BandKey.Windows.Tests.exe --phone-ble-recovery --target <VM私网IPv4> --root <本轮独立目录>
+```
+
+测试先完成至少 6 条流，关闭自己的透明 TCP 转发器直至观察到失败，再重启转发器，要求自动重连后完成至少 8 条新流。三分钟总时限，记录所有失败并正常清理；不生成确认，不解密 TLS，不独立观察恢复后的应用响应或 Windows 解锁。报告保存实际加载的 Windows DLL SHA-256；发布清单只接受与分发 DLL 完全匹配的恢复结果，不能把普通构建的不同哈希沿用到发布包。Windows 释放所有 GATT 引用后由系统异步断开的行为依据 [Microsoft GATT 客户端文档](https://learn.microsoft.com/en-us/windows/apps/develop/devices-sensors/gatt-client)。
+
+2026-10-19 隔离复验通过：Mate60 原 APK、实际 GATT、MTU 517；断路前 6 条流且无基线故障，唯一一次预期 `target-connect / 10061` 后使用第二次连接完成 8 条新流，总计 14 条，主机发送 7234／接收 16544 字节。不是两端计数比对。实际加载 DLL 与发布包完全一致。USB 无数据映射，合成服务无授权请求、交付为 0；未操作 VM 或测试真实解锁。临时测试电脑资料已核对并恢复原 VM ID／证书／地址，轮询／BLE／服务均停止，屏幕常亮原值已恢复，APK 未重装。这是有限的物理传输恢复验收，长期后台、来宾睡眠与反复 TCP 中止仍待验证。
+
+无可操作 VM 时可对已启动的宿主机合成 TLS 服务显式使用 `--synthetic-fixture --target 127.0.0.1`，此模式只连接回环 19445；普通 VM 模式仅接受私网 VM。合成服务以 `--phone-usb-lab --ble --no-request` 启动，不产生原生挑战。暂用它的公开配对资料，结束后必须恢复原 VM 资料；不要将它的 testOnly 身份升级为正式信任。

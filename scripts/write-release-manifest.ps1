@@ -1,4 +1,4 @@
-param([switch]$PublishedProbeSucceeded,[string]$PhoneUsbReport,[string]$PhoneBleReport)
+param([switch]$PublishedProbeSucceeded,[string]$PhoneUsbReport,[string]$PhoneBleReport,[string]$BleRecoveryReport)
 $ErrorActionPreference='Stop'
 $bandKeyRoot=Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $bandKeyRoot
@@ -19,6 +19,11 @@ if($bandKeyFlow.failed -ne 0 -or !$bandKeyFlow.simulated -or $bandKeyFlow.realWi
 $bandKeyErrors=@($bandKeyLint.issues.issue | Where-Object {$_.severity -in @('Error','Fatal')}).Count
 $bandKeyWarnings=@($bandKeyLint.issues.issue | Where-Object {$_.severity -eq 'Warning'}).Count
 if($bandKeyErrors){throw 'Cannot record a release with Android Lint errors.'}
+$bandKeyRecovery=$null
+if($BleRecoveryReport){
+  $bandKeyRecovery=Get-Content -LiteralPath $BleRecoveryReport -Raw | ConvertFrom-Json
+  if(!$bandKeyRecovery.passed -or !$bandKeyRecovery.physicalBle -or !$bandKeyRecovery.controlledTcpInterruption -or $bandKeyRecovery.targetKind -notin @('synthetic-host-fixture','isolated-vm') -or $bandKeyRecovery.syntheticAccount -isnot [bool] -or ($bandKeyRecovery.targetKind -eq 'synthetic-host-fixture') -ne $bandKeyRecovery.syntheticAccount -or $bandKeyRecovery.beforeStreams -lt 6 -or $bandKeyRecovery.beforeFailures -ne 0 -or $bandKeyRecovery.postRecoveryProxyAccepted -lt 8 -or $bandKeyRecovery.streams -lt ($bandKeyRecovery.beforeStreams+8) -or $bandKeyRecovery.sentBytes -le 0 -or $bandKeyRecovery.receivedBytes -le 0 -or $bandKeyRecovery.mtu -lt 23 -or $bandKeyRecovery.attempts -ne 2 -or @($bandKeyRecovery.failures).Count -ne 1 -or $bandKeyRecovery.cleanupErrors.Count -ne 0 -or $bandKeyRecovery.tlsTerminated -ne $false -or $bandKeyRecovery.automaticApproval -ne $false -or $bandKeyRecovery.windowsAuthenticationSubmitted -ne $false -or $bandKeyRecovery.realWearableTested -ne $false -or $bandKeyRecovery.applicationResponseAfterRecoveryIndependentlyObserved -ne $false -or $bandKeyRecovery.windowsAssemblySha256 -ne (Get-FileHash -LiteralPath artifacts/BandKey-win-x64/BandKey.dll -Algorithm SHA256).Hash.ToLowerInvariant()){throw 'BLE recovery evidence failed or belongs to another Windows assembly.'}
+}
 $bandKeyUsb=$null
 $bandKeyBle=$null;$bandKeyBleEvidence=$null
 if($PhoneUsbReport){
@@ -46,16 +51,18 @@ $bandKeyFiles=foreach($bandKeyRelative in @('artifacts/BandKey-win-x64.zip','art
   blePhysicalHardwareVerified=($null -ne $bandKeyBleEvidence)
   blePhysicalDeviceModel=$(if($bandKeyBle){$bandKeyBle.device.model}else{$null})
   blePhysicalEvidence=$bandKeyBleEvidence
+  bleFaultRecoveryHardwareVerified=($null -ne $bandKeyRecovery)
+  bleFaultRecoveryScope='Physical transport recovery only; no independent application result or Windows authentication'
   simulatedFlowTestsPassed=$bandKeyFlow.passed;referenceProviderInterfaceChecksPassed=$bandKeyProvider.passed
   referenceProviderRegistered=$false;windowsAuthenticationSubmitted=$false
   windowsSelfContainedProbeSucceeded=[bool]$PublishedProbeSucceeded
   windowsUnlockImplemented=$false;wearableButtonHardwareVerified=$false
-  androidPhonePreviouslyInstalled=$true;androidPublishedApkInstalled=($null -ne $bandKeyUsb -or $null -ne $bandKeyBle)
+  androidPhonePreviouslyInstalled=$true;androidPublishedApkInstalled=$(if($null -ne $bandKeyUsb -or $null -ne $bandKeyBle){$true}else{$null})
   phoneUsbSyntheticChecksPassed=$(if($bandKeyUsb){$bandKeyUsb.checks}else{0})
   androidKeystoreReportedSecureHardware=$(if($bandKeyUsb){$bandKeyUsb.keyInsideSecureHardware}else{$null})
   phoneToVmUnlockTested=$false
   wearEngineAppId='119393073';wearEngineSdk='5.0.3.304'
-  huaweiAccountServiceEnabled=$true;wearEngineServiceStatus='under-review-user-reported-2026-10-17'
+  huaweiAccountServiceEnabled=$true;wearEngineServiceStatus='application-pending-user-reported-2026-10-19'
   wearEngineServiceApproved=$false;wearEngineHardwareDiagnosticError=8
   androidLint=[ordered]@{errors=$bandKeyErrors;warnings=$bandKeyWarnings}
   files=@($bandKeyFiles)
