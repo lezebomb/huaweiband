@@ -15,6 +15,7 @@ public final class VmLabActivity extends Activity {
     private Identity identity;
     private TextView status;
     private Button approve,deny;
+    private CheckBox wearableConfirm;
     private ScheduledExecutorService worker;
     private volatile VmRelayClient client;
     private volatile PromptGate gate;
@@ -38,11 +39,17 @@ public final class VmLabActivity extends Activity {
             else view.setPadding(insets.getSystemWindowInsetLeft(),insets.getSystemWindowInsetTop(),insets.getSystemWindowInsetRight(),insets.getSystemWindowInsetBottom());
             return insets;
         });scroll.requestApplyInsets();
-        TextView intro=new TextView(this);intro.setText("VM 手机确认实验\n只签署隔离 VM 的一次性登录请求。确认必须手动点击，不调用 Wear Engine，不接收 Windows 密码。仅保持此页面打开时轮询；离开即取消本页待确认状态。可选后台模式仅保持 BLE 传输。");column.addView(intro);
+        TextView intro=new TextView(this);intro.setText("VM 确认实验\n只签署隔离 VM 的一次性登录请求。默认使用手机测试按钮；可显式切换为真实手环确认。不会接收 Windows 密码。仅保持此页面打开时轮询；离开即取消本页待确认状态。可选后台模式仅保持 BLE 传输。");column.addView(intro);
         status=new TextView(this);status.setTextIsSelectable(true);column.addView(status);
         button(column,"1. 导出手机实验公钥",()->startActivityForResult(new Intent(Intent.ACTION_CREATE_DOCUMENT).setType("application/octet-stream").putExtra(Intent.EXTRA_TITLE,"bandkey-vm-phone.bandkeypub"),1));
         button(column,"2. 导入 VM 电脑配对资料",()->{pollingRequested=false;stopWork();startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT).setType("application/json").addCategory(Intent.CATEGORY_OPENABLE),2);});
         approve=button(column,"确认本次 VM 解锁（测试按钮）",()->decide(true));deny=button(column,"拒绝本次请求",()->decide(false));approve.setEnabled(false);deny.setEnabled(false);
+        wearableConfirm=new CheckBox(this);wearableConfirm.setText("使用真实手环确认（先在主界面授权并选择手环）");column.addView(wearableConfirm);
+        wearableConfirm.setOnCheckedChangeListener((button,checked)->{
+            boolean resume=pollingRequested;stopWork();
+            show(checked?"已切换为真实手环确认，手机测试按钮停用。仅手环本次有效点击才会签名。":"已切换为手机测试按钮，原手环请求已取消。");
+            if(resume)startWork();
+        });
         button(column,"停止轮询并取消待确认请求",()->{pollingRequested=false;stopWork();show("已停止。已经交付的签名不能由此撤回；原生一次性及有效期检查仍适用。");});
         button(column,"启动轮询",this::startWork);
         bleStatus=new TextView(this);bleStatus.setText(R.string.vm_ble_idle);column.addView(bleStatus);
@@ -69,6 +76,10 @@ public final class VmLabActivity extends Activity {
         pollingRequested=true;stopWork();if(identity==null)return;
         try{
             String saved=prefs().getString("pc",null);if(saved==null){show("请先导入 VM 配对资料。");return;}
+            final boolean useWearable=wearableConfirm.isChecked();
+            final String wearableUuid=getSharedPreferences(BridgeService.PREFS,MODE_PRIVATE).getString("wearableUuid","");
+            if(useWearable && wearableUuid.isEmpty()){show("请先返回主界面，授权 Wear Engine 并选择手环。");return;}
+            if(useWearable && getSharedPreferences(BridgeService.PREFS,MODE_PRIVATE).getBoolean("enabled",false)){show("请先停止主界面的自动桥接，再测试隔离 VM，避免两类请求混淆。");return;}
             client=new VmRelayClient(new JSONObject(saved),identity);gate=new PromptGate(()->System.currentTimeMillis()/1000,SystemClock::elapsedRealtime);active=true;worker=Executors.newSingleThreadScheduledExecutor();
             final PromptGate currentGate=gate;final VmRelayClient currentClient=client;
             worker.scheduleWithFixedDelay(()->{
@@ -79,14 +90,28 @@ public final class VmLabActivity extends Activity {
                     if(prompt==null)return;
                     WindowsGrantWire.Challenge challenge=WindowsGrantWire.read(android.util.Base64.decode(prompt.getString("challenge"),android.util.Base64.NO_WRAP));
                     PromptGate.Ticket next=currentGate.begin(prompt.getString("challenge"),(challenge.expires-WindowsGrantWire.FILETIME_UNIX_MILLISECONDS)/1000);if(next==null)return;
-                    runOnUiThread(()->{if(active && gate==currentGate && currentGate.isActive(next)){pending=prompt;ticket=next;approve.setEnabled(true);deny.setEnabled(true);show("VM 已锁定，收到经过核验的一次性请求。\n请在 30 秒内明确确认或拒绝；未确认不会签名。");}});
+                    runOnUiThread(()->{
+                        if(!active || gate!=currentGate || !currentGate.isActive(next))return;
+                        pending=prompt;ticket=next;approve.setEnabled(!useWearable);deny.setEnabled(!useWearable);
+                        if(!useWearable){show("VM 已锁定，收到经过核验的一次性请求。\n请在 30 秒内明确确认或拒绝；未确认不会签名。");return;}
+                        show("VM 请求已核验，正在请求真实手环确认。手机测试按钮已停用。");
+                        new WearableChannel(this).prompt(wearableUuid,"隔离 VM "+currentClient.config.optString("pcId").substring(0,8),currentGate,next,()->active && gate==currentGate,
+                            yes->runOnUiThread(()->submitDecision(currentGate,next,prompt,currentClient,yes)),
+                            message->showCurrent(currentGate,message));
+                    });
                 }catch(Exception error){showCurrent(currentGate,"等待连接或新请求："+errorCode(error));}
-            },0,2,TimeUnit.SECONDS);show("轮询已启动。请在 VM 内手动锁定，再在这里确认。当前不验证真实距离。");
+            },0,2,TimeUnit.SECONDS);show(useWearable?"手环确认轮询已启动。请手动锁定隔离 VM，保持手机页面在前台，再在手环确认。当前不验证真实距离。":"轮询已启动。请在 VM 内手动锁定，再在这里确认。当前不验证真实距离。");
         }catch(Exception error){stopWork();show("启动失败："+error.getClass().getSimpleName());}
     }
     private void decide(boolean yes){
         final PromptGate current=gate;final PromptGate.Ticket selected=ticket;final JSONObject prompt=pending;final VmRelayClient target=client;
-        if(!hasWindowFocus() || !getSystemService(PowerManager.class).isInteractive() || getSystemService(KeyguardManager.class).isKeyguardLocked() || !active || current==null || target==null || prompt==null || !current.consume(selected)){show("没有当前有效请求，或页面不在已解锁的前台。");return;}
+        if(wearableConfirm.isChecked() || !foregroundDecision() || !active || current==null || target==null || prompt==null || !current.consume(selected)){show("没有当前有效手机测试请求，或页面不在已解锁的前台。");return;}
+        submitDecision(current,selected,prompt,target,yes);
+    }
+    private boolean foregroundDecision(){return hasWindowFocus() && getSystemService(PowerManager.class).isInteractive() && !getSystemService(KeyguardManager.class).isKeyguardLocked();}
+    private void submitDecision(PromptGate current,PromptGate.Ticket selected,JSONObject prompt,VmRelayClient target,boolean yes){
+        // WearableChannel has already consumed its ticket. Consuming twice would discard a real click.
+        if(!foregroundDecision() || !active || gate!=current || ticket!=selected || pending!=prompt || client!=target || !current.canSubmit(selected))return;
         approve.setEnabled(false);deny.setEnabled(false);
         try{worker.execute(()->{try{if(!active || gate!=current || !current.canSubmit(selected))return;JSONObject result=target.decide(prompt,yes);showCurrent(current,result.optBoolean("submitted")?"签名已交给原生组件；请观察 VM 是否实际进入桌面。此响应不宣称 Windows 已解锁。":"请求结果："+result.optString("code","unknown"));}catch(Exception error){showCurrent(current,"提交失败或已过期："+errorCode(error));}});}catch(RejectedExecutionException ignored){}
     }

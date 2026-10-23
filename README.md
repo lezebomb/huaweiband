@@ -2,13 +2,13 @@
 
 这是可继续研发、可构建的 Windows / Android 工程。**隔离 VM 的本地账户已获用户实测确认：Mate60 手机按钮分别经 USB、真实 BLE 触发自动返回桌面，无需输入密码或切换登录方式；两条链路的不确认／拒绝检查均保持锁屏。** 工具观察到手机收到请求及签名交付，桌面结果来自用户观察，未独立采集 WTS 解锁结果。正式代理和真实手环尚未接入此能力。
 
-最新进展：Android 0.2.0 已在 Mate60 保留数据升级，手动重建 BLE 后解锁获用户确认。Windows 已补空闲探测及断线重连；用户后续反馈功能似乎正常，截图保留历史VM连接超时。现进一步区分当前状态、历史故障及本次连接的新流数；仅编译交付此显示修正，未重跑旧115／79项回归，也不宣称长期后台已通过。手机无需重装。见 [BLE 修复与复测](docs/ble-phone-transport.md)及 [开发记录](docs/development-20261018.md)。
+最新进展（2026-10-23）：Wear Engine 服务开通后，一加 + Band 11 Pro 已实际返回通知能力“支持”，并收到真实手环的确认、拒绝两种按钮回调。修正设备列表查询后，Android 0.3.0 已保留数据升级；新增无解锁副作用的手环按钮测试页，以及 VM 实验页的真实手环确认模式。手环到 VM 的完整解锁仍待本轮联调，距离和长期后台未验证。见 [本轮实测及 VM 步骤](docs/wearengine-validation-20261023.md)。此前 BLE 修复记录保留在 [BLE 修复与复测](docs/ble-phone-transport.md)。
 
 ## 直接运行
 
 - Windows：解压 [BandKey-win-x64.zip](artifacts/BandKey-win-x64.zip)，运行其中的 `BandKey.exe`。当前目录已有 [BandKey.exe](artifacts/BandKey-win-x64/BandKey.exe)，内含 .NET 运行时，无需另装运行时。
 - 手机 BLE 修复版：[启动入口](artifacts/启动BLE修复版.cmd)、[独立 ZIP](artifacts/BandKey-BLE-recovery.zip)。先停止并关闭旧 BLE 助手，再运行新入口；它只打开电脑传输助手，不安装登录组件。ZIP 需完整解压后运行 `Start-BLE.cmd`；不与运行中的旧程序混合覆盖。
-- Android：[BandKey-bridge-debug.apk](artifacts/BandKey-bridge-debug.apk)。0.2.0 已在 Mate60 保留数据安装，手动重连后 VM 解锁获用户确认；旧版的 USB / BLE 合成检查不沿用为当前 APK 的完整硬件通过。一加仍保留上一 USB 实测版本，手环继续与一加配对。Wear Engine 仍待审批。
+- Android：[BandKey-bridge-debug.apk](artifacts/BandKey-bridge-debug.apk)。0.3.0 已在一加保留数据安装，真实 Wear Engine 设备查询、确认与拒绝回调已通过。Mate60 暂保留 0.2.0；旧版的 USB / BLE 或 VM 结果不沿用为新版完整通过。手环保持与一加的现有配对。
 - VM 手机实验：[一步步教程](docs/vm-phone-bridge-test.md)、[中继协议](docs/vm-phone-relay-protocol.md)。`BandKey-VM-Phone-Lab-*.iso` 与旧模拟镜像独立保存。用户已在 VMware/build 26300 来宾登记手机模式并完成联调；原有系统登录选项和快照保留，宿主机未注册 Provider。
 - VM 会话／自动锁屏工具：[使用说明](docs/vm-provider-test.md)。独立 `BandKey-VM-Session-Lab-*.iso` 默认只记录 WTS／查询，模拟走远按钮可在指定来宾调用锁屏；不安装登录组件。当前已构建及离线验证，尚未在 VM 实跑。可用 `./scripts/package-session-lab.ps1` 构建，最新本机路径在 `artifacts/latest-session-lab-package.json`。
 - 配置、应用身份密钥、授权公钥及日志保存在程序旁的 `runtime/`。可用 `--data <目录>` 改变位置。私钥以当前 Windows 用户的 DPAPI 加密保存；正式托盘代理没有 Windows 密码/PIN输入框，也没有保存它们的代码。独立 VM 新实验由用户登记一次 VM 密码，以机器 DPAPI 和 SYSTEM/管理员专属 ACL 保管；它与正式分发包分开。
@@ -25,9 +25,9 @@
 | Windows DPAPI、TLS、原生中继与文件交换 | 已实际验证，GATT／重连／会话状态为模拟 | 整套79项；新增4项覆盖静默断线探测及错误传播。含实际TCP、密码学和文件API，不能替代新补丁的物理BLE恢复验收 |
 | 手机到 Windows 的独立 BLE 传输 | 合成账户 11 项通过；实际 VM 解锁获用户确认 | 合成轮次 MTU 517、两端计数一致；实际 VM 轮次无 USB 数据映射，确认解锁／拒绝保持锁屏，随后出现流错误；长期稳定性待修复验证 |
 | `LockWorkStation`、WTS 锁屏事件、托盘/参数界面 | 已实现，实际锁屏待 VM 验证 | 新会话工具复用距离控制器和 Windows API，默认只读、限制指定 VM；宿主机拒绝与模拟测试通过，未在真实会话触发锁屏 |
-| Android 官方 SDK、环境诊断 | 部分已实际验证 | 一加 Android 16、运动健康 17.0.8.300；正式 App ID + HMS Core 6.16.4.352 后查询返回服务范围错误 8 |
-| Android 前台桥接与按钮处理 | 代码实现及模拟测试通过 | 19 项生命周期/重试测试通过；停止、换设备、过期后取消旧请求，重复点击只消费一次。服务权限、Notify 能力、ColorOS 长期后台尚待验证 |
-| 手环按钮点击 → 手机 → 电脑 | 尚需真机验证 | 尚无手环 Notify 能力及真实点击证据；手机指定地址 30 秒扫描为 0 条广播 |
+| Android 官方 SDK、环境诊断 | 设备与通知已实际验证 | 一加 Android 16、运动健康 17.0.8.300、HMS Core 6.16.4.352，服务 API 14；已获设备信息及通知调用，不再返回旧服务范围错误 8 |
+| Android 前台桥接与按钮处理 | 生命周期测试及真实手环按钮通过 | 19 项生命周期/重试测试通过；本轮记录真实确认、拒绝回调，测试未签名或调用电脑认证；ColorOS 长期后台尚待验证 |
+| 手环按钮点击 → 手机 → 电脑 | 手环到手机通过；到 VM 待联调 | `getCommonDevice()` 返回已连接、Notify=0（支持）；真实确认及拒绝各一轮。VM 页已接入同一按钮通道，完整解锁结果单独验收；未验证距离 |
 | 电脑同时作为第二个华为协议主机 | 技术上仍存在障碍 | 未拿到已有配对会话的合法认证通道；未重配或重置手环；并发连接能力未知 |
 | Windows 真实身份认证/解锁 | VM 本地账户模拟模式及手机 USB / BLE 模式获用户确认 | 手机两路确认后自动回桌面，无需手动密码／切换选项；工具观察交付，桌面由用户确认，未独立采集 WTS。宿主机 **MicrosoftAccount**、Hello 和真实手环尚未验证 |
 | 微软 V2 Credential Provider 参考接口 | 宿主机接口验证通过，未验证登录 | 控制台和图形入口各 42/42，两个失败场景通过；已生成只读来宾测试 ISO，未注册、未提交系统认证，测试身份为虚构用户 |
@@ -64,8 +64,8 @@ Gadgetbridge 已有 [Band 11 Pro 条目](https://gadgetbridge.org/gadgets/wearab
 
 需要一次性配置，日常操作才可以只点手环：
 
-1. 账号服务已开通，Wear Engine 正在审核。待两项权限通过后，按 [申请资料](docs/wearengine-application.md)核对 App ID、包名和签名指纹。正式 App ID 已写入 `android/gradle.properties`。不要将 Windows 密码/PIN发给开发工具。
-2. 让一加上的运动健康正常连接手环，安装 APK，授予蓝牙和通知权限；在 App 内申请 `DEVICE_MANAGER`、`NOTIFY` 权限并选定手环 UUID。查看返回的 Notify 能力。
+1. 账号服务与 Wear Engine 两项基础权限已开通，并在一加实际调用。App ID、包名、签名指纹仍须与申请资料一致。正式 App ID 已写入 `android/gradle.properties`。不要将 Windows 密码/PIN发给开发工具。
+2. 让一加上的运动健康正常连接手环，安装 APK，授予蓝牙和通知权限；在 App 内申请 `DEVICE_MANAGER`、`NOTIFY` 权限并选定手环 UUID。设备选择与发送通知使用 `getCommonDevice()` 获取能力完整的设备对象。可先打开“手环按钮测试（不会解锁电脑）”，检查通知和确认／拒绝回调。
 3. Windows 配置“本机监听 IP”为电脑的局域网 IP、启用 HTTPS 桥接、保存后退出重开程序。默认 `127.0.0.1` 只用于本机，不可被手机访问。防火墙如阻止访问，仅为专用网络/本地子网放行该程序或 TCP 18443；程序不自动修改防火墙。
 4. Windows 导出电脑配对资料，在手机导入并核对完整公钥和 TLS 指纹。手机导出公钥，在 Windows 导入并核对手机指纹。配对文件没有私钥。
 5. ColorOS 中为 BandKey 与运动健康开启允许后台活动、自启动，按需关闭电池优化。启动自动桥接后有持续前台服务通知。
@@ -153,4 +153,4 @@ artifacts/                  EXE/APK/测试报告（不纳入版本控制）
 .tooling/                   项目本地 SDK/依赖缓存
 ```
 
-本地模拟及手机 USB / BLE 的有效解锁已有用户反馈；手机链路的无确认／拒绝也已补测。复现步骤见 [VM 手机确认教程](docs/vm-phone-bridge-test.md)，旧模式见 [模拟签名教程](docs/vm-signed-confirmation-test.md)。下一步排查实际 BLE 流中断，再补长期后台及认证边界；正式登录仍受 [认证实施门槛](docs/windows-authentication.md)约束。Wear Engine 审核通过后验证一加 + Band 11 Pro 的 Notify 点击反馈与电脑侧可持续观测性；测试密钥不能作为真实手环凭据。
+本地模拟及手机 USB / BLE 的有效解锁已有用户反馈；手机链路的无确认／拒绝也已补测。复现步骤见 [VM 手机确认教程](docs/vm-phone-bridge-test.md)，旧模式见 [模拟签名教程](docs/vm-signed-confirmation-test.md)。Wear Engine 服务已开通，一加 + Band 11 Pro 的真实 Notify 确认和拒绝回调已通过；下一步完成真实手环至 VM 联调，并分别验证长期后台、真实距离及电脑侧可持续观测性。正式登录仍受 [认证实施门槛](docs/windows-authentication.md)约束，测试手机密钥不能作为手环自身持有的凭据。

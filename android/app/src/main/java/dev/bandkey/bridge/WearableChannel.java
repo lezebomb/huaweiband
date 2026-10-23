@@ -15,9 +15,14 @@ final class WearableChannel {
     private final Context context;
     WearableChannel(Context context){this.context=context;}
     void prompt(String targetUuid,String pcLabel,PromptGate gate,PromptGate.Ticket ticket,BooleanSupplier enabled,Consumer<Boolean> clicked,Consumer<String> status){
+        prompt(targetUuid,"是否解锁电脑？",pcLabel+" · 30 秒内有效",gate,ticket,enabled,clicked,status);
+    }
+    void prompt(String targetUuid,String title,String text,PromptGate gate,PromptGate.Ticket ticket,BooleanSupplier enabled,Consumer<Boolean> clicked,Consumer<String> status){
         if(!enabled.getAsBoolean() || !gate.isActive(ticket))return;
         try {
-        HiWear.getDeviceClient(context).getBondedDevices().addOnSuccessListener(devices->{
+        // getBondedDevices is the P2P list and can leave Notify capability unknown.
+        // getCommonDevice supplies the capability information used by template notifications.
+        HiWear.getDeviceClient(context).getCommonDevice().addOnSuccessListener(devices->{
             if(!enabled.getAsBoolean() || !gate.isActive(ticket))return;
             try {
             Device target=null;
@@ -28,7 +33,7 @@ final class WearableChannel {
             buttons.put(NotificationConstants.BUTTON_ONE_CONTENT_KEY,"一键解锁");
             buttons.put(NotificationConstants.BUTTON_TWO_CONTENT_KEY,"拒绝");
             Notification notification=new Notification.Builder().setTemplateId(NotificationTemplate.NOTIFICATION_TEMPLATE_TWO_BUTTONS)
-                .setPackageName("dev.bandkey.bridge").setTitle("是否解锁电脑？").setText(pcLabel + " · 30 秒内有效")
+                .setPackageName(context.getPackageName()).setTitle(title).setText(text)
                 .setButtonContents(buttons).setAction(new Action(){
                     @Override public void onResult(Notification n,int feedback){
                         // 0=exit, 1=delete, 2=first button, 3=second button. Delivery success never approves.

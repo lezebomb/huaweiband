@@ -46,6 +46,7 @@ public final class MainActivity extends Activity {
         button(column,"2. 导出手机公钥",()->{Intent i=new Intent(Intent.ACTION_CREATE_DOCUMENT).setType("application/json").putExtra(Intent.EXTRA_TITLE,"bandkey-phone.json");startActivityForResult(i,11);});
         button(column,"3. 授权 Wear Engine 并选择手环",this::authorize);
         button(column,"诊断连接与设备能力",()->new WearDiagnostics(this,this::show).run());
+        button(column,"手环按钮测试（不会解锁电脑）",()->startActivity(new Intent(this,WearTestActivity.class)));
         button(column,"诊断目标手环广播（30 秒）",this::probeAdvertisement);
         button(column,"导出诊断 JSON",()->startActivityForResult(new Intent(Intent.ACTION_CREATE_DOCUMENT).setType("application/json").putExtra(Intent.EXTRA_TITLE,"bandkey-diagnostics.json"),12));
         button(column,"4. 启动自动桥接",()->{
@@ -58,7 +59,7 @@ public final class MainActivity extends Activity {
         });
         button(column,"停止并关闭开机启动",()->{BridgeService.stop(this);show("桥接已停止，旧请求不再接受点击");});
         button(column,"ColorOS 后台设置",()->{startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,android.net.Uri.parse("package:"+getPackageName())));});
-        button(column,"VM 手机确认实验（不需要 Wear Engine）",()->startActivity(new Intent(this,VmLabActivity.class)));
+        button(column,"VM 确认实验（手机或真实手环）",()->startActivity(new Intent(this,VmLabActivity.class)));
         try{identity=new Identity();}catch(Exception e){show("密钥初始化失败："+e.getClass().getSimpleName());}
         if(getIntent().getBooleanExtra("bandkeyVmLab",false))startActivity(new Intent(this,VmLabActivity.class));
     }
@@ -88,7 +89,7 @@ public final class MainActivity extends Activity {
             .setNegativeButton("取消",null).show();
     }
     private void selectDevice(){
-        HiWear.getDeviceClient(this).getBondedDevices().addOnSuccessListener(devices->{
+        HiWear.getDeviceClient(this).getCommonDevice().addOnSuccessListener(devices->{
             runOnUiThread(()->{
                 if(devices.isEmpty()){show("运动健康未返回设备。检查服务申请、签名指纹和手机兼容性。");return;}
                 String[] names=new String[devices.size()];for(int i=0;i<names.length;i++){Device d=devices.get(i);names[i]=d.getName()+" / "+d.getSoftwareVersion()+" / Notify="+d.getNotifyCapability();}
