@@ -7,6 +7,14 @@ internal static class Program
     [STAThread]
     public static void Main(string[] args)
     {
+        if(args.Contains("--host-audit"))
+        {
+            try{
+                var report=Task.Run(HostReadinessAudit.CaptureAsync).GetAwaiter().GetResult();
+                File.WriteAllText(Arg(args,"--output")??"host-readiness.json",JsonSerializer.Serialize(report,Store.Json));
+            }catch(Exception){Environment.ExitCode=2;}
+            return;
+        }
         if(args.Contains("--ble-bridge") || args.Contains("--render-ble-settings"))
         {
             ApplicationConfiguration.Initialize();

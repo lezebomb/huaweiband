@@ -1,6 +1,7 @@
 #define BANDKEY_UNIT_TEST
 #include "../../src/BandKey.CredentialProvider/Provider.cpp"
 #include "../../src/BandKey.CredentialProvider/LabCleanup.h"
+#include "../../src/BandKey.CredentialProvider/OnlineCredentialPacking.h"
 #include <bcrypt.h>
 #include <fstream>
 #include <filesystem>
@@ -74,6 +75,58 @@ static DWORD Count(ICredentialProvider* provider) {
 static void FreeSerialization(CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION& result) {
     if (result.rgbSerialization) { SecureZeroMemory(result.rgbSerialization, result.cbSerialization); CoTaskMemFree(result.rgbSerialization); result = {}; }
 }
+struct ScopedAuthIdentity {
+    PSEC_WINNT_AUTH_IDENTITY_OPAQUE value = nullptr;
+    ~ScopedAuthIdentity() { SspiFreeAuthIdentity(value); }
+};
+struct ScopedSspiModule {
+    HMODULE value = LoadLibraryExW(L"sspicli.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    ~ScopedSspiModule() { if (value) FreeLibrary(value); }
+};
+struct ScopedIdentityBytes {
+    char* value = nullptr; ULONG size = 0;
+    ~ScopedIdentityBytes() { if (value) { SecureZeroMemory(value, size); SspiLocalFree(value); } }
+};
+static void TestOnlineCredentialPacking(std::vector<std::pair<const char*, bool>>& tests) {
+    auto check = [&](const char* name, bool success) { tests.emplace_back(name, success); if (!success) throw std::runtime_error(name); };
+    ScopedSspiModule sspi;
+    auto decrypt = sspi.value ? reinterpret_cast<decltype(&SspiDecryptAuthIdentityEx)>(GetProcAddress(sspi.value, "SspiDecryptAuthIdentityEx")) : nullptr;
+    check("official same-logon identity decryption export available", decrypt != nullptr);
+    if (!decrypt) throw std::runtime_error("identity decryption unavailable");
+    SecretBuffer<257> password; BYTE random[16]{};
+    check("online packing synthetic password random source", BCryptGenRandom(nullptr, random, sizeof(random), BCRYPT_USE_SYSTEM_PREFERRED_RNG) >= 0);
+    constexpr wchar_t hex[] = L"0123456789abcdef";
+    for (size_t i = 0; i < sizeof(random); i++) { password.data[2*i] = hex[random[i] >> 4]; password.data[2*i+1] = hex[random[i] & 15]; } SecureZeroMemory(random, sizeof(random));
+    ULONG package = 0; check("online packing resolves Negotiate without authenticating", SUCCEEDED(NegotiatePackage(&package)));
+    for (auto scenario : { CPUS_LOGON, CPUS_UNLOCK_WORKSTATION }) {
+        CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION packed{};
+        check("MicrosoftAccount protected identity buffer packs", SUCCEEDED(PackMicrosoftAccountCredential(scenario, L"MicrosoftAccount\\bandkey-test@example.invalid", password.data.data(), package, BandKeyLabClsid, &packed)) && packed.rgbSerialization && packed.cbSerialization);
+        check("online serialization binds provider and Negotiate", packed.clsidCredentialProvider == BandKeyLabClsid && packed.ulAuthenticationPackage == package);
+        auto plain = reinterpret_cast<const BYTE*>(password.data.data()); size_t plainBytes = wcslen(password.data.data()) * sizeof(wchar_t);
+        bool exposed = false; for (size_t offset = 0; offset + plainBytes <= packed.cbSerialization; offset++) if (memcmp(packed.rgbSerialization + offset, plain, plainBytes) == 0) exposed = true;
+        check("online identity buffer does not contain plaintext password", !exposed);
+        // Decode the official identity structure; its string representation is encoded.
+        ScopedAuthIdentity original;
+        check("online identity is protected by official SSPI", SspiUnmarshalAuthIdentity(packed.cbSerialization, reinterpret_cast<char*>(packed.rgbSerialization), &original.value) == SEC_E_OK && SspiIsAuthIdentityEncrypted(original.value));
+        check("online identity decrypts within the same logon session", decrypt(SEC_WINNT_AUTH_IDENTITY_ENCRYPT_SAME_LOGON, original.value) == SEC_E_OK);
+        ScopedIdentityBytes decoded;
+        check("decrypted identity exports in the ordinary test process", SspiMarshalAuthIdentity(original.value, &decoded.size, &decoded.value) == SEC_E_OK && decoded.value && decoded.size >= plainBytes);
+        bool preserved = false;
+        for (size_t offset = 0; offset + plainBytes <= decoded.size; offset++) if (memcmp(decoded.value + offset, plain, plainBytes) == 0) preserved = true;
+        check("protected identity preserves the random synthetic secret", preserved);
+        FreeSerialization(packed);
+        check("online serialization cleared after release", !packed.rgbSerialization && !packed.cbSerialization);
+    }
+    for (const wchar_t* invalid : { L"BANDKEYLAB\\TestUser", L"AzureAD\\fake@example.invalid", L"MicrosoftAccount\\", L"MicrosoftAccount\\a\\b", L"MicrosoftAccount\\a\nb" }) {
+        CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION packed{};
+        check("online packer rejects unsupported identity before allocation", PackMicrosoftAccountCredential(CPUS_LOGON, invalid, password.data.data(), package, BandKeyLabClsid, &packed) == E_INVALIDARG && !packed.rgbSerialization);
+    }
+    CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION packed{};
+    check("online packer rejects CredUI use", PackMicrosoftAccountCredential(CPUS_CREDUI, L"MicrosoftAccount\\fake@example.invalid", password.data.data(), package, BandKeyLabClsid, &packed) == E_INVALIDARG);
+    check("online packer rejects missing result", PackMicrosoftAccountCredential(CPUS_LOGON, L"MicrosoftAccount\\fake@example.invalid", password.data.data(), package, BandKeyLabClsid, nullptr) == E_POINTER);
+    check("online packer rejects missing secret", PackMicrosoftAccountCredential(CPUS_LOGON, L"MicrosoftAccount\\fake@example.invalid", nullptr, package, BandKeyLabClsid, &packed) == E_INVALIDARG);
+    check("online packer rejects absent provider identity", PackMicrosoftAccountCredential(CPUS_LOGON, L"MicrosoftAccount\\fake@example.invalid", password.data.data(), package, GUID_NULL, &packed) == E_INVALIDARG);
+}
 int wmain(int argc, wchar_t** argv) {
     if (argc == 3 && (wcscmp(argv[1], L"--verify-interop") == 0 || wcscmp(argv[1], L"--verify-java") == 0 || wcscmp(argv[1], L"--verify-phone") == 0)) {
         auto directory = std::filesystem::path(argv[2]); bool passed = false;
@@ -98,6 +151,7 @@ int wmain(int argc, wchar_t** argv) {
     HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     try {
         check("COM initialized", SUCCEEDED(com));
+        TestOnlineCredentialPacking(tests);
         {
             SyntheticGrantRuntime runtime;
             runtime.directory = std::filesystem::absolute(std::filesystem::path(argv[2]).parent_path()) / (L"grant-flow-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
