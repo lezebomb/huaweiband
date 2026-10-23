@@ -70,7 +70,23 @@ public final class VmLabActivity extends Activity {
     private Button button(LinearLayout column,String text,Runnable action){Button b=new Button(this);b.setText(text);b.setOnClickListener(v->action.run());column.addView(b);return b;}
     private void show(String text){runOnUiThread(()->status.setText(getString(R.string.vm_lab_status,nativeFingerprint,text)));}
     private void showCurrent(PromptGate expected,String text){runOnUiThread(()->{if(active && gate==expected)show(text);});}
-    private static String errorCode(Exception error){String message=error.getMessage();return error instanceof IOException && message!=null && message.matches("PC HTTP [0-9]{3}")?message:error.getClass().getSimpleName();}
+    private String errorCode(Exception error){
+        String message=error.getMessage();
+        // Keep a bounded app-private cause chain: the top-level SSL exception alone
+        // cannot distinguish certificate refusal from a closed stream or timeout.
+        try{
+            org.json.JSONArray causes=new org.json.JSONArray();Throwable cause=error;
+            for(int depth=0;cause!=null && depth<8;depth++,cause=cause.getCause()){
+                JSONObject entry=new JSONObject().put("type",cause.getClass().getSimpleName());
+                if(error instanceof javax.net.ssl.SSLException && cause.getMessage()!=null){String detail=cause.getMessage();entry.put("detail",detail.substring(0,Math.min(512,detail.length())));}
+                causes.put(entry);
+            }
+            JSONObject report=new JSONObject().put("recordedAt",System.currentTimeMillis()).put("causes",causes)
+                .put("authorizationRetried",false).put("certificateValidationRelaxed",false);
+            try(OutputStream out=openFileOutput("vm-transport-error.json",MODE_PRIVATE)){out.write(report.toString(2).getBytes(StandardCharsets.UTF_8));}
+        }catch(Exception ignored){}
+        return error instanceof IOException && message!=null && message.matches("PC HTTP [0-9]{3}")?message:error.getClass().getSimpleName();
+    }
     private void stopWork(){active=false;PromptGate current=gate;if(current!=null)current.stop();pending=null;ticket=null;client=null;if(worker!=null)worker.shutdownNow();worker=null;approve.setEnabled(false);deny.setEnabled(false);}
     private void startWork(){
         pollingRequested=true;stopWork();if(identity==null)return;
