@@ -27,7 +27,7 @@ public final class BlePhonePeripheral implements AutoCloseable {
     private final Object streamState=new Object();
     private final ExecutorService workers=Executors.newCachedThreadPool();
     private final ScheduledExecutorService deadlines=Executors.newSingleThreadScheduledExecutor();
-    private volatile boolean closed,enabled,advertised;private volatile String failure="";private volatile int mtu=23;
+    private volatile boolean closed,advertised;private volatile int subscription;private volatile String failure="";private volatile int mtu=23;
     private volatile BluetoothDevice peer;private BluetoothGattServer gatt;private BluetoothLeAdvertiser advertiser;private BluetoothGattCharacteristic tx;
     private ServerSocket listener;private volatile Socket socket;private volatile long activeSession;
     public volatile long sentBytes,receivedBytes;public volatile int connections;
@@ -42,13 +42,13 @@ public final class BlePhonePeripheral implements AutoCloseable {
         gatt=manager.openGattServer(context,callback);if(gatt==null)throw new IOException("GATT server unavailable");
         BluetoothGattService service=new BluetoothGattService(SERVICE,BluetoothGattService.SERVICE_TYPE_PRIMARY);
         service.addCharacteristic(new BluetoothGattCharacteristic(RX,BluetoothGattCharacteristic.PROPERTY_WRITE,BluetoothGattCharacteristic.PERMISSION_WRITE));
-        tx=new BluetoothGattCharacteristic(TX,BluetoothGattCharacteristic.PROPERTY_NOTIFY,0);tx.addDescriptor(new BluetoothGattDescriptor(CCCD,BluetoothGattDescriptor.PERMISSION_READ|BluetoothGattDescriptor.PERMISSION_WRITE));service.addCharacteristic(tx);
+        tx=new BluetoothGattCharacteristic(TX,BluetoothGattCharacteristic.PROPERTY_NOTIFY|BluetoothGattCharacteristic.PROPERTY_INDICATE,0);tx.addDescriptor(new BluetoothGattDescriptor(CCCD,BluetoothGattDescriptor.PERMISSION_READ|BluetoothGattDescriptor.PERMISSION_WRITE));service.addCharacteristic(tx);
         if(!gatt.addService(service))throw new IOException("GATT service registration failed");
         workers.execute(this::acceptLoop);
     }
     public boolean awaitAdvertising(long milliseconds)throws InterruptedException{return advertising.await(milliseconds,TimeUnit.MILLISECONDS) && failure.isEmpty() && !closed;}
     public boolean isAdvertising(){return advertised && !closed;}
-    public boolean isConnected(){return peer!=null && enabled && !closed;}
+    public boolean isConnected(){return peer!=null && subscription!=BleSubscription.DISABLED && !closed;}
     public boolean isStreamActive(){synchronized(streamState){return activeSession!=0;}}
     public String failure(){return failure;}
     private void problem(String code){failure=code;status.accept(code);closeSocket();}
@@ -76,21 +76,22 @@ public final class BlePhonePeripheral implements AutoCloseable {
         @Override public void onConnectionStateChange(BluetoothDevice device,int result,int state){
             if(!available())return;
             if(state==BluetoothProfile.STATE_CONNECTED){if(peer!=null && !peer.equals(device)){gatt.cancelConnection(device);return;}peer=device;mtu=23;status.accept("电脑 GATT 已连接，尚未验证 TLS 身份。");}
-            else if(device.equals(peer)){enabled=false;peer=null;problem("BLE disconnected; pending stream cancelled");}
+            else if(device.equals(peer)){subscription=BleSubscription.DISABLED;peer=null;problem("BLE disconnected; pending stream cancelled");}
         }
         @Override public void onMtuChanged(BluetoothDevice device,int value){if(available() && device.equals(peer))mtu=Math.max(23,value);}
-        @Override public void onDescriptorReadRequest(BluetoothDevice device,int request,int offset,BluetoothGattDescriptor descriptor){if(!available())return;gatt.sendResponse(device,request,device.equals(peer) && offset==0 && CCCD.equals(descriptor.getUuid())?BluetoothGatt.GATT_SUCCESS:BluetoothGatt.GATT_FAILURE,offset,enabled?BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE:BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE);}
+        @Override public void onDescriptorReadRequest(BluetoothDevice device,int request,int offset,BluetoothGattDescriptor descriptor){if(!available())return;gatt.sendResponse(device,request,device.equals(peer) && offset==0 && CCCD.equals(descriptor.getUuid())?BluetoothGatt.GATT_SUCCESS:BluetoothGatt.GATT_FAILURE,offset,BleSubscription.encode(subscription));}
         @Override public void onDescriptorWriteRequest(BluetoothDevice device,int request,BluetoothGattDescriptor descriptor,boolean prepared,boolean response,int offset,byte[] value){
             if(!available())return;
-            boolean okay=device.equals(peer) && CCCD.equals(descriptor.getUuid()) && !prepared && offset==0 && (Arrays.equals(value,BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE) || Arrays.equals(value,BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE));
-            if(okay){enabled=Arrays.equals(value,BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE);if(!enabled)closeSocket();}
+            int mode=BleSubscription.parse(value);
+            boolean okay=device.equals(peer) && CCCD.equals(descriptor.getUuid()) && !prepared && offset==0 && mode>=0;
+            if(okay){int previous=subscription;subscription=mode;if(mode==BleSubscription.DISABLED || (mode!=previous && isStreamActive()))closeSocket();}
             if(response)gatt.sendResponse(device,request,okay?BluetoothGatt.GATT_SUCCESS:BluetoothGatt.GATT_FAILURE,0,null);
         }
         @Override public void onCharacteristicWriteRequest(BluetoothDevice device,int request,BluetoothGattCharacteristic characteristic,boolean prepared,boolean response,int offset,byte[] value){
             if(!available())return;
             boolean okay=false;
             synchronized(streamState){
-                try{BlePipeFrame frame=BlePipeFrame.decode(value);okay=device.equals(peer) && enabled && RX.equals(characteristic.getUuid()) && response && !prepared && offset==0 && activeSession!=0 && frame.session==activeSession && incoming.offer(frame);if(okay)receivedBytes+=frame.payload.length;}catch(IllegalArgumentException ignored){}
+                try{BlePipeFrame frame=BlePipeFrame.decode(value);okay=device.equals(peer) && subscription!=BleSubscription.DISABLED && RX.equals(characteristic.getUuid()) && response && !prepared && offset==0 && activeSession!=0 && frame.session==activeSession && incoming.offer(frame);if(okay)receivedBytes+=frame.payload.length;}catch(IllegalArgumentException ignored){}
                 if(response)gatt.sendResponse(device,request,okay?BluetoothGatt.GATT_SUCCESS:BluetoothGatt.GATT_FAILURE,0,null);
             }
             if(!okay && device.equals(peer))problem("BLE frame or queue rejected");
@@ -98,21 +99,21 @@ public final class BlePhonePeripheral implements AutoCloseable {
         @Override public void onNotificationSent(BluetoothDevice device,int result){if(available() && device.equals(peer)){if(result!=BluetoothGatt.GATT_SUCCESS)problem("BLE notification failed");notification.release();}}
     };
     private void send(int kind,long id,AtomicInteger sequence,byte[] payload)throws Exception{
-        BluetoothDevice target=peer;if(!available() || !enabled || target==null)throw new IOException("BLE peer unavailable");
+        BluetoothDevice target=peer;int mode=subscription;if(!available() || mode==BleSubscription.DISABLED || target==null)throw new IOException("BLE peer unavailable");
         byte[] value=new BlePipeFrame(kind,id,sequence.getAndIncrement(),payload).encode();notification.drainPermits();
         boolean queued;
-        if(Build.VERSION.SDK_INT>=33)queued=gatt.notifyCharacteristicChanged(target,tx,false,value)==BluetoothStatusCodes.SUCCESS;
-        else{tx.setValue(value);queued=gatt.notifyCharacteristicChanged(target,tx,false);}
+        if(Build.VERSION.SDK_INT>=33)queued=gatt.notifyCharacteristicChanged(target,tx,mode==BleSubscription.INDICATE,value)==BluetoothStatusCodes.SUCCESS;
+        else{tx.setValue(value);queued=gatt.notifyCharacteristicChanged(target,tx,mode==BleSubscription.INDICATE);}
         if(!queued || !notification.tryAcquire(3,TimeUnit.SECONDS) || !failure.isEmpty())throw new IOException("BLE notification timeout/failure");sentBytes+=payload.length;
     }
     private void acceptLoop(){
         while(available()){
-            try{Socket client=listener.accept();socket=client;serve(client);}catch(SocketTimeoutException ignored){}catch(Exception error){if(!closed){recordStreamFailure(error);problem("BLE stream ended: "+error.getClass().getSimpleName()+"; reconnect required");enabled=false;BluetoothDevice target=peer;if(target!=null)try{gatt.cancelConnection(target);}catch(RuntimeException ignored){}}}
+            try{Socket client=listener.accept();socket=client;serve(client);}catch(SocketTimeoutException ignored){}catch(Exception error){if(!closed){recordStreamFailure(error);problem("BLE stream ended: "+error.getClass().getSimpleName()+"; reconnect required");subscription=BleSubscription.DISABLED;BluetoothDevice target=peer;if(target!=null)try{gatt.cancelConnection(target);}catch(RuntimeException ignored){}}}
             finally{closeSocket();socket=null;synchronized(streamState){activeSession=0;incoming.clear();}}
         }
     }
     private void serve(Socket client)throws Exception{
-        if(!available() || !enabled || peer==null){client.close();return;}failure="";client.setSoTimeout(1000);client.setTcpNoDelay(true);
+        if(!available() || subscription==BleSubscription.DISABLED || peer==null){client.close();return;}failure="";client.setSoTimeout(1000);client.setTcpNoDelay(true);
         long random;do{random=new SecureRandom().nextLong();}while(random==0);final long id=random;synchronized(streamState){activeSession=id;incoming.clear();}AtomicInteger sequence=new AtomicInteger();
         BlePipeFrame.Receiver receiver=new BlePipeFrame.Receiver(id,BlePipeFrame.READY);send(BlePipeFrame.OPEN,id,sequence,new byte[0]);
         BlePipeFrame ready=incoming.poll(8,TimeUnit.SECONDS);if(ready==null)throw new IOException("BLE remote ready timeout");receiver.accept(ready);connections++;
@@ -131,5 +132,5 @@ public final class BlePhonePeripheral implements AutoCloseable {
         }catch(Exception error){Exception first=firstFailure.get();throw first!=null?first:error;}
         finally{expiry.cancel(false);download.cancel(true);}
     }
-    @Override public void close(){if(!closing.compareAndSet(false,true))return;closed=true;enabled=false;closeSocket();if(listener!=null)try{listener.close();}catch(IOException ignored){}try{if(advertiser!=null)advertiser.stopAdvertising(advertisement);}catch(RuntimeException ignored){}try{if(gatt!=null && peer!=null)gatt.cancelConnection(peer);}catch(RuntimeException ignored){}try{if(gatt!=null)gatt.close();}catch(RuntimeException ignored){}peer=null;workers.shutdownNow();deadlines.shutdownNow();}
+    @Override public void close(){if(!closing.compareAndSet(false,true))return;closed=true;subscription=BleSubscription.DISABLED;closeSocket();if(listener!=null)try{listener.close();}catch(IOException ignored){}try{if(advertiser!=null)advertiser.stopAdvertising(advertisement);}catch(RuntimeException ignored){}try{if(gatt!=null && peer!=null)gatt.cancelConnection(peer);}catch(RuntimeException ignored){}try{if(gatt!=null)gatt.close();}catch(RuntimeException ignored){}peer=null;workers.shutdownNow();deadlines.shutdownNow();}
 }

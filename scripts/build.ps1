@@ -10,7 +10,7 @@ $env:DOTNET_CLI_TELEMETRY_OPTOUT='1'
 $env:DOTNET_ADD_GLOBAL_TOOLS_TO_PATH='false'
 $bandKeyDotnet=Join-Path $bandKeyRoot '.tooling\dotnet\dotnet.exe'
 if (!(Test-Path -LiteralPath $bandKeyDotnet)) { node scripts/bootstrap.mjs; if($LASTEXITCODE){throw 'SDK bootstrap failed'} }
-$bandKeyProps=@('-p:TargetPlatformSdkPath='+ (Join-Path $bandKeyRoot '.tooling\platform-sdk\'),'-p:TargetPlatformDisplayName=Windows')
+$bandKeyProps=@(('-p:TargetPlatformSdkPath='+ (Join-Path $bandKeyRoot '.tooling\platform-sdk\')),'-p:TargetPlatformDisplayName=Windows')
 function Invoke-BandKeyDotnet([string[]]$Arguments) {
   & $bandKeyDotnet @Arguments
   if($LASTEXITCODE -ne 0){throw "dotnet failed (exit $LASTEXITCODE)"}

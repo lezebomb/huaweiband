@@ -18,6 +18,10 @@ if($LASTEXITCODE -ne 0){throw 'BLE background lease tests failed'}
 if($LASTEXITCODE -ne 0){throw 'BLE production codec compilation failed'}
 & $bandKeyJava -cp $bandKeyClasses dev.bandkey.bridge.BlePipeCodecTests 'artifacts/android-ble-codec-tests.json'
 if($LASTEXITCODE -ne 0){throw 'BLE production codec tests failed'}
+& $bandKeyJavac -encoding UTF-8 -d $bandKeyClasses 'android/app/src/main/java/dev/bandkey/bridge/BleSubscription.java' 'tests/interop/BleSubscriptionTests.java'
+if($LASTEXITCODE -ne 0){throw 'BLE subscription test compilation failed'}
+& $bandKeyJava -cp $bandKeyClasses dev.bandkey.bridge.BleSubscriptionTests 'artifacts/android-ble-subscription-tests.json'
+if($LASTEXITCODE -ne 0){throw 'BLE subscription tests failed'}
 & $bandKeyJavac -encoding UTF-8 -d $bandKeyClasses 'android/app/src/androidTest/java/dev/bandkey/bridge/TlsFailureClassifier.java' 'tests/interop/TlsFailureClassifierTests.java'
 if($LASTEXITCODE -ne 0){throw 'TLS error classification compilation failed'}
 & $bandKeyJava -cp $bandKeyClasses dev.bandkey.bridge.TlsFailureClassifierTests 'artifacts/android-tls-error-tests.json'

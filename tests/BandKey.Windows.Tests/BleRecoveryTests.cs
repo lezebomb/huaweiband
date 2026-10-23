@@ -1,6 +1,7 @@
 using System.Net;
 using System.Threading.Channels;
 using BandKey.Windows;
+using Windows.Devices.Bluetooth.GenericAttributeProfile;
 
 // Fault-injection tests of production supervision; these are not physical BLE evidence.
 internal static class BleRecoveryTests
@@ -19,6 +20,22 @@ internal static class BleRecoveryTests
     }
     internal static async Task RunAsync(Func<string,Func<Task>,Task> test,string directory)
     {
+        await test("BLE negotiates acknowledged indications while preserving notification-only phones",()=>
+        {
+            Check(BlePhoneTunnel.ChooseSubscription(GattCharacteristicProperties.Notify|GattCharacteristicProperties.Indicate)==GattClientCharacteristicConfigurationDescriptorValue.Indicate);
+            Check(BlePhoneTunnel.ChooseSubscription(GattCharacteristicProperties.Indicate)==GattClientCharacteristicConfigurationDescriptorValue.Indicate);
+            Check(BlePhoneTunnel.ChooseSubscription(GattCharacteristicProperties.Notify)==GattClientCharacteristicConfigurationDescriptorValue.Notify);
+            bool refused=false;try{BlePhoneTunnel.ChooseSubscription(GattCharacteristicProperties.Read);}catch(IOException){refused=true;}Check(refused);
+            return Task.CompletedTask;
+        });
+        await test("BLE health probe verifies the negotiated CCCD rather than assuming notifications",()=>
+        {
+            Check(BlePhoneTunnel.SubscriptionMatches(new byte[]{2,0},GattClientCharacteristicConfigurationDescriptorValue.Indicate));
+            Check(BlePhoneTunnel.SubscriptionMatches(new byte[]{1,0},GattClientCharacteristicConfigurationDescriptorValue.Notify));
+            foreach(byte[] bytes in new[]{new byte[]{0,0},new byte[]{1,0},new byte[]{3,0},new byte[]{2,1},new byte[]{2},new byte[]{2,0,0}})
+                Check(!BlePhoneTunnel.SubscriptionMatches(bytes,GattClientCharacteristicConfigurationDescriptorValue.Indicate));
+            Check(!BlePhoneTunnel.SubscriptionMatches(new byte[]{0,0},GattClientCharacteristicConfigurationDescriptorValue.None));return Task.CompletedTask;
+        });
         await test("BLE closed incoming channel retains its fault and reaches automatic reconnection",async()=>
         {
             int created=0,disposed=0;using var stop=new CancellationTokenSource(TimeSpan.FromSeconds(2));

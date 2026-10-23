@@ -105,6 +105,7 @@ public final class VmLabActivity extends Activity {
                 BlePhonePeripheral foregroundBle=ble;
                 boolean linkAvailable=!loopback || (foregroundBle==null?(!VmBleTransportService.active() || VmBleTransportService.connected()):foregroundBle.isConnected());
                 if(!recovery.ready(SystemClock.elapsedRealtime(),linkAvailable)){
+                    runOnUiThread(()->{if(active && gate==currentGate && !currentGate.isActive(ticket)){approve.setEnabled(false);deny.setEnabled(false);}});
                     if(!linkAvailable)showCurrent(currentGate,"等待电脑 BLE 连接；连接后自动继续轮询。尚未验证电脑 TLS 身份。");
                     return;
                 }

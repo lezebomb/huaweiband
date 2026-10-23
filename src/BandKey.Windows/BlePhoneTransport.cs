@@ -12,6 +12,7 @@ internal interface IBlePhoneConnection : IAsyncDisposable
     int Streams{get;}
     long SentBytes{get;}
     long ReceivedBytes{get;}
+    string DeliveryMode=>"unknown";
     Task RunAsync(IPAddress target,int port,TimeSpan duration,string? readyFile=null,string? stopFile=null,CancellationToken cancellation=default);
 }
 
@@ -29,6 +30,8 @@ internal sealed class BlePhoneTransport
     private long sent,received;
     private ushort mtu=23;
     private string stage="not-started";
+    private string deliveryMode="none";
+    public string DeliveryMode=>current?.DeliveryMode??deliveryMode;
     public string Stage=>current?.Stage??stage;
     public ushort Mtu=>current?.Mtu??mtu;
     public int Streams=>streams+(current?.Streams??0);
@@ -88,7 +91,7 @@ internal sealed class BlePhoneTransport
                 {
                     // Dispose every old subscription/channel/socket before another attempt.
                     var ended=current;await ended.DisposeAsync();
-                    streams+=ended.Streams;sent+=ended.SentBytes;received+=ended.ReceivedBytes;mtu=ended.Mtu;current=null;
+                    streams+=ended.Streams;sent+=ended.SentBytes;received+=ended.ReceivedBytes;mtu=ended.Mtu;deliveryMode=ended.DeliveryMode;current=null;
                     if(readyFile!=null)File.Delete(readyFile);
                 }
                 if(retry){stage="reconnecting";await delay(Attempts,token);}

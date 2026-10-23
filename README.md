@@ -4,6 +4,8 @@
 
 最新进展（2026-10-23）：一加 + Band 11 Pro 已完成真实通知确认／拒绝回调及上述 VM 解锁联调。Android 0.3.2 修正 BLE 尚未就绪时的 TLS 尝试及恢复后遗留错误提示，增加有界轮询退避和流首个错误记录；间歇性的 TCP 10053 尚未证明解决。见 [轮询恢复修正](docs/ble-recovery-20261023.md)及[手环联调记录](docs/wearengine-validation-20261023.md)。BLE 不要求同一 Wi-Fi；距离、长期后台及手机锁屏场景未验证。
 
+准备版 0.3.3 已构建：新增 indication 优先与旧 Notify 兼容、按协商值检查订阅；Windows 115 项核心和 81 项集成检查、Android 83 项检查通过。手机仍为 0.3.2，新的实际交付方式及超时修复效果待回连后验证。见 [确认交付准备版](docs/ble-indications-20261023.md)。
+
 ## 直接运行
 
 - Windows：解压 [BandKey-win-x64.zip](artifacts/BandKey-win-x64.zip)，运行其中的 `BandKey.exe`。当前目录已有 [BandKey.exe](artifacts/BandKey-win-x64/BandKey.exe)，内含 .NET 运行时，无需另装运行时。

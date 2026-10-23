@@ -18,6 +18,14 @@ public sealed class BlePhoneTunnel : IBlePhoneConnection
     private readonly Channel<byte[]> received=Channel.CreateBounded<byte[]>(new BoundedChannelOptions(128){SingleReader=true,SingleWriter=false,FullMode=BoundedChannelFullMode.Wait});
     private BluetoothLEDevice? device;private GattDeviceService? service;private GattCharacteristic? rx,tx;
     private GattDescriptor? healthDescriptor;
+    private GattClientCharacteristicConfigurationDescriptorValue subscription;
+    public string DeliveryMode=>subscription==GattClientCharacteristicConfigurationDescriptorValue.Indicate?"indicate":subscription==GattClientCharacteristicConfigurationDescriptorValue.Notify?"notify":"none";
+    internal static GattClientCharacteristicConfigurationDescriptorValue ChooseSubscription(GattCharacteristicProperties properties)=>
+        properties.HasFlag(GattCharacteristicProperties.Indicate)?GattClientCharacteristicConfigurationDescriptorValue.Indicate:
+        properties.HasFlag(GattCharacteristicProperties.Notify)?GattClientCharacteristicConfigurationDescriptorValue.Notify:
+        throw new IOException("Phone downlink subscription unavailable");
+    internal static bool SubscriptionMatches(byte[] bytes,GattClientCharacteristicConfigurationDescriptorValue expected)=>
+        expected!=GattClientCharacteristicConfigurationDescriptorValue.None && bytes.Length==2 && bytes[0]==(byte)expected && bytes[1]==0;
     private long lastValue=Stopwatch.GetTimestamp();
     private readonly CancellationTokenSource stop=new();
     private int disposed;
@@ -50,9 +58,10 @@ public sealed class BlePhoneTunnel : IBlePhoneConnection
         var chars=await service.GetCharacteristicsAsync(BluetoothCacheMode.Uncached).AsTask(token);
         if(chars.Status!=GattCommunicationStatus.Success)throw new IOException("Phone characteristics unavailable");
         rx=chars.Characteristics.Single(c=>c.Uuid==RxId);tx=chars.Characteristics.Single(c=>c.Uuid==TxId);
-        if(!rx.CharacteristicProperties.HasFlag(GattCharacteristicProperties.Write) || !tx.CharacteristicProperties.HasFlag(GattCharacteristicProperties.Notify))throw new IOException("Phone characteristic properties");
+        if(!rx.CharacteristicProperties.HasFlag(GattCharacteristicProperties.Write))throw new IOException("Phone characteristic properties");
+        subscription=ChooseSubscription(tx.CharacteristicProperties);
         tx.ValueChanged+=OnValue;Stage="subscribe";
-        if(await tx.WriteClientCharacteristicConfigurationDescriptorAsync(GattClientCharacteristicConfigurationDescriptorValue.Notify).AsTask(token)!=GattCommunicationStatus.Success)throw new IOException("BLE subscription refused");
+        if(await tx.WriteClientCharacteristicConfigurationDescriptorAsync(subscription).AsTask(token)!=GattCommunicationStatus.Success)throw new IOException("BLE subscription refused");
         Stage="health-descriptor";
         var descriptors=await tx.GetDescriptorsForUuidAsync(new Guid("00002902-0000-1000-8000-00805f9b34fb"),BluetoothCacheMode.Uncached).AsTask(token);
         if(descriptors.Status!=GattCommunicationStatus.Success || descriptors.Descriptors.Count!=1)throw new IOException("BLE health descriptor unavailable");
@@ -92,7 +101,7 @@ public sealed class BlePhoneTunnel : IBlePhoneConnection
         if(result.Status==GattCommunicationStatus.AccessDenied)throw new BleTransportException("gatt-permission-denied");
         if(result.Status!=GattCommunicationStatus.Success)throw new BleTransportException("gatt-health-"+result.Status.ToString().ToLowerInvariant());
         var bytes=result.Value.ToArray();
-        if(bytes.Length!=2 || bytes[0]!=1 || bytes[1]!=0)throw new BleTransportException("gatt-idle-subscription-lost");
+        if(!SubscriptionMatches(bytes,subscription))throw new BleTransportException("gatt-idle-subscription-lost");
     }
     private async Task WriteAsync(BlePipeFrame frame,CancellationToken token)
     {
