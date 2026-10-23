@@ -6,11 +6,13 @@
 
 准备版 0.3.3 已构建：新增 indication 优先与旧 Notify 兼容、按协商值检查订阅；Windows 115 项核心和 81 项集成检查、Android 83 项检查通过。手机仍为 0.3.2，新的实际交付方式及超时修复效果待回连后验证。见 [确认交付准备版](docs/ble-indications-20261023.md)。
 
+准备版 0.4.0 新增显式开启、最多30分钟的后台手环确认，手机离开页面后由独立前台服务处理 VM 请求；默认关闭，20项生产协调器检查通过，尚待真实后台／锁屏验收。见 [后台手环确认与最短实测](docs/vm-background-wear-20261023.md)。
+
 ## 直接运行
 
 - Windows：解压 [BandKey-win-x64.zip](artifacts/BandKey-win-x64.zip)，运行其中的 `BandKey.exe`。当前目录已有 [BandKey.exe](artifacts/BandKey-win-x64/BandKey.exe)，内含 .NET 运行时，无需另装运行时。
 - 手机 BLE 修复版：[启动入口](artifacts/启动BLE修复版.cmd)、[独立 ZIP](artifacts/BandKey-BLE-recovery.zip)。先停止并关闭旧 BLE 助手，再运行新入口；它只打开电脑传输助手，不安装登录组件。ZIP 需完整解压后运行 `Start-BLE.cmd`；不与运行中的旧程序混合覆盖。
-- Android：[BandKey-bridge-debug.apk](artifacts/BandKey-bridge-debug.apk)。一加已保留数据升级为 0.3.2，包含 BLE 轮询等待／恢复修正及应用私有的错误原因记录；真实手环设备查询、按钮及 VM 解锁结果来自此前 0.3.0。Mate60 暂保留 0.2.0；不将旧版结果沿用为新版完整通过。手环保持与一加的现有配对。
+- Android：[BandKey-bridge-debug.apk](artifacts/BandKey-bridge-debug.apk) 为最新准备版 0.4.0，尚未安装；一加仍为 0.3.2。真实手环设备查询、按钮及 VM 解锁结果来自此前 0.3.0。Mate60 暂保留 0.2.0；不将旧版结果沿用为新版完整通过。手环保持与一加的现有配对。
 - VM 手机实验：[一步步教程](docs/vm-phone-bridge-test.md)、[中继协议](docs/vm-phone-relay-protocol.md)。`BandKey-VM-Phone-Lab-*.iso` 与旧模拟镜像独立保存。用户已在 VMware/build 26300 来宾登记手机模式并完成联调；原有系统登录选项和快照保留，宿主机未注册 Provider。
 - VM 会话／自动锁屏工具：[使用说明](docs/vm-provider-test.md)。独立 `BandKey-VM-Session-Lab-*.iso` 默认只记录 WTS／查询，模拟走远按钮可在指定来宾调用锁屏；不安装登录组件。当前已构建及离线验证，尚未在 VM 实跑。可用 `./scripts/package-session-lab.ps1` 构建，最新本机路径在 `artifacts/latest-session-lab-package.json`。
 - 配置、应用身份密钥、授权公钥及日志保存在程序旁的 `runtime/`。可用 `--data <目录>` 改变位置。私钥以当前 Windows 用户的 DPAPI 加密保存；正式托盘代理没有 Windows 密码/PIN输入框，也没有保存它们的代码。独立 VM 新实验由用户登记一次 VM 密码，以机器 DPAPI 和 SYSTEM/管理员专属 ACL 保管；它与正式分发包分开。

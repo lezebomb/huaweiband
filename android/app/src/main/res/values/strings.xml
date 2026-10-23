@@ -10,4 +10,5 @@
   <string name="vm_ble_starting">正在启动 BLE；电脑需显式连接 BandKey 手机服务。配置 endpoint 应为 https://127.0.0.1:19443，保留实际 VM TLS 和电脑身份。回环连接自动禁用 HTTP 长连接。</string>
   <string name="vm_ble_error">BLE 不可用：%1$s</string>
   <string name="vm_ble_page_paused">已离开页面，轮询及页面 BLE 已停止；若显式启动后台 BLE，可通过通知停止。</string>
+    <string name="vm_background_summaries">%1$s\n\n%2$s</string>
 </resources>

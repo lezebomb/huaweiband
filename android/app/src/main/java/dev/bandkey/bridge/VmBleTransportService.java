@@ -30,6 +30,7 @@ public final class VmBleTransportService extends Service {
     static boolean active(){VmBleTransportService service=running;return service!=null && service.lease.allows(SystemClock.elapsedRealtime());}
     static boolean connected(){BleBackgroundLease.Snapshot s=last;return active() && s!=null && (s.stage==BleBackgroundLease.Stage.CONNECTED || s.stage==BleBackgroundLease.Stage.STREAMING);}
     static boolean requestStart(Activity activity){
+        if(VmWearConfirmService.active())return false;
         if(active())return true;
         if(activity.isFinishing() || !activity.hasWindowFocus() || !activity.getSystemService(PowerManager.class).isInteractive() || activity.getSystemService(KeyguardManager.class).isKeyguardLocked())return false;
         activity.startForegroundService(new Intent(activity,VmBleTransportService.class).setAction(START).putExtra("run",UUID.randomUUID().toString()));return true;
@@ -66,7 +67,7 @@ public final class VmBleTransportService extends Service {
             stopSelf();return START_NOT_STICKY;
         }
         token=requested;
-        if(!bluetoothAllowed() || !getSystemService(NotificationManager.class).areNotificationsEnabled()){finish(BleBackgroundLease.Reason.START_FAILED);return START_NOT_STICKY;}
+        if(!bluetoothAllowed() || VmWearConfirmService.active() || !getSystemService(NotificationManager.class).areNotificationsEnabled()){finish(BleBackgroundLease.Reason.START_FAILED);return START_NOT_STICKY;}
         try{
             NotificationManager manager=getSystemService(NotificationManager.class);manager.createNotificationChannel(new NotificationChannel(CHANNEL,"BandKey VM 后台 BLE 测试",NotificationManager.IMPORTANCE_LOW));
             if(Build.VERSION.SDK_INT>=29)startForeground(NOTIFICATION,notification(),ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE);else startForeground(NOTIFICATION,notification());

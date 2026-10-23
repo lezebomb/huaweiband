@@ -10,7 +10,7 @@ import java.security.MessageDigest;
 import java.util.concurrent.*;
 import org.json.JSONObject;
 
-/** Foreground-only manual decisions; optional independent background BLE transport. */
+/** Foreground manual decisions and an explicit, separate VM wearable background run. */
 public final class VmLabActivity extends Activity {
     private Identity identity;
     private TextView status;
@@ -28,7 +28,7 @@ public final class VmLabActivity extends Activity {
     private TextView bleStatus;
     private TextView backgroundStatus;
     private final Handler display=new Handler(Looper.getMainLooper());
-    private final Runnable refreshBackground=new Runnable(){@Override public void run(){backgroundStatus.setText(VmBleTransportService.summary());display.postDelayed(this,1000);}};
+    private final Runnable refreshBackground=new Runnable(){@Override public void run(){backgroundStatus.setText(getString(R.string.vm_background_summaries,VmBleTransportService.summary(),VmWearConfirmService.summary()));display.postDelayed(this,1000);}};
     private int bleGeneration;
     private String nativeFingerprint="";
     private android.content.SharedPreferences prefs(){return getSharedPreferences("bandkey-vm-phone-lab",MODE_PRIVATE);}
@@ -39,24 +39,30 @@ public final class VmLabActivity extends Activity {
             else view.setPadding(insets.getSystemWindowInsetLeft(),insets.getSystemWindowInsetTop(),insets.getSystemWindowInsetRight(),insets.getSystemWindowInsetBottom());
             return insets;
         });scroll.requestApplyInsets();
-        TextView intro=new TextView(this);intro.setText("VM 确认实验\n只签署隔离 VM 的一次性登录请求。默认使用手机测试按钮；可显式切换为真实手环确认。不会接收 Windows 密码。仅保持此页面打开时轮询；离开即取消本页待确认状态。可选后台模式仅保持 BLE 传输。");column.addView(intro);
+        TextView intro=new TextView(this);intro.setText("VM 确认实验\n只签署隔离 VM 的一次性登录请求，不接收 Windows 密码。默认手机测试按钮，离开本页即停止本页轮询。可单独开启最多30分钟的后台手环确认；该模式下手机锁屏后仍只接受真实手环的本次点击。");column.addView(intro);
         status=new TextView(this);status.setTextIsSelectable(true);column.addView(status);
         button(column,"1. 导出手机实验公钥",()->startActivityForResult(new Intent(Intent.ACTION_CREATE_DOCUMENT).setType("application/octet-stream").putExtra(Intent.EXTRA_TITLE,"bandkey-vm-phone.bandkeypub"),1));
-        button(column,"2. 导入 VM 电脑配对资料",()->{pollingRequested=false;stopWork();startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT).setType("application/json").addCategory(Intent.CATEGORY_OPENABLE),2);});
+        button(column,"2. 导入 VM 电脑配对资料",()->{VmWearConfirmService.stopCurrent();pollingRequested=false;stopWork();startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT).setType("application/json").addCategory(Intent.CATEGORY_OPENABLE),2);});
         approve=button(column,"确认本次 VM 解锁（测试按钮）",()->decide(true));deny=button(column,"拒绝本次请求",()->decide(false));approve.setEnabled(false);deny.setEnabled(false);
         wearableConfirm=new CheckBox(this);wearableConfirm.setText("使用真实手环确认（先在主界面授权并选择手环）");column.addView(wearableConfirm);
+        wearableConfirm.setChecked(VmWearConfirmService.active());
         wearableConfirm.setOnCheckedChangeListener((button,checked)->{
-            boolean resume=pollingRequested;stopWork();
+            VmWearConfirmService.stopCurrent();boolean resume=pollingRequested;stopWork();
             show(checked?"已切换为真实手环确认，手机测试按钮停用。仅手环本次有效点击才会签名。":"已切换为手机测试按钮，原手环请求已取消。");
             if(resume)startWork();
         });
-        button(column,"停止轮询并取消待确认请求",()->{pollingRequested=false;stopWork();show("已停止。已经交付的签名不能由此撤回；原生一次性及有效期检查仍适用。");});
+        button(column,"停止轮询并取消待确认请求",()->{VmWearConfirmService.stopCurrent();pollingRequested=false;stopWork();show("已停止。已经交付的签名不能由此撤回；原生一次性及有效期检查仍适用。");});
         button(column,"启动轮询",this::startWork);
         bleStatus=new TextView(this);bleStatus.setText(R.string.vm_ble_idle);column.addView(bleStatus);
         button(column,"启动前台 BLE 传输（不需要同一 Wi-Fi）",this::startBle);
-        button(column,"停止全部 BLE 传输",()->{pollingRequested=false;stopWork();closeLocalBle();VmBleTransportService.stopCurrent();bleStatus.setText(R.string.vm_ble_stopped);});
+        button(column,"停止全部 BLE 传输",()->{VmWearConfirmService.stopCurrent();pollingRequested=false;stopWork();closeLocalBle();VmBleTransportService.stopCurrent();bleStatus.setText(R.string.vm_ble_stopped);});
         backgroundStatus=new TextView(this);backgroundStatus.setText(VmBleTransportService.summary());column.addView(backgroundStatus);
         button(column,"启动后台 BLE 传输（最多30分钟）",this::startBackgroundBle);
+        button(column,"启动后台手环确认（最多30分钟）",this::startBackgroundWear);
+        button(column,"导出后台手环确认记录",()->{
+            try{VmWearConfirmService.report();startActivityForResult(new Intent(Intent.ACTION_CREATE_DOCUMENT).setType("application/json").putExtra(Intent.EXTRA_TITLE,"bandkey-vm-wear-background.json"),4);}
+            catch(RuntimeException error){show("尚无后台手环确认记录。");}
+        });
         button(column,"导出本次后台传输记录",()->{
             try{VmBleTransportService.report();startActivityForResult(new Intent(Intent.ACTION_CREATE_DOCUMENT).setType("application/json").putExtra(Intent.EXTRA_TITLE,"bandkey-ble-background.json"),3);}
             catch(Exception error){show("尚无可导出的后台传输记录。");}
@@ -89,6 +95,7 @@ public final class VmLabActivity extends Activity {
     }
     private void stopWork(){active=false;PromptGate current=gate;if(current!=null)current.stop();pending=null;ticket=null;client=null;if(worker!=null)worker.shutdownNow();worker=null;approve.setEnabled(false);deny.setEnabled(false);}
     private void startWork(){
+        if(VmWearConfirmService.active()){pollingRequested=false;stopWork();show("后台手环确认已运行，本页不重复轮询。可在通知栏或本页停止。");return;}
         pollingRequested=true;stopWork();if(identity==null)return;
         try{
             String saved=prefs().getString("pc",null);if(saved==null){show("请先导入 VM 配对资料。");return;}
@@ -154,6 +161,7 @@ public final class VmLabActivity extends Activity {
         return true;
     }
     private void startBackgroundBle(){
+        if(VmWearConfirmService.active()){show("请先停止后台手环确认，再切换为仅传输模式。");return;}
         if(!nearbyPermissions())return;
         if(Build.VERSION.SDK_INT>=33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)!=android.content.pm.PackageManager.PERMISSION_GRANTED){requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS},31);return;}
         if(!getSystemService(NotificationManager.class).areNotificationsEnabled()){show("请先在系统设置中允许本应用通知，以便看到后台传输和停止入口。");return;}
@@ -166,15 +174,32 @@ public final class VmLabActivity extends Activity {
         }catch(RuntimeException error){show("系统未允许后台传输："+error.getClass().getSimpleName());}
     }
     private void startBle(){
+        if(VmWearConfirmService.active()){show("请先停止后台手环确认，再启动本页传输。");return;}
         if(VmBleTransportService.active()){show("请先停止后台 BLE，再启动页面前台 BLE。");return;}
         if(!nearbyPermissions())return;
         final int generation=++bleGeneration;if(ble!=null)ble.close();ble=new BlePhonePeripheral(this,19443,text->runOnUiThread(()->{if(generation==bleGeneration)bleStatus.setText(text);}));
         try{ble.start();bleStatus.setText(R.string.vm_ble_starting);}catch(Exception error){ble.close();ble=null;bleStatus.setText(getString(R.string.vm_ble_error,error.getClass().getSimpleName()));}
     }
+    private void startBackgroundWear(){
+        if(!wearableConfirm.isChecked()){show("请先勾选使用真实手环确认。后台模式不接受手机测试按钮。");return;}
+        if(VmWearConfirmService.active() || VmBleTransportService.active()){show("请先停止现有后台模式；重复启动不会续期。");return;}
+        if(!nearbyPermissions())return;
+        if(Build.VERSION.SDK_INT>=33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)!=android.content.pm.PackageManager.PERMISSION_GRANTED){requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS},31);return;}
+        if(!getSystemService(NotificationManager.class).areNotificationsEnabled()){show("请先允许应用通知，以保留后台停止入口。");return;}
+        if(prefs().getString("pc",null)==null || getSharedPreferences(BridgeService.PREFS,MODE_PRIVATE).getString("wearableUuid","").isEmpty()){show("请先导入 VM 配对资料并选择已授权手环。");return;}
+        AlertDialog consent=new AlertDialog.Builder(this).setTitle("启动 VM 后台手环确认")
+            .setMessage("本次最多30分钟。手机退到后台或锁屏后，仍可在真实手环明确确认此 VM 的新请求。不会自动批准，不接收 Windows 密码；可从通知栏停止。此功能尚待实机验收。")
+            .setPositiveButton("启动本次测试",(dialog,which)->{
+                pollingRequested=false;stopWork();closeLocalBle();
+                try{show(VmWearConfirmService.requestStart(this,(Dialog)dialog)?"已请求后台手环确认，请查看通知栏状态；仅在真实手环点击后提交本次决定。":"请在已解锁的前台启动，且先停止其他后台模式。");}
+                catch(RuntimeException error){show("后台启动失败："+error.getClass().getSimpleName());}
+            }).setNegativeButton("取消",null).create();consent.setOwnerActivity(this);consent.show();
+    }
     @Override protected void onPause(){display.removeCallbacks(refreshBackground);stopWork();closeLocalBle();if(bleStatus!=null)bleStatus.setText(R.string.vm_ble_page_paused);super.onPause();}
     @Override protected void onActivityResult(int request,int result,Intent data){
         super.onActivityResult(request,result,data);if(result!=RESULT_OK || data==null || data.getData()==null)return;
         try{
+            if(request==4){try(OutputStream out=getContentResolver().openOutputStream(data.getData())){out.write(VmWearConfirmService.report().getBytes(StandardCharsets.UTF_8));}show("后台手环记录已导出；响应计数不代表 Windows 已解锁。");return;}
             if(request==3){try(OutputStream out=getContentResolver().openOutputStream(data.getData())){out.write(VmBleTransportService.report().getBytes(StandardCharsets.UTF_8));}show("后台传输记录已导出；计数不证明授权交付或 Windows 解锁。");return;}
             if(identity==null)return;
             if(request==1){try(OutputStream out=getContentResolver().openOutputStream(data.getData())){out.write(identity.nativePublicKey());}show("公钥已导出。它不包含私钥或 Windows 密码。");}
