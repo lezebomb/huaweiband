@@ -8,8 +8,9 @@ internal static class WindowsGrantRelayTests
         public byte[]? Current, Last;
         public int Submissions;
         public bool Accept = true;
+        public bool ThrowOnSubmit;
         public byte[]? ReadCurrentChallenge() => Current?.ToArray();
-        public bool Submit(ReadOnlySpan<byte> expected, ReadOnlySpan<byte> approval) { if (!Accept || Current == null || !expected.SequenceEqual(Current)) return false; Last = approval.ToArray(); Submissions++; return true; }
+        public bool Submit(ReadOnlySpan<byte> expected, ReadOnlySpan<byte> approval) { if (ThrowOnSubmit) throw new IOException("synthetic exchange unavailable"); if (!Accept || Current == null || !expected.SequenceEqual(Current)) return false; Last = approval.ToArray(); Submissions++; return true; }
     }
     private sealed class Fixture : IDisposable
     {
@@ -42,7 +43,7 @@ internal static class WindowsGrantRelayTests
         void Check(bool value) { if (!value) throw new Exception("Relay invariant"); }
         void Refuses(Action action) { try { action(); } catch (Exception) { return; } throw new Exception("Expected refusal"); }
         test("native relay signed poll returns a PC-signed native prompt", () => { using var f = new Fixture(); var p = f.Prompt(); Check(Protocol.Verify(Protocol.ExportPublicKey(f.Pc), WindowsGrantRelayWire.PromptText(p), p.Signature)); });
-        test("native relay submits exact phone P1363 proof without unlock claim", () => { using var f = new Fixture(); var r = f.Relay.Decide(f.Decision()); Check(r is { Authorized: true, Submitted: true, WindowsUnlocked: false, TestOnly: true } && f.Exchange.Submissions == 1); });
+        test("native relay submits exact phone P1363 proof without unlock claim", () => { using var f = new Fixture(); var d = f.Decision(); f.Prompt(); var r = f.Relay.Decide(d); Check(r is { Authorized: true, Submitted: true, WindowsUnlocked: false, TestOnly: true } && f.Exchange.Submissions == 1 && f.Relay.Activity is { Prompts: 1, Decisions: 1, ApprovalFilesSubmitted: 1, SignedDenials: 0, Rejections: 0 }); });
         test("native relay rejects poll replay", () => { using var f = new Fixture(); var p = f.Poll(); f.Relay.Poll(p); Refuses(() => f.Relay.Poll(p)); });
         test("legacy poll signatures cannot enter native relay", () => { using var f = new Fixture(); var p = f.Poll(); p = p with { Signature = Protocol.Sign(f.Phone, Protocol.PollText(p)) }; Refuses(() => f.Relay.Poll(p)); });
         test("native relay rejects unknown polling identity", () => { using var f = new Fixture(); Refuses(() => f.Relay.Poll(f.Poll() with { DeviceId = "unknown" })); });
@@ -58,9 +59,15 @@ internal static class WindowsGrantRelayTests
         test("native relay wall rollback invalidates instance", () => { using var f = new Fixture(); var d = f.Decision(); f.Wall--; Check(!f.Relay.Decide(d).Submitted); f.Wall++; Refuses(() => f.Prompt()); });
         test("native relay context loss invalidates pending proof", () => { using var f = new Fixture(); var d = f.Decision(); f.Context = false; Check(!f.Relay.Decide(d).Submitted); f.Context = true; Refuses(() => f.Prompt()); });
         test("native relay explicit revocation prevents submission", () => { using var f = new Fixture(); var d = f.Decision(); f.Relay.Revoke(); Check(!f.Relay.Decide(d).Submitted); });
-        test("native relay signed denial consumes request without native write", () => { using var f = new Fixture(); var d = f.Decision(false); Check(f.Relay.Decide(d).Code == "user-denied" && f.Exchange.Submissions == 0 && f.Relay.Poll(f.Poll()) == null); });
+        test("native relay signed denial consumes request without native write", () => { using var f = new Fixture(); var d = f.Decision(false); Check(f.Relay.Decide(d).Code == "user-denied" && f.Exchange.Submissions == 0 && f.Relay.Poll(f.Poll()) == null && f.Relay.Activity is { Decisions: 1, ApprovalFilesSubmitted: 0, SignedDenials: 1, Rejections: 0 }); });
         test("native relay unsigned denial cannot consume request", () => { using var f = new Fixture(); var d = f.Decision(false); Check(f.Relay.Decide(d with { Signature = "AAAA" }).Code == "relay-denial-invalid"); Check(f.Relay.Decide(f.Decision()).Submitted); });
         test("native exchange failure never reports success or retries", () => { using var f = new Fixture(); var d = f.Decision(); f.Exchange.Accept = false; var r = f.Relay.Decide(d); Check(r is { Authorized: true, Submitted: false, WindowsUnlocked: false } && !f.Relay.Decide(d).Submitted); });
+        test("native exchange I/O fault is recorded and cannot reuse authorization", () =>
+        {
+            using var f = new Fixture(); var d = f.Decision(); f.Exchange.ThrowOnSubmit = true;
+            Refuses(() => f.Relay.Decide(d)); Check(f.Relay.Activity is { Decisions: 1, Rejections: 1, ApprovalFilesSubmitted: 0, LastResult: "native-exchange-io-error" });
+            f.Exchange.ThrowOnSubmit = false; Check(!f.Relay.Decide(d).Submitted && f.Exchange.Submissions == 0);
+        });
         test("native request disappearance cannot submit proof", () => { using var f = new Fixture(); var d = f.Decision(); f.Exchange.Current = null; Check(!f.Relay.Decide(d).Submitted); });
         test("unlocked native exchange sends no challenge", () => { using var f = new Fixture(); f.Exchange.Current = null; Check(f.Relay.Poll(f.Poll()) == null); });
         test("native relay requires explicit test-only enrollment", () => { using var f = new Fixture(); Refuses(() => new WindowsGrantRelay(f.Pc, f.Device with { TestOnly = false }, f.Exchange, () => true)); });

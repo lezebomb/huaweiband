@@ -1,6 +1,7 @@
 using System.Text.Json;
 using BandKey.Core;
 using BandKey.SessionLab;
+using BandKey.Windows;
 
 internal static class SessionLabTests
 {

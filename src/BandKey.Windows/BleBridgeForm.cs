@@ -17,7 +17,7 @@ public sealed class BleBridgeForm : Form
     {
         this.store=store;Text="BandKey · 手机 BLE 通信实验";ClientSize=new(710,400);Font=new("Microsoft YaHei UI",10);AutoScaleMode=AutoScaleMode.Dpi;
         var column=new FlowLayoutPanel{Dock=DockStyle.Fill,FlowDirection=FlowDirection.TopDown,WrapContents=false,Padding=new(18),AutoScroll=true};Controls.Add(column);
-        column.Controls.Add(new Label{Text="无需同一 Wi-Fi。先在手机启动前台或后台 BLE 传输。\n填写 VM 的私网地址；VM 手机中继须已监听端口 19443。\n手机确认需要返回实验页；这里仅显示传输状态。",AutoSize=true,MaximumSize=new(660,0)});
+        column.Controls.Add(new Label{Text="无需同一 Wi-Fi。先在手机启动前台或后台 BLE 传输。\n填写 VM 的私网地址；VM 手机中继须已监听端口 19443。\n确认方式按手机当前模式；这里仅显示传输状态。",AutoSize=true,MaximumSize=new(660,0)});
         var fields=new FlowLayoutPanel{AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,WrapContents=false};fields.Controls.Add(new Label{Text="VM 私网 IP",AutoSize=true,Padding=new(0,6,0,0)});fields.Controls.Add(target);fields.Controls.Add(new Label{Text="最长分钟",AutoSize=true,Padding=new(0,6,0,0)});fields.Controls.Add(minutes);column.Controls.Add(fields);
         var actions=new FlowLayoutPanel{AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,WrapContents=false};actions.Controls.Add(start);actions.Controls.Add(stop);column.Controls.Add(actions);column.Controls.Add(status);
         try{var saved=store.Read<Settings>("transport.json");if(saved!=null){target.Text=saved.GuestAddress;minutes.Value=Math.Clamp(saved.Minutes,1,120);}}catch(Exception){status.Text="上次设置不可读取，请重新输入。";}
@@ -44,7 +44,8 @@ public sealed class BleBridgeForm : Form
             _=>"正在建立 BLE 连接"
         };
         string history=tunnel.Failure==null?"历史故障：无":$"历史故障：{tunnel.Failure.Code}（累计 {tunnel.Failures.Length} 次，原记录保留）";
-        status.Text=$"当前：{current}\r\n阶段：{phase}；连接尝试：{tunnel.Attempts}\r\nMTU：{tunnel.Mtu}；完成流：总计 {tunnel.Streams}／本次连接 {completed}\r\n发往手机：{tunnel.SentBytes} 字节；来自手机：{tunnel.ReceivedBytes} 字节\r\n{history}";
+        string delivery=tunnel.DeliveryMode switch {"indicate"=>"Indication（链路确认）","notify"=>"Notify（兼容模式）",_=>"尚未协商"};
+        status.Text=$"当前：{current}\r\n阶段：{phase}；连接尝试：{tunnel.Attempts}\r\n交付：{delivery}；MTU：{tunnel.Mtu}\r\n完成流：总计 {tunnel.Streams}／本次连接 {completed}\r\n发往手机：{tunnel.SentBytes} 字节；来自手机：{tunnel.ReceivedBytes} 字节\r\n{history}";
     }
     private async Task StartTransport()
     {

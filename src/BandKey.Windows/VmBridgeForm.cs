@@ -3,6 +3,8 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Security.Principal;
+using System.Text.Json;
+using System.Runtime.InteropServices;
 using BandKey.Core;
 
 namespace BandKey.Windows;
@@ -20,20 +22,98 @@ internal sealed class VmBridgeForm : Form
     private readonly System.Windows.Forms.Timer timer = new() { Interval = 1000 };
     private string? pairing;
     private bool stopping;
+    private readonly SessionEvidence sessionEvidence = new(false);
+    private readonly Stopwatch clock = Stopwatch.StartNew();
+    private readonly int sessionId = Process.GetCurrentProcess().SessionId;
+    private readonly Label sessionStatus = new() { AutoSize = true, MaximumSize = new(660, 0) };
+    private readonly string reportPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "BandKeyVmBridge", "reports", "relay-" + DateTime.UtcNow.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N") + ".json");
+    private WindowsGrantRelayActivity? lastActivity;
+    private bool notificationsRegistered;
+    private int registrationError, powerResumes;
+    private string? reportError;
+    private double lastSaved;
     public VmBridgeForm()
     {
         VmNativePolicy.RequireGuest(); Text = "BandKey VM 手机通信实验"; ClientSize = new(720, 610); StartPosition = FormStartPosition.CenterScreen;
         var column = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, Padding = new Padding(20), AutoScroll = true }; Controls.Add(column);
-        column.Controls.Add(new Label { Text = "仅供隔离 VM：手机测试按钮确认，Windows 原生组件独立验签。\n本程序不读取或传输 VM 密码；当前不验证距离或真实手环。", AutoSize = true });
+        column.Controls.Add(new Label { Text = "仅供隔离 VM：手机／手环确认，Windows 原生组件独立验签。\n本程序不读取或传输 VM 密码；当前不验证距离。", AutoSize = true });
         var import = new Button { Text = "1. 导入手机实验公钥（.bandkeypub）", AutoSize = true }; import.Click += (_, _) => ImportPhone(); column.Controls.Add(import);
         column.Controls.Add(new Label { Text = "本机监听 IPv4（端口固定 19443）", AutoSize = true }); column.Controls.Add(bind);
         column.Controls.Add(new Label { Text = "手机访问地址（NAT 映射时填写宿主机地址）", AutoSize = true }); column.Controls.Add(endpoint);
         start.Click += async (_, _) => await StartRelay(); column.Controls.Add(start);
         var export = new Button { Text = "2. 导出电脑配对资料给手机", AutoSize = true }; export.Click += (_, _) => ExportPairing(); column.Controls.Add(export);
         stop.Click += async (_, _) => await StopRelay(); column.Controls.Add(stop); column.Controls.Add(status);
+        column.Controls.Add(sessionStatus);
+        var exportReport = new Button { Text = "导出本次会话记录（不含配对资料）", AutoSize = true };
+        exportReport.Click += (_, _) => ExportReport(); column.Controls.Add(exportReport);
         status.Text = "先用安装器的手机确认模式登记同一公钥，再启动中继。\r\n默认只监听本机；手机连通需配置 VM 网络及专用网络防火墙。";
-        timer.Tick += async (_, _) => { if (relay != null && nativePublicKey != null && !VmNativePolicy.MatchesPhone(nativePublicKey)) { await StopRelay(); status.AppendText("\r\n原生登记已撤销或改变，中继已停止。"); } }; timer.Start();
-        FormClosing += async (_, args) => { if (stopping) { args.Cancel = true; return; } if (server != null) { args.Cancel = true; await StopRelay(); Close(); } }; FormClosed += (_, _) => timer.Dispose();
+        timer.Tick += async (_, _) => { if (relay != null && nativePublicKey != null && !VmNativePolicy.MatchesPhone(nativePublicKey)) { await StopRelay(); status.AppendText("\r\n原生登记已撤销或改变，中继已停止。"); } ObserveSession(); };
+        Shown += (_, _) => { ObserveSession(); timer.Start(); };
+        FormClosing += async (_, args) => { if (stopping) { args.Cancel = true; return; } if (server != null) { args.Cancel = true; await StopRelay(); Close(); } }; FormClosed += (_, _) => { timer.Stop(); SaveReport(); timer.Dispose(); };
+    }
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        notificationsRegistered = WindowsSession.WTSRegisterSessionNotification(Handle, 0);
+        if (!notificationsRegistered) registrationError = Marshal.GetLastWin32Error();
+    }
+    protected override void OnHandleDestroyed(EventArgs e)
+    {
+        if (notificationsRegistered) { WindowsSession.WTSUnRegisterSessionNotification(Handle); notificationsRegistered = false; }
+        base.OnHandleDestroyed(e);
+    }
+    protected override void WndProc(ref Message message)
+    {
+        if (message.Msg == WindowsSession.WmSessionChange && message.LParam.ToInt64() == sessionId && message.WParam.ToInt64() is WindowsSession.SessionLock or WindowsSession.SessionUnlock)
+        {
+            sessionEvidence.Observe(message.WParam.ToInt64() == WindowsSession.SessionLock, ObservationSource.Notification, clock.Elapsed.TotalMilliseconds);
+            SaveReport(); RefreshSessionStatus();
+        }
+        if (message.Msg == 0x218 && message.WParam.ToInt64() is 7 or 0x12)
+        {
+            powerResumes++; relay?.Revoke();
+            // A fresh relay is required after resume; no later decision can use this relay.
+            _ = StopAfterResume();
+        }
+        base.WndProc(ref message);
+    }
+    private async Task StopAfterResume()
+    {
+        await StopRelay();
+        if (!IsDisposed) status.AppendText("\r\n系统恢复：本轮中继已撤销，请重新启动中继。");
+    }
+    private void ObserveSession()
+    {
+        sessionEvidence.Observe(WindowsSession.IsLocked(), ObservationSource.Query, clock.Elapsed.TotalMilliseconds);
+        if (clock.Elapsed.TotalMilliseconds - lastSaved >= 5000) SaveReport();
+        RefreshSessionStatus();
+    }
+    private void RefreshSessionStatus()
+    {
+        var activity = relay?.Activity ?? lastActivity;
+        sessionStatus.Text = $"会话记录：WTS {(notificationsRegistered ? "已注册" : "不可用，保留查询结果")}；观察到锁定后解锁：通知 {sessionEvidence.NotificationUnlocksAfterLock}／查询 {sessionEvidence.QueryUnlocksAfterLock}\n最近一轮中继：授权文件交付 {activity?.ApprovalFilesSubmitted ?? 0}；签名拒绝 {activity?.SignedDenials ?? 0}；无效／失败 {activity?.Rejections ?? 0}\n交付与会话解锁分别记录，不推断解锁由 BandKey 导致。\n{(reportError == null ? reportPath : "报告保存失败：" + reportError)}";
+    }
+    private void SaveReport()
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
+            var report = new { schema = "bandkey.vm-relay-observation.v1", generatedAt = DateTimeOffset.UtcNow,
+                session = sessionEvidence.Report(), latestRelayActivity = relay?.Activity ?? lastActivity, relayRunning = relay != null,
+                notificationsRegistered, registrationError, powerResumes,
+                unlockAttributedToBandKey = false, credentialsAccessedByObserver = false };
+            File.WriteAllText(reportPath + ".tmp", JsonSerializer.Serialize(report, Store.Json)); File.Move(reportPath + ".tmp", reportPath, true);
+            reportError = null; lastSaved = clock.Elapsed.TotalMilliseconds;
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.Security.SecurityException) { reportError = error.GetType().Name; }
+    }
+    private void ExportReport()
+    {
+        SaveReport(); if (reportError != null) { MessageBox.Show(this, "报告未保存：" + reportError); return; }
+        using var dialog = new SaveFileDialog { Filter = "JSON|*.json", FileName = "bandkey-vm-session-report.json" };
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        try { File.Copy(reportPath, dialog.FileName, true); }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { MessageBox.Show(this, "导出失败：" + error.GetType().Name); }
     }
     private void ImportPhone()
     {
@@ -82,13 +162,14 @@ internal sealed class VmBridgeForm : Form
     {
         if (stopping) return;
         stopping = true;
-        relay?.Revoke(); relay = null; var active = server; server = null;
+        relay?.Revoke(); lastActivity = relay?.Activity ?? lastActivity; relay = null; var active = server; server = null;
         try { if (active != null) await active.DisposeAsync(); }
         catch (Exception error) { status.AppendText("\r\n监听器停止异常：" + error.GetType().Name + "；本轮授权已撤销。"); }
         finally
         {
             pc?.Dispose(); pc = null; certificate?.Dispose(); certificate = null; pairing = null;
             bind.Enabled = endpoint.Enabled = start.Enabled = true; stopping = false;
+            SaveReport(); if (!IsDisposed) RefreshSessionStatus();
         }
     }
 }

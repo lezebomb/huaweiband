@@ -10,10 +10,13 @@
 
 主机只读检查确认 build 26200、MicrosoftAccount、Hello 可用，未安装实验登录组件。微软账户受保护凭据封装及原生静态分析／186项普通进程测试通过，尚未接入正式主机认证；见 [主机兼容性与安装缺口](docs/host-readiness-20261023.md)。
 
+VM 中继准备更新：新增 WTS 会话记录、授权交付／拒绝计数、自动报告和唤醒后撤销；116项核心、81项集成检查通过，尚待来宾实跑。只需替换中继，无需重装登录组件，见 [更新教程与回滚](docs/vm-relay-observation-20261023.md)。
+
 ## 直接运行
 
 - Windows：解压 [BandKey-win-x64.zip](artifacts/BandKey-win-x64.zip)，运行其中的 `BandKey.exe`。当前目录已有 [BandKey.exe](artifacts/BandKey-win-x64/BandKey.exe)，内含 .NET 运行时，无需另装运行时。
 - 手机 BLE 修复版：[启动入口](artifacts/启动BLE修复版.cmd)、[独立 ZIP](artifacts/BandKey-BLE-recovery.zip)。先停止并关闭旧 BLE 助手，再运行新入口；它只打开电脑传输助手，不安装登录组件。ZIP 需完整解压后运行 `Start-BLE.cmd`；不与运行中的旧程序混合覆盖。
+- 最新 BLE／会话记录候选版：[启动入口](artifacts/启动BLE候选版.cmd)、[自包含 ZIP](artifacts/BandKey-win-x64-session-20261023.zip)。显示实际 Indication／Notify 模式；尚待与手机0.4.0联合实测。VM 更新镜像路径记录在 `artifacts/latest-relay-update.json`，仅含用户态中继，不含登录安装器。
 - Android：[BandKey-bridge-debug.apk](artifacts/BandKey-bridge-debug.apk) 为最新准备版 0.4.0，尚未安装；一加仍为 0.3.2。真实手环设备查询、按钮及 VM 解锁结果来自此前 0.3.0。Mate60 暂保留 0.2.0；不将旧版结果沿用为新版完整通过。手环保持与一加的现有配对。
 - VM 手机实验：[一步步教程](docs/vm-phone-bridge-test.md)、[中继协议](docs/vm-phone-relay-protocol.md)。`BandKey-VM-Phone-Lab-*.iso` 与旧模拟镜像独立保存。用户已在 VMware/build 26300 来宾登记手机模式并完成联调；原有系统登录选项和快照保留，宿主机未注册 Provider。
 - VM 会话／自动锁屏工具：[使用说明](docs/vm-provider-test.md)。独立 `BandKey-VM-Session-Lab-*.iso` 默认只记录 WTS／查询，模拟走远按钮可在指定来宾调用锁屏；不安装登录组件。当前已构建及离线验证，尚未在 VM 实跑。可用 `./scripts/package-session-lab.ps1` 构建，最新本机路径在 `artifacts/latest-session-lab-package.json`。
@@ -26,9 +29,9 @@
 |---|---|---|
 | Windows Release 编译、自包含发布 | 已实际验证 | .NET 10.0.402；无编译错误/警告 |
 | Windows BLE / Classic 发现 | 已实际验证 | BLE 25 秒和 Classic inquiry 约 8 秒均完成，未观察到已连接手机的目标手环；不能据此证明永远不可发现 |
-| RSSI 滤波、滞回、延迟、重连后的重新就绪 | 模拟测试通过 | 当前 115 项核心测试包含距离轨迹、控制器、协议攻击、认证调度、原生中继及 BLE 帧；没有真机走远锁屏测试 |
+| RSSI 滤波、滞回、延迟、重连后的重新就绪 | 模拟测试通过 | 当前 116 项核心测试包含距离轨迹、控制器、协议攻击、认证调度、原生中继及 BLE 帧；没有真机走远锁屏测试 |
 | 一次性授权、撤权、防重放、认证调度 | 模拟测试通过 | 真实密码学、回环 HTTPS 8/8；锁屏/靠近状态及认证后端为模拟输入，结果明确标记 `simulated` |
-| Windows DPAPI、TLS、原生中继与文件交换 | 已实际验证，GATT／重连／会话状态为模拟 | 整套79项；新增4项覆盖静默断线探测及错误传播。含实际TCP、密码学和文件API，不能替代新补丁的物理BLE恢复验收 |
+| Windows DPAPI、TLS、原生中继与文件交换 | 已实际验证，GATT／重连／会话状态为模拟 | 整套81项，含订阅协商、静默断线探测及错误传播。含实际TCP、密码学和文件API，不能替代新补丁的物理BLE恢复验收 |
 | 手机到 Windows 的独立 BLE 传输 | 合成账户 11 项通过；实际 VM 解锁获用户确认 | 合成轮次 MTU 517、两端计数一致；实际 VM 轮次无 USB 数据映射，确认解锁／拒绝保持锁屏，随后出现流错误；长期稳定性待修复验证 |
 | `LockWorkStation`、WTS 锁屏事件、托盘/参数界面 | 已实现，实际锁屏待 VM 验证 | 新会话工具复用距离控制器和 Windows API，默认只读、限制指定 VM；宿主机拒绝与模拟测试通过，未在真实会话触发锁屏 |
 | Android 官方 SDK、环境诊断 | 设备与通知已实际验证 | 一加 Android 16、运动健康 17.0.8.300、HMS Core 6.16.4.352，服务 API 14；已获设备信息及通知调用，不再返回旧服务范围错误 8 |

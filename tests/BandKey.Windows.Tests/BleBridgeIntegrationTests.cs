@@ -41,7 +41,8 @@ internal static class BleBridgeIntegrationTests
                 async Task Upload(){try{while(true){byte[] bytes=new byte[payload];int count=await stream.ReadAsync(bytes,stop.Token);await wire.PhoneSend(new(count==0?BlePipeFrame.Eof:BlePipeFrame.Data,id,seq++,bytes[..count]),stop.Token);if(count==0)return;}}catch{stop.Cancel();throw;}}
                 async Task Download(){try{while(true){var frame=await wire.PhoneRead(stop.Token);receive.Accept(frame);if(frame.Kind==BlePipeFrame.Eof){client.Client.Shutdown(SocketShutdown.Send);return;}if(frame.Kind==BlePipeFrame.Abort)throw new IOException("Abort");await stream.WriteAsync(frame.Payload,stop.Token);}}catch{stop.Cancel();throw;}}
                 await Task.WhenAll(Upload(),Download());
-            }}catch(Exception error)when(error is OperationCanceledException or IOException or SocketException){stop.Cancel();}
+            }}catch(ObjectDisposedException)when(stop.IsCancellationRequested){}
+            catch(Exception error)when(error is OperationCanceledException or IOException or SocketException){stop.Cancel();}
         }
         public async ValueTask DisposeAsync(){stop.Cancel();listener.Stop();try{await Task.WhenAll(phone,pc).WaitAsync(TimeSpan.FromSeconds(3));}finally{stop.Dispose();}}
     }

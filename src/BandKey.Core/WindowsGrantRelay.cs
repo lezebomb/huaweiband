@@ -5,6 +5,7 @@ namespace BandKey.Core;
 public sealed record WindowsGrantPrompt(string PcId, string DeviceId, string Challenge, string Signature);
 public sealed record WindowsGrantDecision(string PcId, string DeviceId, string Challenge, bool Approved, string Signature);
 public sealed record WindowsGrantRelayResult(bool Authorized, bool Submitted, bool WindowsUnlocked, string Code, bool TestOnly = true);
+public sealed record WindowsGrantRelayActivity(long Prompts, long Decisions, long ApprovalFilesSubmitted, long SignedDenials, long Rejections, string LastResult, bool Revoked);
 
 // An exchange never exposes Windows passwords. The native Provider owns and consumes its request.
 public interface IWindowsGrantExchange
@@ -43,7 +44,11 @@ public sealed class WindowsGrantRelay
     private byte[]? pending;
     private long pendingStarted, latestWall = long.MinValue;
     private bool revoked;
+    private long prompts, decisions, submittedApprovals, signedDenials, rejections;
+    private string lastResult = "not-started";
     public string PcId { get; }
+    // Aggregate local diagnostics contain no account, device, nonce or signature.
+    public WindowsGrantRelayActivity Activity { get { lock (gate) return new(prompts, decisions, submittedApprovals, signedDenials, rejections, lastResult, revoked); } }
 
     public WindowsGrantRelay(ECDsa pcKey, PublicDevice enrolled, IWindowsGrantExchange exchange,
         Func<bool> contextCurrent, Func<long>? unixMilliseconds = null, Func<long>? monotonicMilliseconds = null)
@@ -87,7 +92,7 @@ public sealed class WindowsGrantRelay
             if (!WindowsGrantWire.IsCurrent(parsed, WindowsGrantRelayWire.FileTimeMilliseconds(wall))) { pending = null; return null; }
             var body = Convert.ToBase64String(current);
             if (consumed.Contains(body)) return null;
-            if (pending == null || !pending.AsSpan().SequenceEqual(current)) { pending = current.ToArray(); pendingStarted = mono; }
+            if (pending == null || !pending.AsSpan().SequenceEqual(current)) { pending = current.ToArray(); pendingStarted = mono; prompts++; }
             if (!PendingCurrent(wall, mono)) { pending = null; return null; }
             var prompt = new WindowsGrantPrompt(PcId, device.DeviceId, body, "");
             return prompt with { Signature = Protocol.Sign(pc, WindowsGrantRelayWire.PromptText(prompt)) };
@@ -112,8 +117,10 @@ public sealed class WindowsGrantRelay
                 if (!WindowsGrantWire.Verify(WindowsGrantWire.ReadChallenge(pending), approval, nativeKey, WindowsGrantRelayWire.FileTimeMilliseconds(wall))) return Reject("relay-signature-invalid");
                 Remember(decision.Challenge); var body = pending; pending = null;
                 if (!Current(unixMilliseconds())) return Reject("relay-context-changed");
-                bool submitted = exchange.Submit(body, approval);
-                return new(true, submitted, false, submitted ? "native-approval-submitted-awaiting-windows" : "native-exchange-unavailable");
+                bool submitted;
+                try { submitted = exchange.Submit(body, approval); }
+                catch (IOException) { Record(new(true, false, false, "native-exchange-io-error")); throw; }
+                return Record(new(true, submitted, false, submitted ? "native-approval-submitted-awaiting-windows" : "native-exchange-unavailable"));
             }
             if (!Protocol.Verify(device.PublicKey, WindowsGrantRelayWire.DenialText(decision), decision.Signature)) return Reject("relay-denial-invalid");
             Remember(decision.Challenge); pending = null; return Reject("user-denied");
@@ -125,5 +132,13 @@ public sealed class WindowsGrantRelay
         // Still-valid requests may never be evicted. At this scale a native lock cycle is long expired.
         if (consumedOrder.Count > 4096) { revoked = true; pending = null; }
     }
-    private static WindowsGrantRelayResult Reject(string code) => new(false, false, false, code);
+    private WindowsGrantRelayResult Reject(string code) => Record(new(false, false, false, code));
+    private WindowsGrantRelayResult Record(WindowsGrantRelayResult result)
+    {
+        decisions++; lastResult = result.Code;
+        if (result.Submitted) submittedApprovals++;
+        else if (result.Code == "user-denied") signedDenials++;
+        else rejections++;
+        return result; // Recording never changes the authentication result.
+    }
 }
