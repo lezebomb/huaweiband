@@ -24,7 +24,7 @@ public final class VmLabActivity extends Activity {
     private volatile boolean active;
     private boolean configDialogOpen;
     private boolean pollingRequested;
-    private BlePhonePeripheral ble;
+    private volatile BlePhonePeripheral ble;
     private TextView bleStatus;
     private TextView backgroundStatus;
     private final Handler display=new Handler(Looper.getMainLooper());
@@ -98,11 +98,26 @@ public final class VmLabActivity extends Activity {
             if(useWearable && getSharedPreferences(BridgeService.PREFS,MODE_PRIVATE).getBoolean("enabled",false)){show("请先停止主界面的自动桥接，再测试隔离 VM，避免两类请求混淆。");return;}
             client=new VmRelayClient(new JSONObject(saved),identity);gate=new PromptGate(()->System.currentTimeMillis()/1000,SystemClock::elapsedRealtime);active=true;worker=Executors.newSingleThreadScheduledExecutor();
             final PromptGate currentGate=gate;final VmRelayClient currentClient=client;
+            final VmPollRecovery recovery=new VmPollRecovery();
+            final boolean loopback="127.0.0.1".equals(new java.net.URI(currentClient.config.getString("endpoint")).getHost());
             worker.scheduleWithFixedDelay(()->{
                 if(!active || gate!=currentGate)return;
+                BlePhonePeripheral foregroundBle=ble;
+                boolean linkAvailable=!loopback || (foregroundBle==null?(!VmBleTransportService.active() || VmBleTransportService.connected()):foregroundBle.isConnected());
+                if(!recovery.ready(SystemClock.elapsedRealtime(),linkAvailable)){
+                    if(!linkAvailable)showCurrent(currentGate,"等待电脑 BLE 连接；连接后自动继续轮询。尚未验证电脑 TLS 身份。");
+                    return;
+                }
                 try{
                     JSONObject prompt=currentClient.poll();
-                    runOnUiThread(()->{if(active && gate==currentGate && !currentGate.isActive(ticket)){approve.setEnabled(false);deny.setEnabled(false);}});
+                    final boolean recovered=recovery.succeeded();
+                    runOnUiThread(()->{
+                        if(!active || gate!=currentGate)return;
+                        if(!currentGate.isActive(ticket)){
+                            approve.setEnabled(false);deny.setEnabled(false);
+                            if(recovered)show("通信正常，电脑 TLS 身份已核验；等待 VM 新请求。");
+                        }else if(recovered)show("通信已恢复；当前请求仍需在原有效期内明确确认或拒绝。");
+                    });
                     if(prompt==null)return;
                     WindowsGrantWire.Challenge challenge=WindowsGrantWire.read(android.util.Base64.decode(prompt.getString("challenge"),android.util.Base64.NO_WRAP));
                     PromptGate.Ticket next=currentGate.begin(prompt.getString("challenge"),(challenge.expires-WindowsGrantWire.FILETIME_UNIX_MILLISECONDS)/1000);if(next==null)return;
@@ -115,7 +130,7 @@ public final class VmLabActivity extends Activity {
                             yes->runOnUiThread(()->submitDecision(currentGate,next,prompt,currentClient,yes)),
                             message->showCurrent(currentGate,message));
                     });
-                }catch(Exception error){showCurrent(currentGate,"等待连接或新请求："+errorCode(error));}
+                }catch(Exception error){recovery.failed(SystemClock.elapsedRealtime());showCurrent(currentGate,"通信暂时中断，自动重试："+errorCode(error));}
             },0,2,TimeUnit.SECONDS);show(useWearable?"手环确认轮询已启动。请手动锁定隔离 VM，保持手机页面在前台，再在手环确认。当前不验证真实距离。":"轮询已启动。请在 VM 内手动锁定，再在这里确认。当前不验证真实距离。");
         }catch(Exception error){stopWork();show("启动失败："+error.getClass().getSimpleName());}
     }

@@ -12,6 +12,7 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 /** BLE pipe owned by a visible page or an explicitly started foreground service. */
 @SuppressLint("MissingPermission")
@@ -52,6 +53,17 @@ public final class BlePhonePeripheral implements AutoCloseable {
     public String failure(){return failure;}
     private void problem(String code){failure=code;status.accept(code);closeSocket();}
     private void closeSocket(){Socket current=socket;if(current!=null)try{current.close();}catch(IOException ignored){};}
+    private void recordStreamFailure(Exception error){
+        try{
+            org.json.JSONArray causes=new org.json.JSONArray();Throwable cause=error;
+            for(int depth=0;cause!=null && depth<8;depth++,cause=cause.getCause()){
+                org.json.JSONObject entry=new org.json.JSONObject().put("type",cause.getClass().getSimpleName());
+                String detail=cause.getMessage();if(detail!=null)entry.put("detail",detail.substring(0,Math.min(detail.length(),256)));causes.put(entry);
+            }
+            org.json.JSONObject report=new org.json.JSONObject().put("recordedAt",System.currentTimeMillis()).put("causes",causes).put("streams",connections).put("mtu",mtu);
+            try(OutputStream out=context.openFileOutput("vm-ble-stream-error.json",Context.MODE_PRIVATE)){out.write(report.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));}
+        }catch(Exception ignored){}
+    }
     private final AdvertiseCallback advertisement=new AdvertiseCallback(){
         @Override public void onStartSuccess(AdvertiseSettings settings){if(!available()){try{advertiser.stopAdvertising(this);}catch(RuntimeException ignored){}return;}advertised=true;advertising.countDown();status.accept("BLE 广播已启动，等待电脑连接；TLS 身份核验仍必需。");}
         @Override public void onStartFailure(int code){failure="BLE advertise failed: "+code;advertising.countDown();}
@@ -95,7 +107,7 @@ public final class BlePhonePeripheral implements AutoCloseable {
     }
     private void acceptLoop(){
         while(available()){
-            try{Socket client=listener.accept();socket=client;serve(client);}catch(SocketTimeoutException ignored){}catch(Exception error){if(!closed){problem("BLE stream ended: "+error.getClass().getSimpleName()+"; reconnect required");enabled=false;BluetoothDevice target=peer;if(target!=null)try{gatt.cancelConnection(target);}catch(RuntimeException ignored){}}}
+            try{Socket client=listener.accept();socket=client;serve(client);}catch(SocketTimeoutException ignored){}catch(Exception error){if(!closed){recordStreamFailure(error);problem("BLE stream ended: "+error.getClass().getSimpleName()+"; reconnect required");enabled=false;BluetoothDevice target=peer;if(target!=null)try{gatt.cancelConnection(target);}catch(RuntimeException ignored){}}}
             finally{closeSocket();socket=null;synchronized(streamState){activeSession=0;incoming.clear();}}
         }
     }
@@ -105,9 +117,10 @@ public final class BlePhonePeripheral implements AutoCloseable {
         BlePipeFrame.Receiver receiver=new BlePipeFrame.Receiver(id,BlePipeFrame.READY);send(BlePipeFrame.OPEN,id,sequence,new byte[0]);
         BlePipeFrame ready=incoming.poll(8,TimeUnit.SECONDS);if(ready==null)throw new IOException("BLE remote ready timeout");receiver.accept(ready);connections++;
         long deadline=SystemClock.elapsedRealtime()+45000;
+        AtomicReference<Exception> firstFailure=new AtomicReference<>();
         Future<?> download=workers.submit(()->{
             try{while(available() && !client.isClosed() && SystemClock.elapsedRealtime()<deadline){BlePipeFrame frame=incoming.poll(1,TimeUnit.SECONDS);if(frame==null)continue;if(!available())throw new IOException("BLE transport lease ended");receiver.accept(frame);if(frame.kind==BlePipeFrame.ABORT)throw new IOException("BLE abort");if(frame.kind==BlePipeFrame.EOF){client.shutdownOutput();return;}client.getOutputStream().write(frame.payload);}throw new IOException("BLE stream lifetime");}
-            catch(Exception error){try{client.close();}catch(IOException ignored){}throw new CompletionException(error);}
+            catch(Exception error){firstFailure.compareAndSet(null,error);try{client.close();}catch(IOException ignored){}throw new CompletionException(error);}
         });
         // A socket write can block even when SO_TIMEOUT bounds reads. Closing it
         // from an independent timer enforces the lifetime in both directions.
@@ -115,7 +128,8 @@ public final class BlePhonePeripheral implements AutoCloseable {
         int bytes=0;try{
             while(available() && SystemClock.elapsedRealtime()<deadline){byte[] buffer=new byte[Math.min(BlePipeFrame.MAX_PAYLOAD,Math.max(1,mtu-3-BlePipeFrame.HEADER))];int read;try{read=client.getInputStream().read(buffer);}catch(SocketTimeoutException ignored){continue;}if(read<0){send(BlePipeFrame.EOF,id,sequence,new byte[0]);download.get(5,TimeUnit.SECONDS);return;}bytes+=read;if(bytes>BlePipeFrame.MAX_BYTES)throw new IOException("BLE stream limit");send(BlePipeFrame.DATA,id,sequence,Arrays.copyOf(buffer,read));}
             throw new IOException("BLE stream lifetime");
-        }finally{expiry.cancel(false);download.cancel(true);}
+        }catch(Exception error){Exception first=firstFailure.get();throw first!=null?first:error;}
+        finally{expiry.cancel(false);download.cancel(true);}
     }
     @Override public void close(){if(!closing.compareAndSet(false,true))return;closed=true;enabled=false;closeSocket();if(listener!=null)try{listener.close();}catch(IOException ignored){}try{if(advertiser!=null)advertiser.stopAdvertising(advertisement);}catch(RuntimeException ignored){}try{if(gatt!=null && peer!=null)gatt.cancelConnection(peer);}catch(RuntimeException ignored){}try{if(gatt!=null)gatt.close();}catch(RuntimeException ignored){}peer=null;workers.shutdownNow();deadlines.shutdownNow();}
 }

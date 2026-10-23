@@ -95,6 +95,20 @@ public final class BridgeRuntimeTests {
             RetrySchedule r=new RetrySchedule();r.failed(0);r.failed(4000);r.succeeded();check(r.ready(4000));
             r.failed(4000);check(!r.ready(7999));check(r.ready(8000));
         });
+        test("VM poll waits for GATT and verifies HTTPS before reporting recovery",()->{
+            VmPollRecovery r=new VmPollRecovery();check(!r.ready(0,false));check(r.ready(1,true));
+            r.failed(1);check(!r.ready(4000,true));check(r.ready(4001,true));check(r.succeeded());check(!r.succeeded());
+        });
+        test("VM link reconnection resets stale backoff but not TLS verification",()->{
+            VmPollRecovery r=new VmPollRecovery();r.failed(0);r.failed(4000);check(!r.ready(5000,true));
+            check(!r.ready(5001,false));check(!r.ready(5002,false));check(r.ready(5003,true));
+            r.failed(5003);check(!r.ready(9002,true));check(r.ready(9003,true));check(r.succeeded());
+        });
+        test("VM poll recovery never revives a consumed or expired authorization",()->{
+            Fixture f=new Fixture();var t=f.prompt();check(f.gate.consume(t));VmPollRecovery r=new VmPollRecovery();
+            r.failed(0);check(!r.ready(1,false));f.elapsed+=30000;f.wall+=30;
+            check(r.ready(2,true));check(r.succeeded());check(!f.gate.canSubmit(t));check(!f.gate.consume(t));
+        });
         String report="{\"generatedAt\":\""+Instant.now()+"\",\"total\":"+results.size()+",\"passed\":"+(results.size()-failed)+",\"failed\":"+failed+",\"tests\":["+String.join(",",results)+"]}";
         Files.writeString(Path.of(args[0]),report,StandardCharsets.UTF_8);
         System.out.println((results.size()-failed)+"/"+results.size()+" passed");if(failed!=0)System.exit(1);

@@ -28,6 +28,7 @@ public final class VmBleTransportService extends Service {
     }};
 
     static boolean active(){VmBleTransportService service=running;return service!=null && service.lease.allows(SystemClock.elapsedRealtime());}
+    static boolean connected(){BleBackgroundLease.Snapshot s=last;return active() && s!=null && (s.stage==BleBackgroundLease.Stage.CONNECTED || s.stage==BleBackgroundLease.Stage.STREAMING);}
     static boolean requestStart(Activity activity){
         if(active())return true;
         if(activity.isFinishing() || !activity.hasWindowFocus() || !activity.getSystemService(PowerManager.class).isInteractive() || activity.getSystemService(KeyguardManager.class).isKeyguardLocked())return false;
