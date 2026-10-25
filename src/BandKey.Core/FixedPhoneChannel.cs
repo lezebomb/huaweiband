@@ -55,7 +55,7 @@ public sealed class FixedPhoneChannel
         this.pc=pc;this.phone=phone;this.exchange=exchange;this.session=session;this.current=current;
         this.wall=wall??(()=>DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());this.mono=mono??(()=>Environment.TickCount64);
         startedMono=this.mono();expiresAt=checked(this.wall()/1000+1800);PcId=Protocol.Fingerprint(Protocol.ExportPublicKey(pc));
-        control=new(options??new(),session){Enabled=autoLock};control.SelectInputMode(ProximityInputMode.FixedPhoneBandConnection);
+        control=new(options??new PresenceOptions{NearSeconds=1},session){Enabled=autoLock};control.SelectInputMode(ProximityInputMode.FixedPhoneBandConnection);
     }
     public void Revoke(){lock(gate){revoked=true;ResetArrival();control.Reset("fixed-phone-revoked");}}
     public void RetryRequest(){lock(gate){ResetArrival();}}
@@ -70,7 +70,7 @@ public sealed class FixedPhoneChannel
     private void Synchronize()
     {
         bool? locked=session.IsLocked();
-        if(locked!=lastLocked){lastLocked=locked;control.SetSession(locked);ResetArrival();}
+        if(locked!=lastLocked){bool keep=lastLocked==false && locked==true && Fresh && bandConnected==true;lastLocked=locked;control.SetSession(locked,keep);ResetArrival();}
         control.Tick(mono()/1000d,Fresh);
         if(control.Presence.State==PresenceState.Far)ResetArrival();
         // Unknown/Uncertain suspends submission through Ready(), but is not a new
@@ -97,9 +97,9 @@ public sealed class FixedPhoneChannel
                 p.ObservedAtMilliseconds<now-10000 || p.ObservedAtMilliseconds>now+3000 || p.BandHash==null || p.BandHash.Length!=64 || p.BandHash.Any(c=>!char.IsAsciiHexDigitLower(c)) ||
                 !Protocol.Verify(phone.PublicKey,FixedPhoneWire.ReportText(p),p.Signature))return new(false,false,"fixed-phone-report-invalid");
             if(bandHash!=null && bandHash!=p.BandHash){Revoke();return new(false,false,"fixed-phone-band-changed");}
-            bandHash=p.BandHash;sequence=p.Sequence;reports++;bandConnected=p.Connected;
+            bool previousEvidenceFresh=Fresh && bandConnected==true;bandHash=p.BandHash;sequence=p.Sequence;reports++;bandConnected=p.Connected;
             freshUntil=mono()+Math.Clamp(p.ObservedAtMilliseconds+10000-now,0,10000);
-            bool? locked=session.IsLocked();if(locked!=lastLocked){lastLocked=locked;control.SetSession(locked);ResetArrival();}
+            bool? locked=session.IsLocked();if(locked!=lastLocked){bool keep=lastLocked==false && locked==true && previousEvidenceFresh && bandConnected==true;lastLocked=locked;control.SetSession(locked,keep);ResetArrival();}
             control.ObserveBandConnection(p.Connected,mono()/1000d,Fresh);
             if(control.Presence.State==PresenceState.Far)ResetArrival();
             if(control.CanRequestConfirmation && !arrivalHandled){

@@ -238,6 +238,6 @@ internal static class WindowsGrantRelayIntegrationTests
             var result=await f.FixedState(true,poll);Check(result.Accepted && result.Prompt==null && !File.Exists(f.ApprovalPath));
         });
         await test("VM native policy rejects physical host without changing registry", () =>
-        { try { VmNativePolicy.RequireGuest(); } catch (InvalidOperationException) { return Task.CompletedTask; } throw new Exception("This host should fail the VM guard"); });
+        { Check(VmNativePolicy.ReadEnrolledPhone()==null); try { VmNativePolicy.RequireGuest(); } catch (InvalidOperationException) { return Task.CompletedTask; } throw new Exception("This host should fail the VM guard"); });
     }
 }

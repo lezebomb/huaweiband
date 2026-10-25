@@ -43,6 +43,14 @@ public static class VmNativePolicy
         }
         catch (Exception error) when (error is InvalidOperationException or UnauthorizedAccessException or IOException or System.Security.SecurityException) { return false; }
     }
+    public static byte[]? ReadEnrolledPhone()
+    {
+        try{
+            RequireGuest();using var machine=RegistryKey.OpenBaseKey(RegistryHive.LocalMachine,RegistryView.Registry64);
+            using var config=machine.OpenSubKey(Config);if(config?.GetValue("LabPublicKey") is not byte[] key || !MatchesPhone(key))return null;
+            using var parsed=WindowsGrantWire.ImportNativePublicKey(key);return key.ToArray();
+        }catch(Exception error)when(error is InvalidOperationException or UnauthorizedAccessException or IOException or System.Security.SecurityException or FormatException or CryptographicException or ArgumentException){return null;}
+    }
     public static bool SupportsRequestRenewal()
     {
         RequireGuest(); using var machine=RegistryKey.OpenBaseKey(RegistryHive.LocalMachine,RegistryView.Registry64);

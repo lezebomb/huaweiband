@@ -8,7 +8,7 @@ import java.security.MessageDigest;
 /** Only creates request-renewal signatures. Unlock approval remains in VmWearSession's real button callback. */
 final class VmFixedPhoneClient {
     private final VmRelayClient relay;private final String bandHash;
-    private JSONObject context;private String lastRenewalBody;private long sequence,lastAttempt=-10000,probeUntil,probeAt;
+    private JSONObject context;private String lastRenewalBody;private Boolean observedConnection;private boolean sourceObserved;private long sequence,lastAttempt=-10000,probeUntil,probeAt;
     private volatile long lastSuccess=-10000;
     private JSONObject offeredPrompt;private volatile int inlinePrompts;
     private volatile boolean ready,stopped;
@@ -49,7 +49,12 @@ final class VmFixedPhoneClient {
         sequence=c.getLong("nextSequence")-1;return c;
     }
     void pulse(WearableConnectionSource.Sample sample,boolean wantPrompt){
-        long now=SystemClock.elapsedRealtime();if(stopped || now-lastAttempt<3000 && !(now>=probeAt && now<probeUntil))return;lastAttempt=now;ready=false;
+        long now=SystemClock.elapsedRealtime();
+        boolean changed=!sourceObserved || !java.util.Objects.equals(observedConnection,sample.connected);
+        if(stopped || !changed && now-lastAttempt<3000 && !(now>=probeAt && now<probeUntil))return;
+        sourceObserved=true;observedConnection=sample.connected;lastAttempt=now;ready=false;
+        if(changed && Boolean.TRUE.equals(sample.connected)){probeUntil=now+2200;probeAt=now+500;}
+        else if(!Boolean.TRUE.equals(sample.connected)){probeUntil=0;}
         try{
             if(context==null || context.getLong("expiresAt")<=System.currentTimeMillis()/1000)context=context();
             if(stopped)return;

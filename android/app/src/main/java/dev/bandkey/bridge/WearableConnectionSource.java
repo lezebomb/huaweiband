@@ -27,9 +27,10 @@ final class WearableConnectionSource {
             .put("pendingMilliseconds",pending?Math.max(0,now-queryStarted):0).put("lastQueryMilliseconds",lastQueryMs).put("maxQueryMilliseconds",maxQueryMs);
     }
     private synchronized void result(Boolean value){
-        if(stopped)return;pending=false;responses++;connected=value;observedElapsed=SystemClock.elapsedRealtime();observedWall=System.currentTimeMillis();
+        if(stopped)return;boolean returned=Boolean.TRUE.equals(value) && !Boolean.TRUE.equals(connected);pending=false;responses++;connected=value;observedElapsed=SystemClock.elapsedRealtime();observedWall=System.currentTimeMillis();
         lastQueryMs=Math.max(0,observedElapsed-queryStarted);maxQueryMs=Math.max(maxQueryMs,lastQueryMs);
         if(value==null)unknownResults++;else if(value)trueResults++;else falseResults++;
+        handler.removeCallbacks(tick);handler.postDelayed(tick,returned?1000:3000);
     }
     private synchronized void failure(){if(!stopped){errors++;result(null);}}
     private final Runnable tick=new Runnable(){@Override public void run(){
@@ -41,6 +42,6 @@ final class WearableConnectionSource {
                 result(matches==1?value:null);
             }).addOnFailureListener(error->failure());
         }catch(RuntimeException error){failure();}
-        handler.postDelayed(this,3000);
+
     }};
 }

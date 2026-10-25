@@ -24,6 +24,7 @@ internal sealed class VmBridgeForm : Form
     private bool stopping;
     private readonly CheckBox fixedMode = new() { Text = "手机固定在电脑旁：用手环连接状态判断返回", AutoSize = true };
     private readonly CheckBox walkLock = new() { Text = "手环持续断连后自动锁定此 VM（默认关闭）", AutoSize = true, Enabled = false };
+    private readonly NumericUpDown nearDelay=new(){Minimum=1,Maximum=10,Value=1,Width=80};
     private FixedPhoneChannel? fixedPhone;
     private FixedPhoneSnapshot? lastFixedPhone;
     private readonly SessionEvidence sessionEvidence = new(false);
@@ -46,6 +47,7 @@ internal sealed class VmBridgeForm : Form
         column.Controls.Add(new Label { Text = "手机访问地址（NAT 映射时填写宿主机地址）", AutoSize = true }); column.Controls.Add(endpoint);
         fixedMode.CheckedChanged += (_, _) => { walkLock.Enabled = fixedMode.Checked; if (!fixedMode.Checked) walkLock.Checked = false; };
         column.Controls.Add(fixedMode); column.Controls.Add(walkLock);
+        column.Controls.Add(new Label{Text="固定手机：接近稳定等待（秒，默认1；远离仍15秒）",AutoSize=true});column.Controls.Add(nearDelay);
         start.Click += async (_, _) => await StartRelay(); column.Controls.Add(start);
         var retryRequest = new Button { Text = "重新请求手环确认（固定手机模式）", AutoSize = true };
         retryRequest.Click += (_, _) => fixedPhone?.RetryRequest(); column.Controls.Add(retryRequest);
@@ -55,6 +57,16 @@ internal sealed class VmBridgeForm : Form
         var exportReport = new Button { Text = "导出本次会话记录（不含配对资料）", AutoSize = true };
         exportReport.Click += (_, _) => ExportReport(); column.Controls.Add(exportReport);
         status.Text = "先用安装器的手机确认模式登记同一公钥，再启动中继。\r\n默认只监听本机；手机连通需配置 VM 网络及专用网络防火墙。";
+        var enrolled=VmNativePolicy.ReadEnrolledPhone();
+        if(enrolled!=null){nativePublicKey=enrolled;status.Text="已读取本VM当前账户登记的手机公钥，无需重新导入。\r\nSHA-256：\r\n"+Convert.ToHexStringLower(SHA256.HashData(enrolled));}
+        try{
+        var localAddresses=System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces()
+            .Where(n=>n.OperationalStatus==System.Net.NetworkInformation.OperationalStatus.Up)
+            .SelectMany(n=>n.GetIPProperties().UnicastAddresses).Select(a=>a.Address)
+            .Where(a=>a.AddressFamily==System.Net.Sockets.AddressFamily.InterNetwork && !IPAddress.IsLoopback(a))
+            .Where(a=>{var b=a.GetAddressBytes();return b[0]==10 || b[0]==192 && b[1]==168 || b[0]==172 && b[1]>=16 && b[1]<=31;}).Distinct().ToArray();
+        if(localAddresses.Length==1)bind.Text=localAddresses[0].ToString();
+        }catch(System.Net.NetworkInformation.NetworkInformationException){/* Keep manual address entry available. */}
         timer.Tick += async (_, _) => { if (relay != null && nativePublicKey != null && !VmNativePolicy.MatchesPhone(nativePublicKey)) { await StopRelay(); status.AppendText("\r\n原生登记已撤销或改变，中继已停止。"); } ObserveSession(); };
         Shown += (_, _) => { ObserveSession(); timer.Start(); };
         FormClosing += async (_, args) => { if (stopping) { args.Cancel = true; return; } if (server != null) { args.Cancel = true; await StopRelay(); Close(); } }; FormClosed += (_, _) => { timer.Stop(); SaveReport(); timer.Dispose(); };
@@ -155,14 +167,14 @@ internal sealed class VmBridgeForm : Form
             bool Current() => nativePublicKey != null && VmNativePolicy.MatchesPhone(nativePublicKey);
             using var identity = WindowsIdentity.GetCurrent();
             var raw = new WindowsGrantDirectoryExchange(VmNativePolicy.DirectoryPath, identity.User!.Value, (uint)Process.GetCurrentProcess().SessionId, () => Current() && WindowsSession.IsLocked() == true);
-            if (fixedMode.Checked) fixedPhone = new FixedPhoneChannel(pc, device, raw, new VmGuardedSession(), Current, walkLock.Checked);
+            if (fixedMode.Checked) fixedPhone = new FixedPhoneChannel(pc, device, raw, new VmGuardedSession(), Current, walkLock.Checked,options:new PresenceOptions{NearSeconds=(double)nearDelay.Value});
             var exchange = new WindowsGrantDirectoryExchange(VmNativePolicy.DirectoryPath, identity.User!.Value, (uint)Process.GetCurrentProcess().SessionId, () => Current() && WindowsSession.IsLocked() == true && (fixedPhone?.CanSubmit ?? true));
             relay = new WindowsGrantRelay(pc, device, exchange, Current, proximityCurrent: () => fixedPhone?.CanSubmit ?? true);
             server = new BridgeServer(); var emptyLegacy = new AuthorizationBroker(relay.PcId, pc);
             await server.StartAsync(settings, certificate, emptyLegacy, _ => { }, windowsRelay: relay, fixedPhone: fixedPhone);
             pairing = System.Text.Json.JsonSerializer.Serialize(new { endpoint = url.GetLeftPart(UriPartial.Authority), pcId = relay.PcId, pcPublicKey = Protocol.ExportPublicKey(pc), certificateSha256 = BridgeServer.CertificatePin(certificate), protocol = "bandkey-vm-phone-v1", testOnly = true }, Store.Json);
-            bind.Enabled = endpoint.Enabled = fixedMode.Enabled = walkLock.Enabled = false; start.Enabled = false;
-            status.AppendText("\r\n中继已启动（0.7 挑战随响应返回）。电脑 ID：\r\n" + relay.PcId + "\r\nTLS：\r\n" + BridgeServer.CertificatePin(certificate) + "\r\n手机访问：" + url.GetLeftPart(UriPartial.Authority) + "\r\n导出配对资料，在手机实验页导入并核对指纹。");
+            bind.Enabled = endpoint.Enabled = fixedMode.Enabled = walkLock.Enabled = nearDelay.Enabled = false; start.Enabled = false;
+            status.AppendText("\r\n中继已启动（0.8 快速接近，挑战随响应返回）。电脑 ID：\r\n" + relay.PcId + "\r\nTLS：\r\n" + BridgeServer.CertificatePin(certificate) + "\r\n手机访问：" + url.GetLeftPart(UriPartial.Authority) + "\r\n导出配对资料，在手机实验页导入并核对指纹。");
         }
         catch (Exception error) { await StopRelay(); MessageBox.Show(this, error is InvalidOperationException ? error.Message : "中继启动失败：" + error.GetType().Name); }
     }
@@ -184,7 +196,7 @@ internal sealed class VmBridgeForm : Form
         {
             pc?.Dispose(); pc = null; certificate?.Dispose(); certificate = null; pairing = null;
             bind.Enabled = endpoint.Enabled = start.Enabled = true; stopping = false;
-            fixedMode.Enabled = true; walkLock.Enabled = fixedMode.Checked;
+            fixedMode.Enabled = nearDelay.Enabled = true; walkLock.Enabled = fixedMode.Checked;
             SaveReport(); if (!IsDisposed) RefreshSessionStatus();
         }
     }

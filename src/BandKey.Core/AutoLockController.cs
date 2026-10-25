@@ -22,9 +22,13 @@ public sealed class AutoLockController
     public event Action<LockRequestResult>? LockAttempted;
     public AutoLockController(PresenceOptions options, IInteractiveSession session)
     { monitor = new(options); bandConnection = new(options); this.session = session; }
-    public void SetSession(bool? locked)
+    public void SetSession(bool? locked,bool preserveFreshNearWhenLocking=false)
     {
-        if (Locked != locked) Reset("session-change");
+        // The fixed-phone caller may retain authenticated physical presence on
+        // unlocked -> locked. Authorization state is separately discarded there.
+        bool keep=preserveFreshNearWhenLocking && InputMode==ProximityInputMode.FixedPhoneBandConnection &&
+            Locked==false && locked==true && Presence.State==PresenceState.Near;
+        if (Locked != locked && !keep) Reset("session-change");
         Locked = locked;
     }
     public void Reset(string reason)

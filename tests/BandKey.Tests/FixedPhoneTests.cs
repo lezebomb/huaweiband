@@ -73,6 +73,30 @@ internal static class FixedPhoneTests
             Check(f.Channel.Observe(f.Report(true)).Renewal==null && !f.Channel.CanSubmit);
             f.Channel.RetryRequest();Check(f.Channel.Observe(f.Report(true)).Renewal!=null);
         });
+        test("fixed controller may preserve verified near evidence on a lock boundary",()=>{
+            using var f=new Fixture();var c=new AutoLockController(new(){NearSeconds=1},f.Session);c.SelectInputMode(ProximityInputMode.FixedPhoneBandConnection);
+            c.SetSession(false);c.ObserveBandConnection(true,0,true);c.ObserveBandConnection(true,1,true);
+            c.SetSession(true,true);Check(c.Presence.State==PresenceState.Near && c.CanRequestConfirmation && f.Session.Locks==0);
+        });
+        test("legacy session reset still discards near evidence by default",()=>{
+            using var f=new Fixture();var c=new AutoLockController(new(){NearSeconds=1},f.Session);c.SelectInputMode(ProximityInputMode.FixedPhoneBandConnection);
+            c.SetSession(false);c.ObserveBandConnection(true,0,true);c.ObserveBandConnection(true,1,true);c.SetSession(true);
+            Check(c.Presence.State==PresenceState.Unknown && !c.CanRequestConfirmation);
+        });
+        test("preservation never retains near evidence through unlock or an unknown session",()=>{
+            using var f=new Fixture();var c=new AutoLockController(new(){NearSeconds=1},f.Session);c.SelectInputMode(ProximityInputMode.FixedPhoneBandConnection);
+            c.SetSession(false);c.ObserveBandConnection(true,0,true);c.ObserveBandConnection(true,1,true);c.SetSession(true,true);c.SetSession(false,true);
+            Check(c.Presence.State==PresenceState.Unknown);c.SetSession(null,true);c.SetSession(true,true);Check(!c.CanRequestConfirmation);
+        });
+        test("locking while fresh and already near creates a new request without rewarming",()=>{
+            using var f=new Fixture();f.Session.Locked=false;f.Channel.Observe(f.Report(true));f.Advance(1000);f.Channel.Observe(f.Report(true));
+            f.Session.Locked=true;var result=f.Channel.Observe(f.Report(true));Check(result.Renewal!=null && !result.CanPoll && !result.WindowsUnlocked && f.Exchange.Submissions==0);
+        });
+        test("a fresh replacement report cannot preserve stale pre-lock evidence",()=>{
+            using var f=new Fixture();f.Session.Locked=false;f.Channel.Observe(f.Report(true));f.Advance(1000);f.Channel.Observe(f.Report(true));
+            f.Advance(11000);f.Session.Locked=true;Check(f.Channel.Observe(f.Report(true)).Renewal==null);
+            f.Advance(1000);Check(f.Channel.Observe(f.Report(true)).Renewal!=null);
+        });
         test("fixed-phone context is PC-signed and poll replay is rejected",()=>{
             using var f=new Fixture();Check(Protocol.Verify(Protocol.ExportPublicKey(f.Pc),FixedPhoneWire.ContextText(f.Context),f.Context.Signature));
             var poll=f.Poll();f.Channel.GetContext(poll);Refuses(()=>f.Channel.GetContext(poll));
