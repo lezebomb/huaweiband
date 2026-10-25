@@ -68,6 +68,7 @@ Test("prompt rate limit after expiry", () => { var b = Broker(); Assert(b.Poll(P
 Test("repeated fresh poll returns same pending prompt", () => { var b = Broker(); var a = b.Poll(Poll(), 1000); Assert(a == b.Poll(Poll(1001), 1001)); });
 Test("authentication adapter fails closed", () => { var backend = new UnavailableAuthenticationBackend(); Assert(!backend.IsAvailable && !backend.AuthenticateAsync(null!, default).Result.WindowsAuthenticated); });
 
+ProximityModeTests.Run(Test);
 SafetyTests.Run(Test);
 AuthenticationTests.Run(Test);
 WindowsGrantRelayTests.Run(Test);
