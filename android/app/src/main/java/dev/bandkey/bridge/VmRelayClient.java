@@ -7,8 +7,8 @@ import org.json.JSONObject;
 /** The VM-only manual test channel signs the same body as a future wearable confirmation adapter. */
 final class VmRelayClient {
     final JSONObject config;
-    private final Identity identity;
-    private final BridgeClient transport;
+    final Identity identity;
+    final BridgeClient transport;
     VmRelayClient(JSONObject config,Identity identity)throws Exception{
         if(!config.optBoolean("testOnly") || !"bandkey-vm-phone-v1".equals(config.optString("protocol")))throw new SecurityException("VM lab configuration required");
         this.config=config;this.identity=identity;transport=new BridgeClient(config,identity);

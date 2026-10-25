@@ -22,6 +22,10 @@ internal sealed class VmBridgeForm : Form
     private readonly System.Windows.Forms.Timer timer = new() { Interval = 1000 };
     private string? pairing;
     private bool stopping;
+    private readonly CheckBox fixedMode = new() { Text = "手机固定在电脑旁：用手环连接状态判断返回", AutoSize = true };
+    private readonly CheckBox walkLock = new() { Text = "手环持续断连后自动锁定此 VM（默认关闭）", AutoSize = true, Enabled = false };
+    private FixedPhoneChannel? fixedPhone;
+    private FixedPhoneSnapshot? lastFixedPhone;
     private readonly SessionEvidence sessionEvidence = new(false);
     private readonly Stopwatch clock = Stopwatch.StartNew();
     private readonly int sessionId = Process.GetCurrentProcess().SessionId;
@@ -36,11 +40,15 @@ internal sealed class VmBridgeForm : Form
     {
         VmNativePolicy.RequireGuest(); Text = "BandKey VM 手机通信实验"; ClientSize = new(720, 610); StartPosition = FormStartPosition.CenterScreen;
         var column = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, Padding = new Padding(20), AutoScroll = true }; Controls.Add(column);
-        column.Controls.Add(new Label { Text = "仅供隔离 VM：手机／手环确认，Windows 原生组件独立验签。\n本程序不读取或传输 VM 密码；当前不验证距离。", AutoSize = true });
+        column.Controls.Add(new Label { Text = "仅供隔离 VM：手机／手环确认，Windows 原生组件独立验签。\n固定手机模式使用手环连接范围，不提供米数距离。", AutoSize = true });
         var import = new Button { Text = "1. 导入手机实验公钥（.bandkeypub）", AutoSize = true }; import.Click += (_, _) => ImportPhone(); column.Controls.Add(import);
         column.Controls.Add(new Label { Text = "本机监听 IPv4（端口固定 19443）", AutoSize = true }); column.Controls.Add(bind);
         column.Controls.Add(new Label { Text = "手机访问地址（NAT 映射时填写宿主机地址）", AutoSize = true }); column.Controls.Add(endpoint);
+        fixedMode.CheckedChanged += (_, _) => { walkLock.Enabled = fixedMode.Checked; if (!fixedMode.Checked) walkLock.Checked = false; };
+        column.Controls.Add(fixedMode); column.Controls.Add(walkLock);
         start.Click += async (_, _) => await StartRelay(); column.Controls.Add(start);
+        var retryRequest = new Button { Text = "重新请求手环确认（固定手机模式）", AutoSize = true };
+        retryRequest.Click += (_, _) => fixedPhone?.RetryRequest(); column.Controls.Add(retryRequest);
         var export = new Button { Text = "2. 导出电脑配对资料给手机", AutoSize = true }; export.Click += (_, _) => ExportPairing(); column.Controls.Add(export);
         stop.Click += async (_, _) => await StopRelay(); column.Controls.Add(stop); column.Controls.Add(status);
         column.Controls.Add(sessionStatus);
@@ -92,6 +100,8 @@ internal sealed class VmBridgeForm : Form
     {
         var activity = relay?.Activity ?? lastActivity;
         sessionStatus.Text = $"会话记录：WTS {(notificationsRegistered ? "已注册" : "不可用，保留查询结果")}；观察到锁定后解锁：通知 {sessionEvidence.NotificationUnlocksAfterLock}／查询 {sessionEvidence.QueryUnlocksAfterLock}\n最近一轮中继：授权文件交付 {activity?.ApprovalFilesSubmitted ?? 0}；签名拒绝 {activity?.SignedDenials ?? 0}；无效／失败 {activity?.Rejections ?? 0}\n交付与会话解锁分别记录，不推断解锁由 BandKey 导致。\n{(reportError == null ? reportPath : "报告保存失败：" + reportError)}";
+        var range = fixedPhone?.Snapshot ?? lastFixedPhone;
+        if (range != null) sessionStatus.Text += $"\n固定手机：手环连接 {range.BandConnected?.ToString() ?? "Unknown"}；接近状态 {range.Presence}；有效报告 {range.Reports}；新请求 {range.Renewals}；原生就绪 {range.NativeRequestReady}";
     }
     private void SaveReport()
     {
@@ -100,6 +110,7 @@ internal sealed class VmBridgeForm : Form
             Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
             var report = new { schema = "bandkey.vm-relay-observation.v1", generatedAt = DateTimeOffset.UtcNow,
                 session = sessionEvidence.Report(), latestRelayActivity = relay?.Activity ?? lastActivity, relayRunning = relay != null,
+                fixedPhone = fixedPhone?.Snapshot ?? lastFixedPhone,
                 notificationsRegistered, registrationError, powerResumes,
                 unlockAttributedToBandKey = false, credentialsAccessedByObserver = false };
             File.WriteAllText(reportPath + ".tmp", JsonSerializer.Serialize(report, Store.Json)); File.Move(reportPath + ".tmp", reportPath, true);
@@ -135,6 +146,7 @@ internal sealed class VmBridgeForm : Form
         try
         {
             if (nativePublicKey == null || !VmNativePolicy.MatchesPhone(nativePublicKey)) throw new InvalidOperationException("先在 VM 安装器选择手机确认模式，登记相同公钥。");
+            if (fixedMode.Checked && !VmNativePolicy.SupportsRequestRenewal()) throw new InvalidOperationException("固定手机模式需要本轮协议 v3 的 VM 登录组件。请按新教程在快照保护下更新 VM；主机不要安装。");
             if (!Uri.TryCreate(endpoint.Text.Trim(), UriKind.Absolute, out var url) || url.Scheme != "https" || !IPAddress.TryParse(url.Host, out _) || url.UserInfo.Length != 0 || url.Query.Length != 0 || url.Fragment.Length != 0 || url.AbsolutePath != "/") throw new InvalidOperationException("手机地址必须为 HTTPS IPv4/IPv6 地址和端口。");
             var settings = new AppSettings { ListenAddress = bind.Text.Trim(), Port = 19443 }; settings.Validate();
             var store = new Store(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "BandKeyVmBridge"));
@@ -142,12 +154,14 @@ internal sealed class VmBridgeForm : Form
             var publicKey = Protocol.ExportPublicKey(phone); var device = new PublicDevice(Protocol.Fingerprint(publicKey), "VM phone test", publicKey, ConfirmationSources.TestClient, true);
             bool Current() => nativePublicKey != null && VmNativePolicy.MatchesPhone(nativePublicKey);
             using var identity = WindowsIdentity.GetCurrent();
-            var exchange = new WindowsGrantDirectoryExchange(VmNativePolicy.DirectoryPath, identity.User!.Value, (uint)Process.GetCurrentProcess().SessionId, () => Current() && WindowsSession.IsLocked() == true);
-            relay = new WindowsGrantRelay(pc, device, exchange, Current);
+            var raw = new WindowsGrantDirectoryExchange(VmNativePolicy.DirectoryPath, identity.User!.Value, (uint)Process.GetCurrentProcess().SessionId, () => Current() && WindowsSession.IsLocked() == true);
+            if (fixedMode.Checked) fixedPhone = new FixedPhoneChannel(pc, device, raw, new VmGuardedSession(), Current, walkLock.Checked);
+            var exchange = new WindowsGrantDirectoryExchange(VmNativePolicy.DirectoryPath, identity.User!.Value, (uint)Process.GetCurrentProcess().SessionId, () => Current() && WindowsSession.IsLocked() == true && (fixedPhone?.CanSubmit ?? true));
+            relay = new WindowsGrantRelay(pc, device, exchange, Current, proximityCurrent: () => fixedPhone?.CanSubmit ?? true);
             server = new BridgeServer(); var emptyLegacy = new AuthorizationBroker(relay.PcId, pc);
-            await server.StartAsync(settings, certificate, emptyLegacy, _ => { }, windowsRelay: relay);
+            await server.StartAsync(settings, certificate, emptyLegacy, _ => { }, windowsRelay: relay, fixedPhone: fixedPhone);
             pairing = System.Text.Json.JsonSerializer.Serialize(new { endpoint = url.GetLeftPart(UriPartial.Authority), pcId = relay.PcId, pcPublicKey = Protocol.ExportPublicKey(pc), certificateSha256 = BridgeServer.CertificatePin(certificate), protocol = "bandkey-vm-phone-v1", testOnly = true }, Store.Json);
-            bind.Enabled = endpoint.Enabled = false; start.Enabled = false;
+            bind.Enabled = endpoint.Enabled = fixedMode.Enabled = walkLock.Enabled = false; start.Enabled = false;
             status.AppendText("\r\n中继已启动。电脑 ID：\r\n" + relay.PcId + "\r\nTLS：\r\n" + BridgeServer.CertificatePin(certificate) + "\r\n手机访问：" + url.GetLeftPart(UriPartial.Authority) + "\r\n导出配对资料，在手机实验页导入并核对指纹。");
         }
         catch (Exception error) { await StopRelay(); MessageBox.Show(this, error is InvalidOperationException ? error.Message : "中继启动失败：" + error.GetType().Name); }
@@ -163,12 +177,14 @@ internal sealed class VmBridgeForm : Form
         if (stopping) return;
         stopping = true;
         relay?.Revoke(); lastActivity = relay?.Activity ?? lastActivity; relay = null; var active = server; server = null;
+        fixedPhone?.Revoke(); lastFixedPhone = fixedPhone?.Snapshot ?? lastFixedPhone; fixedPhone = null;
         try { if (active != null) await active.DisposeAsync(); }
         catch (Exception error) { status.AppendText("\r\n监听器停止异常：" + error.GetType().Name + "；本轮授权已撤销。"); }
         finally
         {
             pc?.Dispose(); pc = null; certificate?.Dispose(); certificate = null; pairing = null;
             bind.Enabled = endpoint.Enabled = start.Enabled = true; stopping = false;
+            fixedMode.Enabled = true; walkLock.Enabled = fixedMode.Checked;
             SaveReport(); if (!IsDisposed) RefreshSessionStatus();
         }
     }

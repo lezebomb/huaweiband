@@ -16,6 +16,7 @@ public final class VmLabActivity extends Activity {
     private TextView status;
     private Button approve,deny;
     private CheckBox wearableConfirm;
+    private CheckBox fixedPhoneMode;
     private ScheduledExecutorService worker;
     private volatile VmRelayClient client;
     private volatile PromptGate gate;
@@ -51,6 +52,9 @@ public final class VmLabActivity extends Activity {
             show(checked?"已切换为真实手环确认，手机测试按钮停用。仅手环本次有效点击才会签名。":"已切换为手机测试按钮，原手环请求已取消。");
             if(resume)startWork();
         });
+        fixedPhoneMode=new CheckBox(this);fixedPhoneMode.setText("手机固定在电脑旁：用手环断连／重连判断返回（需新版 VM）");
+        fixedPhoneMode.setChecked(prefs().getBoolean("fixedPhoneMode",false));column.addView(fixedPhoneMode);
+        fixedPhoneMode.setOnCheckedChangeListener((button,checked)->{VmWearConfirmService.stopCurrent();pollingRequested=false;stopWork();prefs().edit().putBoolean("fixedPhoneMode",checked).apply();show("模式已切换，旧请求已取消。请在 VM 中选择相同模式，再明确启动后台手环确认。");});
         button(column,"停止轮询并取消待确认请求",()->{VmWearConfirmService.stopCurrent();pollingRequested=false;stopWork();show("已停止。已经交付的签名不能由此撤回；原生一次性及有效期检查仍适用。");});
         button(column,"启动轮询",this::startWork);
         bleStatus=new TextView(this);bleStatus.setText(R.string.vm_ble_idle);column.addView(bleStatus);

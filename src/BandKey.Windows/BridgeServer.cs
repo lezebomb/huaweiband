@@ -17,7 +17,7 @@ public sealed class BridgeServer : IAsyncDisposable
 {
     private WebApplication? app;
     public async Task StartAsync(AppSettings settings, X509Certificate2 cert, AuthorizationBroker broker,
-        Action<ApprovalResult> result, CancellationToken cancellationToken = default, AuthenticationCoordinator? authentication = null, WindowsGrantRelay? windowsRelay = null)
+        Action<ApprovalResult> result, CancellationToken cancellationToken = default, AuthenticationCoordinator? authentication = null, WindowsGrantRelay? windowsRelay = null, FixedPhoneChannel? fixedPhone = null)
     {
         var builder = WebApplication.CreateSlimBuilder();
         builder.Logging.ClearProviders();
@@ -74,6 +74,23 @@ public sealed class BridgeServer : IAsyncDisposable
                 try { var status = windowsRelay.Decide(request); return Results.Json(status, statusCode: status.Authorized || status.Code == "user-denied" ? 200 : 403); }
                 catch (Exception error) when (error is ArgumentException or FormatException or System.Security.Cryptography.CryptographicException) { return Results.BadRequest(); }
                 catch (IOException) { return Results.StatusCode(503); }
+            });
+        }
+        if(fixedPhone!=null){
+            app.MapPost("/v2/windows/fixed/context",(PollRequest request)=>{
+                try{return Results.Json(fixedPhone.GetContext(request));}
+                catch(UnauthorizedAccessException){return Results.Unauthorized();}
+                catch(Exception e)when(e is ArgumentException or FormatException){return Results.BadRequest();}
+            });
+            app.MapPost("/v2/windows/fixed/state",(BandConnectionReport request)=>{
+                try{var status=fixedPhone.Observe(request);return Results.Json(status,statusCode:status.Accepted?200:403);}
+                catch(Exception e)when(e is ArgumentException or FormatException){return Results.BadRequest();}
+                catch(IOException){return Results.StatusCode(503);}
+            });
+            app.MapPost("/v2/windows/fixed/renew",(RequestRenewalDecision request)=>{
+                try{var status=fixedPhone.Renew(request);return Results.Json(status,statusCode:status.Accepted?200:403);}
+                catch(Exception e)when(e is ArgumentException or FormatException){return Results.BadRequest();}
+                catch(IOException){return Results.StatusCode(503);}
             });
         }
         await app.StartAsync(cancellationToken);

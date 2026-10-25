@@ -57,7 +57,7 @@ inline bool CheckCleanupDirectory(const std::filesystem::path& path, LabCleanupR
     return true;
 }
 inline bool IsLabExchangeFile(const std::wstring& name) {
-    if (name == L"signer.dpapi") return true;
+    if (name == L"signer.dpapi" || name == L"request-renewal.bin" || name == L"request-renewal.tmp") return true;
     if (name.size() < 72) return false;
     for (size_t i = 0; i < 64; ++i) if (!((name[i] >= L'0' && name[i] <= L'9') || (name[i] >= L'a' && name[i] <= L'f'))) return false;
     auto suffix = name.substr(64);

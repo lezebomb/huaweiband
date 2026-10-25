@@ -41,6 +41,9 @@ public final class VmWearSessionTests {
         test("SDK cancellation clears waiting state without resending",()->{Fixture f=new Fixture();f.session.poll();f.gate.cancel(f.ticket);f.session.poll();check(f.promptCalls==1 && f.session.state()==VmWearSession.State.WAIT_REQUEST);});
         test("executor refusal cannot retry a consumed click",()->{Fixture f=new Fixture();f.rejectQueue=true;f.session.poll();f.click(true);f.rejectQueue=false;f.session.poll();f.run();check(f.submitCalls==0 && f.session.state()==VmWearSession.State.SUBMIT_ERROR);});
         test("unexpected denial response never records an approval",()->{Fixture f=new Fixture();f.result=VmWearSession.Result.DENIED;f.session.poll();f.click(true);f.run();check(f.session.delivered()==0 && f.session.state()==VmWearSession.State.REJECTED);});
+        test("departing band invalidates an already queued click",()->{Fixture f=new Fixture();f.session.poll();f.click(true);f.session.invalidatePending();f.run();check(f.submitCalls==0 && f.session.active());});
+        test("new native request can prompt after arrival cancels old notification",()->{Fixture f=new Fixture();f.session.poll();Consumer<Boolean> old=f.click;f.session.invalidatePending();f.next="fresh-return";f.session.poll();old.accept(true);f.run();check(f.promptCalls==2 && f.submitCalls==0);f.click(true);f.run();check(f.submitCalls==1);});
+        test("brief link outage preserves unconsumed current request",()->{Fixture f=new Fixture();f.session.poll();f.link=false;f.session.poll();f.link=true;f.session.poll();f.click(true);f.run();check(f.promptCalls==1 && f.submitCalls==1);});
         Files.writeString(Path.of(args[0]),"{\"passed\":"+passed+",\"failed\":0,\"simulatedDevice\":true,\"windowsAuthenticationSubmitted\":false}");
         System.out.println("VM background coordinator: "+passed+" checks passed.");
     }

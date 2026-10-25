@@ -11,6 +11,18 @@ if (args.Length == 2 && args[0] == "--verify-java")
     File.WriteAllText(Path.Combine(target, "csharp-java-result.json"), JsonSerializer.Serialize(new { passed = accepted && refused ? 2 : 0, failed = accepted && refused ? 0 : 1, realWindowsAuthenticationTested = false }));
     Console.WriteLine("CSharp verifies Java native grant: " + (accepted && refused)); return accepted && refused ? 0 : 1;
 }
+if(args.Length==2 && args[0]=="--verify-renewal-java")
+{
+    string dir=args[1];var proof=File.ReadAllBytes(Path.Combine(dir,"java-renewal.bin"));
+    var request=WindowsRequestRenewalWire.Read(proof.AsSpan(0,436));var pub=File.ReadAllBytes(Path.Combine(dir,"java-public.bin"));
+    bool good=WindowsRequestRenewalWire.Verify(request,proof,pub,100001);
+    var forged=proof.ToArray();forged[^1]^=1;
+    good &= !WindowsRequestRenewalWire.Verify(request,forged,pub,100001) &&
+        !WindowsRequestRenewalWire.Verify(request,proof,pub,110000);
+    try{WindowsGrantWire.ReadChallenge(proof.AsSpan(0,436));good=false;}catch(FormatException){}
+    File.WriteAllText(Path.Combine(dir,"csharp-renewal-result.json"),JsonSerializer.Serialize(new{passed=good?4:0,failed=good?0:1,windowsAuthenticationSubmitted=false}));
+    Console.WriteLine("CSharp verifies Java renewal purpose/signature/expiry: "+good);return good?0:1;
+}
 if (args.Length != 1) return 2;
 var directory = args[0]; var tests = new List<object>(); var failed = 0;
 void Check(string name, bool success) { tests.Add(new { name, passed = success }); if (!success) failed++; }

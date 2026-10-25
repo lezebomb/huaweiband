@@ -54,6 +54,7 @@ struct LabPolicy {
     std::vector<BYTE> publicKey;
     VmAccountKind accountKind = VmAccountKind::Local;
     std::wstring qualifiedAccount;
+    DWORD protocolVersion = 1;
     LabPolicy(bool active = false, std::wstring target = {}) : enabled(active), sid(std::move(target)) {}
 };
 inline LabPolicy ReadLabPolicy() {
@@ -83,6 +84,10 @@ inline LabPolicy ReadLabPolicy() {
     policy.qualifiedAccount = ReadMachineString(BandKeyLabConfig, L"QualifiedAccount");
     if ((accountResult == ERROR_SUCCESS && policy.qualifiedAccount.empty()) || (!policy.qualifiedAccount.empty() && !ValidQualifiedAccount(policy.qualifiedAccount, policy.accountKind)) ||
         (policy.accountKind == VmAccountKind::MicrosoftAccount && (mode != 2 || policy.qualifiedAccount.empty()))) return LabPolicy{};
+    DWORD protocol = 1; bytes = sizeof(protocol);
+    auto protocolResult = RegGetValueW(HKEY_LOCAL_MACHINE, BandKeyLabConfig, L"ProtocolVersion", RRF_RT_REG_DWORD | RRF_SUBKEY_WOW6464KEY, nullptr, &protocol, &bytes);
+    if ((protocolResult != ERROR_SUCCESS && protocolResult != ERROR_FILE_NOT_FOUND) || (protocol != 1 && protocol != 3)) return LabPolicy{};
+    policy.protocolVersion = protocol;
     if (valid) { policy.enabled = true; policy.sid = sid; policy.mode = mode; }
     return policy;
 }

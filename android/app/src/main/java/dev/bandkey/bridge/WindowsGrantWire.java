@@ -34,6 +34,18 @@ public final class WindowsGrantWire {
         String[] parts=sid.split("-");for(int i=4;i<parts.length;i++)if(Long.parseLong(parts[i])>0xffffffffL)throw new IllegalArgumentException("Native SID component");
         return new Challenge(session,issued,expires,sid,Arrays.copyOfRange(body,36,68));
     }
+    public static Challenge readRenewal(byte[] body){
+        byte[] renewalDomain="BANDKEY-NEW-V1\0\0".getBytes(StandardCharsets.US_ASCII);
+        if(body==null || body.length!=CHALLENGE_SIZE || !Arrays.equals(Arrays.copyOf(body,16),renewalDomain))throw new IllegalArgumentException("Request renewal domain");
+        ByteBuffer original=ByteBuffer.wrap(body).order(ByteOrder.LITTLE_ENDIAN);long issued=original.getLong(20),expires=original.getLong(28);
+        if(issued<0 || issued>Long.MAX_VALUE-30000 || expires-issued!=10000)throw new IllegalArgumentException("Request renewal lifetime");
+        byte[] shape=body.clone();System.arraycopy(DOMAIN,0,shape,0,16);ByteBuffer.wrap(shape).order(ByteOrder.LITTLE_ENDIAN).putLong(28,issued+30000);
+        Challenge c=read(shape);return new Challenge(c.session,issued,expires,c.sid,c.nonce);
+    }
+    public static boolean currentRenewal(byte[] body,long unixMilliseconds){Challenge c=readRenewal(body);long now=Math.addExact(unixMilliseconds,FILETIME_UNIX_MILLISECONDS);return now>=c.issued && now<c.expires;}
+    public static byte[] signRenewal(byte[] body,PrivateKey key)throws GeneralSecurityException{
+        readRenewal(body);Signature signature=Signature.getInstance("SHA256withECDSA");signature.initSign(key);signature.update(body);return derToP1363(signature.sign());
+    }
     public static boolean current(byte[] body,long unixMilliseconds){
         Challenge c=read(body);long now=Math.addExact(unixMilliseconds,FILETIME_UNIX_MILLISECONDS);return now>=c.issued && now<c.expires;
     }

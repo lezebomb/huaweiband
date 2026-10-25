@@ -139,6 +139,62 @@ static void TestAccountBinding(std::vector<std::pair<const char*, bool>>& tests)
     for (const std::wstring& name : {std::wstring(L"AzureAD\\test@example.invalid"), std::wstring(L"MicrosoftAccount\\"), std::wstring(L"MicrosoftAccount\\a\\b"), std::wstring(L"MicrosoftAccount\\a\nb"), std::wstring(L"MicrosoftAccount\\a\0b", 20), std::wstring(1024, L'x')})
         check("malformed or unsupported online identity is rejected", !ValidQualifiedAccount(name, msa));
 }
+static void TestNativeRenewals(std::vector<std::pair<const char*, bool>>& tests, SyntheticGrantRuntime& runtime, SigningKey& key) {
+    auto check = [&](const char* name, bool ok) { tests.emplace_back(name, ok); if (!ok) throw std::runtime_error(name); };
+    runtime.policy=LabPolicy(true,TestSid);runtime.policy.mode=2;runtime.policy.signerKind=1;runtime.policy.protocolVersion=3;
+    runtime.policy.qualifiedAccount=L"BANDKEYLAB\\TestUser";runtime.policy.publicKey=key.Export(false);runtime.wall=500000;runtime.monotonic=50000;runtime.locked=true;
+    auto request=NewWindowsChallenge(TestSid,runtime.session,runtime.wall);
+    static const BYTE domain[16]={'B','A','N','D','K','E','Y','-','N','E','W','-','V','1',0,0};
+    CopyMemory(request.domain,domain,16);request.expiresMs=request.issuedMs+10000;
+    auto proof=SignWindowsChallenge(request,key);RequestRenewalGate renewal;
+    check("native renewal accepts only its independent signed purpose",renewal.Consume(proof,runtime.policy.publicKey,TestSid,runtime.session,runtime.wall,runtime.monotonic));
+    check("native renewal proof cannot be replayed",!renewal.Consume(proof,runtime.policy.publicKey,TestSid,runtime.session,runtime.wall,runtime.monotonic));
+    RequestRenewalGate scope;
+    check("native renewal refuses another account or session",!scope.Consume(proof,runtime.policy.publicKey,L"S-1-5-21-1-2-3-1002",runtime.session,runtime.wall,runtime.monotonic) && !scope.Consume(proof,runtime.policy.publicKey,TestSid,runtime.session+1,runtime.wall,runtime.monotonic));
+    auto invalid=proof;invalid.signature[0]^=1;
+    check("native renewal rejects a forged signature",!scope.Consume(invalid,runtime.policy.publicKey,TestSid,runtime.session,runtime.wall,runtime.monotonic));
+    check("native renewal rejects exact expiry boundary",!scope.Consume(proof,runtime.policy.publicKey,TestSid,runtime.session,runtime.wall+10000,runtime.monotonic+10000));
+    auto authorization=NewWindowsChallenge(TestSid,runtime.session,runtime.wall);auto authorizationProof=SignWindowsChallenge(authorization,key);RequestRenewalGate purpose;
+    check("unlock approval cannot be reused as native renewal",!purpose.Consume(authorizationProof,runtime.policy.publicKey,TestSid,runtime.session,runtime.wall,runtime.monotonic));
+    OneTimeWindowsGrant login(authorization,runtime.monotonic);
+    check("native renewal cannot be used as an unlock approval",!login.Verify(proof,runtime.policy.publicKey,runtime.wall,runtime.monotonic));
+    unsigned reads=runtime.vaultReads;
+    auto readRequest=[&](){
+        WIN32_FIND_DATAW entry{};HANDLE find=FindFirstFileW((runtime.directory/L"Exchange"/L"*.request").c_str(),&entry);
+        NativeRequire(find!=INVALID_HANDLE_VALUE,"renewal-fixture-request");FindClose(find);
+        auto path=runtime.directory/L"Exchange"/entry.cFileName;auto body=ReadBoundedFile(path,sizeof(WindowsChallenge));
+        NativeRequire(body.size()==sizeof(WindowsChallenge),"renewal-fixture-size");WindowsChallenge value{};CopyMemory(&value,body.data(),sizeof(value));return std::make_pair(path,value);
+    };
+    ComPtr<BandKeyProvider> provider;provider.Attach(new BandKeyProvider(runtime.policy));
+    ComPtr<SyntheticUsers> users;users.Attach(new SyntheticUsers());users->Add();
+    provider->SetUsageScenario(CPUS_UNLOCK_WORKSTATION,0);provider->SetUserArray(users.Get());
+    DWORD count=0,selected=0;BOOL automatic=TRUE;provider->GetCredentialCount(&count,&selected,&automatic);
+    auto before=readRequest();ComPtr<ICredentialProviderCredential> stale;provider->GetCredentialAt(0,&stale);
+    runtime.wall+=31000;runtime.monotonic+=31000;provider->GetCredentialCount(&count,&selected,&automatic);
+    check("expired original lock request does not automatically refresh",!automatic && runtime.vaultReads==reads);
+    ComPtr<SyntheticProviderEvents> events;events.Attach(new SyntheticProviderEvents());
+    events->changed=[&](){provider->GetCredentialCount(&count,&selected,&automatic);};
+    NativeRequire(SUCCEEDED(provider->Advise(events.Get(),77)),"renewal-events");
+    request=NewWindowsChallenge(TestSid,runtime.session,runtime.wall);CopyMemory(request.domain,domain,16);request.expiresMs=request.issuedMs+10000;proof=SignWindowsChallenge(request,key);
+    WriteNewFile(runtime.directory/L"Exchange"/L"request-renewal.bin",reinterpret_cast<const BYTE*>(&proof),sizeof(proof));
+    auto until=GetTickCount64()+2000;
+    while(!events->notifications && GetTickCount64()<until){MSG message{};while(PeekMessageW(&message,nullptr,0,0,PM_REMOVE)){TranslateMessage(&message);DispatchMessageW(&message);}MsgWaitForMultipleObjectsEx(0,nullptr,50,QS_ALLINPUT,MWMO_INPUTAVAILABLE);}
+    auto after=readRequest();
+    check("real provider timer renews expired lock request with a new nonce",events->notifications==1 && before.first!=after.first && after.second.issuedMs==runtime.wall);
+    check("renewing a request never reads the credential vault",runtime.vaultReads==reads && !automatic);
+    CREDENTIAL_PROVIDER_GET_SERIALIZATION_RESPONSE response;CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION serialization{};PWSTR text=nullptr;CREDENTIAL_PROVIDER_STATUS_ICON icon;
+    stale->GetSerialization(&response,&serialization,&text,&icon);CoTaskMemFree(text);text=nullptr;
+    check("old COM credential cannot authenticate after request renewal",!serialization.rgbSerialization && runtime.vaultReads==reads);
+    WriteNewFile(after.first.wstring()+L".approval",reinterpret_cast<const BYTE*>(&proof),sizeof(proof));
+    ComPtr<ICredentialProviderCredential> fresh;provider->GetCredentialAt(0,&fresh);
+    fresh->GetSerialization(&response,&serialization,&text,&icon);CoTaskMemFree(text);text=nullptr;
+    check("renewal signed purpose placed in approval file still cannot authenticate",!serialization.rgbSerialization && runtime.vaultReads==reads);
+    DeleteFileW((after.first.wstring()+L".approval").c_str());authorizationProof=SignWindowsChallenge(after.second,key);
+    WriteNewFile(after.first.wstring()+L".approval",reinterpret_cast<const BYTE*>(&authorizationProof),sizeof(authorizationProof));
+    fresh->GetSerialization(&response,&serialization,&text,&icon);CoTaskMemFree(text);
+    check("new challenge still requires a separate actual approval signature",serialization.rgbSerialization && response==CPGSR_RETURN_CREDENTIAL_FINISHED && runtime.vaultReads==reads+1);
+    FreeSerialization(serialization);provider->UnAdvise();events->changed={};
+}
 int wmain(int argc, wchar_t** argv) {
     if (argc == 3 && (wcscmp(argv[1], L"--verify-interop") == 0 || wcscmp(argv[1], L"--verify-java") == 0 || wcscmp(argv[1], L"--verify-phone") == 0)) {
         auto directory = std::filesystem::path(argv[2]); bool passed = false;
@@ -156,6 +212,23 @@ int wmain(int argc, wchar_t** argv) {
         } catch (...) { passed = false; }
         std::ofstream report(directory / (phone ? L"native-phone-result.json" : (java ? L"native-java-result.json" : L"native-interop-result.json"))); report << "{\"passed\":" << (passed ? 2 : 0) << ",\"failed\":" << (passed ? 0 : 1) << ",\"windowsAuthenticationSubmitted\":false}"; report.close();
         std::cout << "CNG verifies " << (phone ? "Android Keystore" : (java ? "Java" : "CSharp")) << " signature and rejects tampering: " << (passed ? "passed" : "failed") << '\n'; return passed && report ? 0 : 1;
+    }
+    if(argc==3 && wcscmp(argv[1],L"--verify-renewal-java")==0){
+        auto directory=std::filesystem::path(argv[2]);bool passed=false;
+        try{
+            auto bytes=ReadBoundedFile(directory/L"java-renewal.bin",sizeof(WindowsApproval));
+            auto key=ReadBoundedFile(directory/L"java-public.bin",72);
+            NativeRequire(bytes.size()==sizeof(WindowsApproval),"renewal-size");WindowsApproval proof{};
+            CopyMemory(&proof,bytes.data(),sizeof(proof));RequestRenewalGate gate;
+            passed=gate.Consume(proof,key,proof.challenge.sid,proof.challenge.session,100001,1001);
+            passed=passed && !gate.Consume(proof,key,proof.challenge.sid,proof.challenge.session,100002,1002);
+            RequestRenewalGate forged;proof.signature[0]^=1;
+            passed=passed && !forged.Consume(proof,key,proof.challenge.sid,proof.challenge.session,100001,1001);
+            passed=passed && !ChallengeContextValid(proof.challenge,proof.challenge.sid,proof.challenge.session,100001);
+        }catch(...){passed=false;}
+        std::ofstream report(directory/L"native-renewal-result.json");
+        report<<"{\"passed\":"<<(passed?4:0)<<",\"failed\":"<<(passed?0:1)<<",\"windowsAuthenticationSubmitted\":false}";report.close();
+        std::cout<<"CNG verifies Java renewal, replay refusal and purpose isolation: "<<passed<<'\n';return passed && report?0:1;
     }
     if (argc != 3 && argc != 4) return 2;
     std::vector<std::pair<const char*, bool>> tests;
@@ -306,6 +379,7 @@ int wmain(int argc, wchar_t** argv) {
                 original->GetSerialization(&response, &serialization, &text, &icon); CoTaskMemFree(text);
                 check("stale credential COM reference is cancelled after account change", !serialization.rgbSerialization && runtime.vaultReads == reads); FreeSerialization(serialization);
             }
+            TestNativeRenewals(tests,runtime,key);
             auto log = runtime.directory / L"Diagnostics" / L"provider.log";
             auto bytes = ReadBoundedFile(log, 262304); std::string messages(bytes.begin(), bytes.end());
             check("diagnostics distinguish accepted signature and serialized credential", messages.find("approval-verified") != std::string::npos && messages.find("serialization-prepared") != std::string::npos);

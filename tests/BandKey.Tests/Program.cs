@@ -69,6 +69,7 @@ Test("repeated fresh poll returns same pending prompt", () => { var b = Broker()
 Test("authentication adapter fails closed", () => { var backend = new UnavailableAuthenticationBackend(); Assert(!backend.IsAvailable && !backend.AuthenticateAsync(null!, default).Result.WindowsAuthenticated); });
 
 ProximityModeTests.Run(Test);
+FixedPhoneTests.Run(Test);
 SafetyTests.Run(Test);
 AuthenticationTests.Run(Test);
 WindowsGrantRelayTests.Run(Test);

@@ -6,6 +6,19 @@ using Microsoft.Win32;
 
 namespace BandKey.Windows;
 
+internal sealed class VmGuardedSession : IInteractiveSession
+{
+    private readonly WindowsSessionController session = new();
+    public bool IsInteractive => session.IsInteractive;
+    public bool? IsLocked() => session.IsLocked();
+    public LockRequestResult RequestLock()
+    {
+        try { VmNativePolicy.RequireGuest(); }
+        catch (Exception error) when (error is InvalidOperationException or UnauthorizedAccessException or IOException) { return new(false, "guest-required"); }
+        return session.RequestLock();
+    }
+}
+
 public static class VmNativePolicy
 {
     private const string Config = @"SOFTWARE\BandKey\CredentialProviderLab";
@@ -30,10 +43,15 @@ public static class VmNativePolicy
         }
         catch (Exception error) when (error is InvalidOperationException or UnauthorizedAccessException or IOException or System.Security.SecurityException) { return false; }
     }
+    public static bool SupportsRequestRenewal()
+    {
+        RequireGuest(); using var machine=RegistryKey.OpenBaseKey(RegistryHive.LocalMachine,RegistryView.Registry64);
+        using var config=machine.OpenSubKey(Config);return config?.GetValue("ProtocolVersion") is int version && version==3;
+    }
 }
 
 /// <summary>Unprivileged public-file transport. It cannot read the vault or Windows credentials.</summary>
-public sealed class WindowsGrantDirectoryExchange : IWindowsGrantExchange
+public sealed class WindowsGrantDirectoryExchange : IWindowsGrantExchange, IWindowsRequestRenewalExchange
 {
     private readonly string root, sid;
     private readonly uint session;
@@ -90,5 +108,22 @@ public sealed class WindowsGrantDirectoryExchange : IWindowsGrantExchange
             File.Move(temporary, request + ".approval", false); created = false; return true;
         }
         finally { if (created) File.Delete(temporary); }
+    }
+    public byte[] CreateRequestRenewal()
+    {
+        if(!current())throw new IOException("Request renewal context unavailable");
+        ulong issued=now();return WindowsRequestRenewalWire.Write(new(session,issued,checked(issued+10000),sid,Protocol.Nonce()));
+    }
+    public bool SubmitRequestRenewal(ReadOnlySpan<byte> proof)
+    {
+        if(!current() || proof.Length!=WindowsRequestRenewalWire.ProofSize)return false;
+        var request=WindowsRequestRenewalWire.Read(proof[..WindowsRequestRenewalWire.Size]);
+        if(request.UserSid!=sid || request.WindowsSessionId!=session || !WindowsRequestRenewalWire.IsCurrent(request,now()))return false;
+        CheckDirectory();string temporary=Path.Combine(root,"Exchange","request-renewal.tmp"),destination=Path.Combine(root,"Exchange","request-renewal.bin");bool created=false;
+        try{
+            using(var stream=new FileStream(temporary,FileMode.CreateNew,FileAccess.Write,FileShare.None)){created=true;stream.Write(proof);stream.Flush(true);}
+            if(!current() || !WindowsRequestRenewalWire.IsCurrent(request,now()))return false;
+            File.Move(temporary,destination,false);created=false;return true;
+        }finally{if(created)File.Delete(temporary);}
     }
 }

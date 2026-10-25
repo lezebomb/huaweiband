@@ -40,7 +40,8 @@ final class BridgeClient {
         String text=Identity.join("bandkey.approval.v1",Identity.b64(Identity.challengeText(c).getBytes(StandardCharsets.UTF_8)),c.getString("signature"),approved?"1":"0","wearengine-button");
         a.put("signature",identity.sign(text)); return post("/v1/approval",a);
     }
-    JSONObject post(String path,JSONObject body)throws Exception {
+    JSONObject post(String path,JSONObject body)throws Exception {return post(path,body,0);}
+    JSONObject post(String path,JSONObject body,int shortTimeout)throws Exception {
         HttpsURLConnection connection=(HttpsURLConnection)new URL(config.getString("endpoint").replaceAll("/$","")+path).openConnection();
         connection.setSSLSocketFactory(sockets);
         // Exact leaf-certificate pin authenticates the origin; no CA/hostname fallback is allowed.
@@ -49,11 +50,12 @@ final class BridgeClient {
         connection.setInstanceFollowRedirects(false);connection.setConnectTimeout(5000);connection.setReadTimeout(5000);
         connection.setRequestMethod("POST");connection.setDoOutput(true);connection.setRequestProperty("Content-Type","application/json");
         if(config.optBoolean("singleConnectionTransport") || "127.0.0.1".equals(expectedHost)){connection.setRequestProperty("Connection","close");connection.setReadTimeout(15000);connection.setConnectTimeout(15000);}
+        if(shortTimeout!=0){if(shortTimeout<1000 || shortTimeout>15000)throw new IllegalArgumentException("HTTP timeout");connection.setConnectTimeout(shortTimeout);connection.setReadTimeout(shortTimeout);}
         byte[] bytes=body.toString().getBytes(StandardCharsets.UTF_8);connection.setFixedLengthStreamingMode(bytes.length);
         try {
             try(OutputStream output=connection.getOutputStream()){output.write(bytes);}
             int code=connection.getResponseCode(); if(code==204)return null;
-            if(code!=200 && !((path.equals("/v1/approval") || path.equals("/v2/windows/decision")) && code==403))throw new IOException("PC HTTP "+code);
+            if(code!=200 && !((path.equals("/v1/approval") || path.equals("/v2/windows/decision") || path.startsWith("/v2/windows/fixed/")) && code==403))throw new IOException("PC HTTP "+code);
             try(InputStream input=code==200?connection.getInputStream():connection.getErrorStream()) {
                 if(input==null)throw new IOException("Empty PC response");
                 byte[] response=Wire.readBounded(input,8192);

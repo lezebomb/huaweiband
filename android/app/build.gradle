@@ -6,8 +6,8 @@ android {
         applicationId 'dev.bandkey.bridge'
         minSdk 26
         targetSdk 36
-        versionCode 7
-        versionName '0.4.0'
+        versionCode 8
+        versionName '0.5.0'
         testInstrumentationRunner 'dev.bandkey.bridge.VmUsbInstrumentation'
         // Huawei-issued client ID is supplied after service application; no developer secrets in source.
         manifestPlaceholders = [wearEngineAppId: providers.gradleProperty('wearEngineAppId').getOrElse('UNCONFIGURED')]

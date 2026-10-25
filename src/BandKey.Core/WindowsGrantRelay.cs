@@ -38,6 +38,7 @@ public sealed class WindowsGrantRelay
     private readonly Func<long> unixMilliseconds;
     private readonly Func<long> monotonicMilliseconds;
     private readonly Func<bool> contextCurrent;
+    private readonly Func<bool> proximityCurrent;
     private readonly Dictionary<string, long> polls = new(StringComparer.Ordinal);
     private readonly HashSet<string> consumed = new(StringComparer.Ordinal);
     private readonly Queue<string> consumedOrder = new();
@@ -51,7 +52,7 @@ public sealed class WindowsGrantRelay
     public WindowsGrantRelayActivity Activity { get { lock (gate) return new(prompts, decisions, submittedApprovals, signedDenials, rejections, lastResult, revoked); } }
 
     public WindowsGrantRelay(ECDsa pcKey, PublicDevice enrolled, IWindowsGrantExchange exchange,
-        Func<bool> contextCurrent, Func<long>? unixMilliseconds = null, Func<long>? monotonicMilliseconds = null)
+        Func<bool> contextCurrent, Func<long>? unixMilliseconds = null, Func<long>? monotonicMilliseconds = null, Func<bool>? proximityCurrent = null)
     {
         if (!enrolled.TestOnly || enrolled.ConfirmationSource != ConfirmationSources.TestClient) throw new ArgumentException("VM relay requires explicit test enrollment");
         using var key = Protocol.ReadPublicKey(enrolled.PublicKey);
@@ -60,6 +61,7 @@ public sealed class WindowsGrantRelay
         pc = pcKey; PcId = Protocol.Fingerprint(Protocol.ExportPublicKey(pc)); device = enrolled; this.exchange = exchange; this.contextCurrent = contextCurrent;
         this.unixMilliseconds = unixMilliseconds ?? (() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
         this.monotonicMilliseconds = monotonicMilliseconds ?? (() => Environment.TickCount64);
+        this.proximityCurrent = proximityCurrent ?? (() => true);
     }
     public void Revoke() { lock (gate) { revoked = true; pending = null; } }
     private bool Current(long wall)
@@ -86,6 +88,7 @@ public sealed class WindowsGrantRelay
                 !Protocol.Verify(device.PublicKey, WindowsGrantRelayWire.PollText(poll), poll.Signature)) throw new UnauthorizedAccessException("relay-poll-invalid");
             foreach (var nonce in polls.Where(entry => entry.Value < now - 60).Select(entry => entry.Key).ToArray()) polls.Remove(nonce);
             if (polls.Count >= 4096 || !polls.TryAdd(poll.Nonce, now)) throw new UnauthorizedAccessException("relay-poll-replayed-or-full");
+            if (!proximityCurrent()) { pending = null; return null; }
             byte[]? current = exchange.ReadCurrentChallenge();
             if (current == null) { pending = null; return null; }
             var parsed = WindowsGrantWire.ReadChallenge(current);
@@ -103,7 +106,7 @@ public sealed class WindowsGrantRelay
         lock (gate)
         {
             long wall = unixMilliseconds(), mono = monotonicMilliseconds();
-            if (!Current(wall) || !PendingCurrent(wall, mono)) { pending = null; return Reject("relay-context-or-expiry"); }
+            if (!Current(wall) || !proximityCurrent() || !PendingCurrent(wall, mono)) { pending = null; return Reject("relay-context-or-expiry"); }
             TrackWall(wall);
             if (decision == null || decision.PcId != PcId || decision.DeviceId != device.DeviceId || decision.Challenge != Convert.ToBase64String(pending!)) return Reject("relay-request-mismatch");
             var current = exchange.ReadCurrentChallenge();

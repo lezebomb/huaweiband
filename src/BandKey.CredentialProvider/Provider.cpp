@@ -18,6 +18,7 @@
 #include "GrantRuntime.h"
 #include "LabDiagnostics.h"
 #include "OnlineCredentialPacking.h"
+#include "RequestRenewal.h"
 
 using Microsoft::WRL::ComPtr;
 static LONG objectCount = 0;
@@ -95,7 +96,7 @@ class BandKeyCredential final : public ICredentialProviderCredential2 {
     bool CurrentPolicy() const {
         auto current = GrantPolicy();
         return current.enabled && current.mode == 2 && current.signerKind == policy.signerKind && current.sid == sid && current.publicKey == policy.publicKey &&
-            current.accountKind == policy.accountKind && current.qualifiedAccount == policy.qualifiedAccount &&
+            current.accountKind == policy.accountKind && current.qualifiedAccount == policy.qualifiedAccount && current.protocolVersion == policy.protocolVersion &&
             MatchesBoundAccount(policy.accountKind, policy.qualifiedAccount, name, policy.accountKind == VmAccountKind::Local);
     }
     void EnsureChallenge() {
@@ -253,6 +254,24 @@ class BandKeyProvider final : public ICredentialProvider, public ICredentialProv
     HWND notificationWindow = nullptr;
     HINSTANCE windowModule = nullptr;
     bool timerObserved = false;
+    RequestRenewalGate renewalGate;
+    bool RenewRequest() {
+        if (!policy.enabled || policy.mode != 2 || policy.signerKind != 1 || policy.protocolVersion != 3 || !providerEvents || !GrantIsSystem()) return false;
+        auto current = GrantPolicy(); auto session = GrantSession();
+        if (!current.enabled || current.mode != policy.mode || current.signerKind != policy.signerKind || current.protocolVersion != 3 || current.sid != policy.sid ||
+            current.publicKey != policy.publicKey || current.accountKind != policy.accountKind || current.qualifiedAccount != policy.qualifiedAccount || !session || !GrantSessionLocked(session)) return false;
+        auto root = GrantDirectory(); CheckNoReparseDirectory(root); CheckNoReparseDirectory(root / L"Exchange");
+        auto path = root / L"Exchange" / L"request-renewal.bin";
+        auto bytes = ReadBoundedFile(path, sizeof(WindowsApproval));
+        if (bytes.size() != sizeof(WindowsApproval)) return false;
+        WindowsApproval proof{}; CopyMemory(&proof, bytes.data(), sizeof(proof));
+        DeleteFileW(path.c_str());
+        if (!renewalGate.Consume(proof, policy.publicKey, policy.sid, session, GrantWallTime(), GrantMonotonicTime())) return false;
+        if (credential) static_cast<BandKeyCredential*>(credential.Get())->Cancel();
+        credential.Reset(); auto callback = providerEvents;
+        // This refresh creates a new random challenge. It never reads the vault or serializes credentials.
+        callback->CredentialsChanged(adviseContext); return true;
+    }
     static constexpr wchar_t WindowClass[] = L"BandKey.VM.Grant.Notification.V1";
     static LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
         if (message == WM_NCCREATE) {
@@ -274,7 +293,9 @@ class BandKeyProvider final : public ICredentialProvider, public ICredentialProv
             self->AddRef();
             try {
                 if (!self->timerObserved) { self->timerObserved = true; GrantDiagnostic(LabStage::TimerActive); }
-                auto value = static_cast<BandKeyCredential*>(self->credential.Get());
+                bool renewed = false;
+                try { renewed = self->RenewRequest(); } catch (...) { /* Missing/invalid refresh data cannot affect the current tile. */ }
+                auto value = renewed ? nullptr : static_cast<BandKeyCredential*>(self->credential.Get());
                 if (value && value->NotifyReady() && self->providerEvents) {
                     auto callback = self->providerEvents;
                     GrantDiagnostic(LabStage::RefreshRequested);

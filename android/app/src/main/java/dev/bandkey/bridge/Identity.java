@@ -25,6 +25,7 @@ final class Identity {
     }
     String publicKey() throws Exception { return b64(store.getCertificate(alias).getPublicKey().getEncoded()); }
     byte[] nativePublicKey()throws Exception{return WindowsGrantWire.exportNative(store.getCertificate(alias).getPublicKey());}
+    byte[] signRenewal(byte[] body)throws Exception{return WindowsGrantWire.signRenewal(body,(PrivateKey)store.getKey(alias,null));}
     byte[] signNative(byte[] body)throws Exception{return WindowsGrantWire.sign(body,(PrivateKey)store.getKey(alias,null));}
     String deviceId() throws Exception { return hex(MessageDigest.getInstance("SHA-256").digest(Base64.decode(publicKey(), Base64.NO_WRAP))); }
     String sign(String text) throws Exception {

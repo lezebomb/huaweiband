@@ -232,6 +232,9 @@ static void Install(bool phone) {
         auto accountSetting = RegSetValueExW(config.value, L"AccountKind", 0, REG_DWORD, reinterpret_cast<const BYTE*>(&accountType), sizeof(accountType));
         Require(accountSetting == ERROR_SUCCESS, L"Cannot bind VM account type", accountSetting);
         DWORD mode = 2;
+        DWORD protocol = 3;
+        auto protocolSetting = RegSetValueExW(config.value, L"ProtocolVersion", 0, REG_DWORD, reinterpret_cast<const BYTE*>(&protocol), sizeof(protocol));
+        Require(protocolSetting == ERROR_SUCCESS, L"Cannot bind request protocol", protocolSetting);
         auto setting = RegSetValueExW(config.value, L"Mode", 0, REG_DWORD, reinterpret_cast<const BYTE*>(&mode), sizeof(mode));
         Require(setting == ERROR_SUCCESS, L"Cannot set experiment mode", setting);
         DWORD kind = phone ? 1u : 0u;

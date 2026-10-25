@@ -40,6 +40,11 @@ if($LASTEXITCODE -ne 0){throw 'CSharp verification of Java native grant failed'}
 & (Join-Path $bandKeyOutput 'BandKey.CredentialProvider.Tests.exe') --verify-java $bandKeyInterop
 if($LASTEXITCODE -ne 0){throw 'CNG verification of Java native grant failed'}
 Copy-Item -LiteralPath (Join-Path $bandKeyInterop 'java-result.json') -Destination (Join-Path $bandKeyOutput 'java-grant-interop.json') -Force
+& $bandKeyDotnet run --project (Join-Path $bandKeyRoot 'tests\BandKey.Grant.Interop') -c Release --no-build -- --verify-renewal-java $bandKeyInterop
+if($LASTEXITCODE -ne 0){throw 'CSharp verification of Java request renewal failed'}
+& (Join-Path $bandKeyOutput 'BandKey.CredentialProvider.Tests.exe') --verify-renewal-java $bandKeyInterop
+if($LASTEXITCODE -ne 0){throw 'CNG verification of Java request renewal failed'}
+Copy-Item -LiteralPath (Join-Path $bandKeyInterop 'native-renewal-result.json') -Destination (Join-Path $bandKeyOutput 'renewal-interop.json') -Force
 $bandKeyDllHash=(Get-FileHash -LiteralPath (Join-Path $bandKeyOutput 'BandKey.CredentialProvider.dll') -Algorithm SHA256).Hash.ToLowerInvariant()
 ('inline constexpr char BandKeyExpectedProviderHash[] = "'+$bandKeyDllHash+'";') | Set-Content -LiteralPath (Join-Path $bandKeyOutput 'ProviderHash.h') -Encoding ascii
 & $bandKeyMsbuild (Join-Path $bandKeyRoot 'src\BandKey.CredentialProvider\BandKey.VmSetup.vcxproj') /nologo /verbosity:minimal /p:RunCodeAnalysis=true /p:CodeAnalysisTreatWarningsAsErrors=true /p:Configuration=Release /p:Platform=x64 "/p:OutDir=$bandKeyOutput\" "/p:IntDir=$bandKeyIntermediates\setup\"

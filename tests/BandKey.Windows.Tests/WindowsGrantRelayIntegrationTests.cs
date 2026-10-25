@@ -8,6 +8,12 @@ internal static class WindowsGrantRelayIntegrationTests
 {
     private const string Sid = "S-1-5-21-111-222-333-1001";
     private static void Check(bool value) { if (!value) throw new Exception("VM relay assertion failed"); }
+    internal sealed class Session : IInteractiveSession
+    {
+        public bool IsInteractive=>true;public bool? Locked=true;public int Locks;
+        public bool? IsLocked()=>Locked;
+        public LockRequestResult RequestLock(){Locks++;return new(true,"submitted");}
+    }
     internal sealed class Fixture : IAsyncDisposable
     {
         internal readonly ECDsa Pc = ECDsa.Create(ECCurve.NamedCurves.nistP256), Phone = ECDsa.Create(ECCurve.NamedCurves.nistP256);
@@ -18,17 +24,20 @@ internal static class WindowsGrantRelayIntegrationTests
         internal readonly WindowsGrantRelay Relay;
         internal readonly System.Security.Cryptography.X509Certificates.X509Certificate2 Certificate;
         internal readonly HttpClient Client;
+        internal readonly Session Desktop=new();
+        internal readonly FixedPhoneChannel? Fixed;
         internal bool Current = true;
         internal long Wall = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), Mono = 100;
         internal byte[] Body = [];
         internal string RequestPath = "";
         internal string ApprovalPath => RequestPath + ".approval";
-        internal Fixture(string directory)
+        internal Fixture(string directory,bool fixedPhone=false)
         {
             Root = Path.Combine(directory, "native-exchange-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(Path.Combine(Root, "Exchange"));
             var publicKey = Protocol.ExportPublicKey(Phone); Device = new(Protocol.Fingerprint(publicKey), "VM integration test", publicKey, ConfirmationSources.TestClient, true);
             Exchange = new(Root, Sid, 5, () => Current, () => WindowsGrantRelayWire.FileTimeMilliseconds(Wall));
-            Relay = new(Pc, Device, Exchange, () => Current, () => Wall, () => Mono);
+            if(fixedPhone) Fixed=new(Pc,Device,Exchange,Desktop,()=>Current,false,()=>Wall,()=>Mono);
+            Relay = new(Pc, Device, Exchange, () => Current, () => Wall, () => Mono, proximityCurrent:()=>Fixed?.CanSubmit??true);
             Certificate = new Store(Path.Combine(Root, "pc-identity")).LoadTlsCertificate();
             var listener = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0); listener.Start(); int port = ((IPEndPoint)listener.LocalEndpoint).Port; listener.Stop();
             Client = new(new HttpClientHandler { ServerCertificateCustomValidationCallback = (_, c, _, _) => c != null && BridgeServer.CertificatePin(c) == BridgeServer.CertificatePin(Certificate) })
@@ -36,7 +45,7 @@ internal static class WindowsGrantRelayIntegrationTests
             Port = port; NewRequest();
         }
         private int Port { get; }
-        internal Task Start() => Server.StartAsync(new AppSettings { Port = Port }, Certificate, new AuthorizationBroker(Relay.PcId, Pc), _ => { }, windowsRelay: Relay);
+        internal Task Start() => Server.StartAsync(new AppSettings { Port = Port }, Certificate, new AuthorizationBroker(Relay.PcId, Pc), _ => { }, windowsRelay: Relay,fixedPhone:Fixed);
         internal void NewRequest(string sid = Sid, uint session = 5)
         {
             ulong now = WindowsGrantRelayWire.FileTimeMilliseconds(Wall);
@@ -131,6 +140,48 @@ internal static class WindowsGrantRelayIntegrationTests
         });
         await Case("native exchange missing directory returns availability error", async f =>
         { File.Delete(f.RequestPath); Directory.Delete(Path.Combine(f.Root, "Exchange")); using var r = await f.Client.PostAsJsonAsync("/v2/windows/poll", f.PollRequest()); Check(r.StatusCode == HttpStatusCode.ServiceUnavailable); });
+        await test("fixed phone HTTPS refreshes an expired request without creating an unlock approval",async()=>{
+            await using var f=new Fixture(directory,true);await f.Start();f.Desktop.Locked=false;
+            var poll=f.PollRequest();poll=poll with{Signature=Protocol.Sign(f.Phone,FixedPhoneWire.ContextPollText(poll))};
+            using var contextResponse=await f.Client.PostAsJsonAsync("/v2/windows/fixed/context",poll);
+            contextResponse.EnsureSuccessStatusCode();var context=(await contextResponse.Content.ReadFromJsonAsync<FixedPhoneContext>())!;
+            long sequence=0;
+            async Task<FixedPhoneResult> State(bool? connected){
+                var p=new BandConnectionReport(f.Relay.PcId,f.Device.DeviceId,context.ContextNonce,++sequence,f.Wall,new string('a',64),connected,"");
+                p=p with{Signature=Protocol.Sign(f.Phone,FixedPhoneWire.ReportText(p))};
+                using var r=await f.Client.PostAsJsonAsync("/v2/windows/fixed/state",p);r.EnsureSuccessStatusCode();
+                return (await r.Content.ReadFromJsonAsync<FixedPhoneResult>())!;
+            }
+            await State(true);f.Wall+=4000;f.Mono+=4000;
+            Check((await State(true)).Renewal==null && f.Desktop.Locks==0 && !f.Fixed!.Snapshot.Revoked);
+            f.Wall+=60000;f.Mono+=60000;f.Desktop.Locked=true;
+            await State(true);f.Wall+=4000;f.Mono+=4000;
+            var renewal=(await State(true)).Renewal??throw new Exception("Expected request renewal");
+            var body=Convert.FromBase64String(renewal.Body);var request=WindowsRequestRenewalWire.Read(body);
+            var signed=WindowsRequestRenewalWire.Sign(request,f.Phone);
+            var decision=new RequestRenewalDecision(renewal.PcId,renewal.DeviceId,renewal.ContextNonce,renewal.Body,Convert.ToBase64String(signed.AsSpan(436)));
+            using var submission=await f.Client.PostAsJsonAsync("/v2/windows/fixed/renew",decision);submission.EnsureSuccessStatusCode();
+            Check(File.ReadAllBytes(Path.Combine(f.Root,"Exchange","request-renewal.bin")).SequenceEqual(signed) && !File.Exists(f.ApprovalPath));
+            using var beforeNative=await f.Client.PostAsJsonAsync("/v2/windows/poll",f.PollRequest());Check(beforeNative.StatusCode==HttpStatusCode.NoContent);
+            f.Wall++;f.Mono++;f.NewRequest();var prompt=await f.Poll();
+            Check(prompt.Challenge==Convert.ToBase64String(f.Body));
+            using var approve=await f.Decide(f.Decision(prompt));approve.EnsureSuccessStatusCode();
+            Check(File.Exists(f.ApprovalPath) && f.Desktop.Locked==true);
+        });
+        await test("fixed phone disconnect blocks a previously issued manual approval over HTTPS",async()=>{
+            await using var f=new Fixture(directory,true);await f.Start();
+            var poll=f.PollRequest();var c=f.Fixed!.GetContext(poll with{Signature=Protocol.Sign(f.Phone,FixedPhoneWire.ContextPollText(poll))});
+            long sequence=0;
+            FixedPhoneResult State(bool? connected){
+                var p=new BandConnectionReport(f.Relay.PcId,f.Device.DeviceId,c.ContextNonce,++sequence,f.Wall,new string('a',64),connected,"");
+                return f.Fixed.Observe(p with{Signature=Protocol.Sign(f.Phone,FixedPhoneWire.ReportText(p))});
+            }
+            State(true);f.Wall+=4000;f.Mono+=4000;var r=State(true).Renewal!;
+            var raw=WindowsRequestRenewalWire.Sign(WindowsRequestRenewalWire.Read(Convert.FromBase64String(r.Body)),f.Phone);
+            f.Fixed.Renew(new(r.PcId,r.DeviceId,r.ContextNonce,r.Body,Convert.ToBase64String(raw.AsSpan(436))));
+            f.Wall++;f.Mono++;f.NewRequest();var prompt=await f.Poll();State(false);
+            using var response=await f.Decide(f.Decision(prompt));Check(response.StatusCode==HttpStatusCode.Forbidden && !File.Exists(f.ApprovalPath));
+        });
         await test("VM native policy rejects physical host without changing registry", () =>
         { try { VmNativePolicy.RequireGuest(); } catch (InvalidOperationException) { return Task.CompletedTask; } throw new Exception("This host should fail the VM guard"); });
     }

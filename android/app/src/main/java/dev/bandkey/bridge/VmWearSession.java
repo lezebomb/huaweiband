@@ -32,12 +32,14 @@ public final class VmWearSession<P> {
         long now=elapsed.getAsLong();if(now<0 || duration<=0 || duration>MAX_DURATION || now>Long.MAX_VALUE-duration)throw new IllegalArgumentException("VM background duration");
         this.elapsed=elapsed;deadline=now+duration;lastNow=now;this.contextCurrent=contextCurrent;this.link=link;this.client=client;this.wearable=wearable;this.decisions=decisions;gate=new PromptGate(wall,elapsed);
     }
-    public synchronized boolean active(){
-        if(stopped)return false;long now=elapsed.getAsLong();boolean allowed=false;
-        try{allowed=now>=lastNow && now<deadline && contextCurrent.getAsBoolean();}catch(RuntimeException ignored){}
-        if(!allowed){stop();return false;}lastNow=now;return true;
+    public boolean active(){
+        synchronized(this){if(stopped)return false;}
+        boolean allowed=false;try{allowed=contextCurrent.getAsBoolean();}catch(RuntimeException ignored){}
+        synchronized(this){if(stopped)return false;long now=elapsed.getAsLong();allowed=allowed && now>=lastNow && now<deadline;if(allowed){lastNow=now;return true;}}
+        stop();return false;
     }
-    public synchronized void stop(){if(stopped)return;stopped=true;gate.stop();pending=null;state=State.STOPPED;}
+    public void stop(){synchronized(this){if(stopped)return;stopped=true;pending=null;state=State.STOPPED;}gate.stop();}
+    public void invalidatePending(){PromptGate.Ticket previous;synchronized(this){previous=pending;pending=null;if(!stopped)state=State.WAIT_LINK;}if(previous!=null)gate.cancel(previous);}
     private synchronized void state(State value){if(!stopped)state=value;}
     public State state(){return state;}
     public synchronized int polls(){return polls;}public synchronized int prompts(){return prompts;}
