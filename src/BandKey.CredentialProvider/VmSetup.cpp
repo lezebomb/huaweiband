@@ -68,7 +68,11 @@ static bool IsAdmin() {
     if (!AllocateAndInitializeSid(&authority, 2, SECURITY_BUILTIN_DOMAIN_RID, DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0, &administrators)) return false;
     CheckTokenMembership(nullptr, administrators, &member); FreeSid(administrators); return member != FALSE;
 }
-static std::wstring CurrentLocalSid(std::wstring* qualifiedName = nullptr) {
+struct NetBuffer {
+    LPBYTE value = nullptr;
+    ~NetBuffer() { if (value) NetApiBufferFree(value); }
+};
+static std::wstring CurrentVmSid(std::wstring* qualifiedName = nullptr, VmAccountKind* accountKind = nullptr) {
     DWORD session = 0; Require(ProcessIdToSessionId(GetCurrentProcessId(), &session) && session, L"Interactive VM session required");
     PWSTR userText = nullptr, domainText = nullptr; DWORD bytes = 0;
     Require(WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, session, WTSUserName, &userText, &bytes) != FALSE, L"Cannot inspect interactive user");
@@ -76,36 +80,43 @@ static std::wstring CurrentLocalSid(std::wstring* qualifiedName = nullptr) {
     Require(WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, session, WTSDomainName, &domainText, &bytes) != FALSE, L"Cannot inspect interactive account type");
     std::wstring domain(domainText ? domainText : L""); WTSFreeMemory(domainText);
     wchar_t computer[256] = {}; DWORD chars = ARRAYSIZE(computer);
-    Require(GetComputerNameW(computer, &chars) && !user.empty() && _wcsicmp(domain.c_str(), computer) == 0, L"Use an independent local VM account; domain accounts are not supported");
-    USER_INFO_24* internet = nullptr;
-    auto code = NetUserGetInfo(nullptr, user.c_str(), 24, reinterpret_cast<LPBYTE*>(&internet));
-    Require(code == NERR_Success && internet, L"Cannot confirm local account identity", code);
-    bool online = internet->usri24_internet_identity != FALSE; NetApiBufferFree(internet);
-    Require(!online, L"Microsoft/Internet accounts are not supported by this VM lab");
-    USER_INFO_23* account = nullptr; code = NetUserGetInfo(nullptr, user.c_str(), 23, reinterpret_cast<LPBYTE*>(&account));
-    Require(code == NERR_Success && account, L"Cannot resolve VM account SID", code);
-    HANDLE token = nullptr;
-    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) { NetApiBufferFree(account); throw SetupFailure{L"Cannot inspect setup identity", GetLastError()}; }
-    bytes = 0; GetTokenInformation(token, TokenUser, nullptr, 0, &bytes);
+    Require(GetComputerNameW(computer, &chars) && !user.empty() && (_wcsicmp(domain.c_str(), computer) == 0 || _wcsicmp(domain.c_str(), L"MicrosoftAccount") == 0), L"Use a local or Microsoft-connected VM account; domain accounts are not supported");
+    NetBuffer internetBuffer, accountBuffer;
+    auto code = NetUserGetInfo(nullptr, user.c_str(), 24, &internetBuffer.value);
+    auto internet = reinterpret_cast<USER_INFO_24*>(internetBuffer.value);
+    if (code != NERR_Success || !internet) throw SetupFailure{L"Cannot confirm VM account identity", code};
+    code = NetUserGetInfo(nullptr, user.c_str(), 23, &accountBuffer.value);
+    auto account = reinterpret_cast<USER_INFO_23*>(accountBuffer.value);
+    if (code != NERR_Success || !account || !account->usri23_user_sid || !IsValidSid(account->usri23_user_sid)) throw SetupFailure{L"Cannot resolve VM account SID", code};
+    VmAccountKind kind = VmAccountKind::Local; std::wstring qualified = domain + L"\\" + user;
+    if (internet->usri24_internet_identity) {
+        if (!(internet->usri24_flags == 0 && internet->usri24_internet_provider_name && internet->usri24_internet_principal_name &&
+            _wcsicmp(internet->usri24_internet_provider_name, L"MicrosoftAccount") == 0 && internet->usri24_user_sid && IsValidSid(internet->usri24_user_sid) &&
+            EqualSid(internet->usri24_user_sid, account->usri23_user_sid))) throw SetupFailure{L"Only a SID-matched MicrosoftAccount identity is supported", ERROR_INVALID_DATA};
+        kind = VmAccountKind::MicrosoftAccount; qualified = L"MicrosoftAccount\\" + std::wstring(internet->usri24_internet_principal_name);
+    } // Other USER_INFO_24 fields are undefined for a non-Internet account.
+    Require(ValidQualifiedAccount(qualified, kind), L"The VM account identity is unsupported or malformed");
+    NativeHandle token;
+    Require(OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token.value) != FALSE, L"Cannot inspect setup identity", GetLastError());
+    bytes = 0; GetTokenInformation(token.value, TokenUser, nullptr, 0, &bytes);
     std::vector<BYTE> tokenData(bytes);
-    bool read = bytes && GetTokenInformation(token, TokenUser, tokenData.data(), bytes, &bytes); CloseHandle(token);
+    bool read = bytes && GetTokenInformation(token.value, TokenUser, tokenData.data(), bytes, &bytes);
     bool matches = read && EqualSid(reinterpret_cast<TOKEN_USER*>(tokenData.data())->User.Sid, account->usri23_user_sid);
     PWSTR sidText = nullptr;
     bool converted = matches && ConvertSidToStringSidW(account->usri23_user_sid, &sidText);
-    NetApiBufferFree(account);
-    if (!converted || !sidText) throw SetupFailure{L"Run setup as the same local account used on the VM desktop", ERROR_INVALID_DATA};
-    std::wstring sid(sidText); LocalFree(sidText); if (qualifiedName) *qualifiedName = domain + L"\\" + user; return sid;
+    if (!converted || !sidText) throw SetupFailure{L"Run setup as the same account used on the VM desktop", ERROR_INVALID_DATA};
+    std::wstring sid(sidText); LocalFree(sidText); if (qualifiedName) *qualifiedName = qualified; if (accountKind) *accountKind = kind; return sid;
 }
 static void EnrollVault(const std::filesystem::path& directory, const std::wstring& sid, const std::wstring& account, std::vector<BYTE>& publicKey, bool phone) {
     wchar_t user[513]{}; NativeRequire(SUCCEEDED(StringCchCopyW(user, ARRAYSIZE(user), account.c_str())), "account-name-too-long");
     SecretBuffer<257> password; BOOL save = FALSE;
     CREDUI_INFOW info{}; info.cbSize = sizeof(info); info.pszCaptionText = L"BandKey VM encrypted credential enrollment";
-    info.pszMessageText = L"Enter only this VM local-account password. It will be encrypted in a SYSTEM/administrator-only vault for the VM signed-confirmation experiment. Do not enter a host password or PIN.";
+    info.pszMessageText = L"Enter the password for the displayed VM account, not its Windows Hello PIN. Windows must verify it and return this exact account SID before anything is saved. The VM-only vault is protected for SYSTEM/administrators. Do not use a personal Microsoft account or a host password in this lab.";
     DWORD result = CredUIPromptForCredentialsW(&info, L"BandKey VM lab", nullptr, 0, user, ARRAYSIZE(user), password.data.data(), static_cast<ULONG>(password.data.size()), &save,
         CREDUI_FLAGS_GENERIC_CREDENTIALS | CREDUI_FLAGS_ALWAYS_SHOW_UI | CREDUI_FLAGS_DO_NOT_PERSIST | CREDUI_FLAGS_KEEP_USERNAME);
     Require(result == NO_ERROR, L"Enrollment cancelled or unavailable; no credential was saved", result);
     Require(password.data[0] && _wcsicmp(user, account.c_str()) == 0, L"The VM account and a nonempty password are required");
-    auto slash = account.find(L'\\'); NativeRequire(slash != std::wstring::npos, "local-account-invalid");
+    auto slash = account.find(L'\\'); NativeRequire(slash != std::wstring::npos, "vm-account-invalid");
     NativeHandle token; BOOL valid = LogonUserW(account.substr(slash + 1).c_str(), account.substr(0, slash).c_str(), password.data.data(), LOGON32_LOGON_INTERACTIVE, LOGON32_PROVIDER_DEFAULT, &token.value);
     Require(valid != FALSE, L"Windows rejected enrollment password; no credential was saved", valid ? ERROR_SUCCESS : GetLastError());
     DWORD bytes = 0; GetTokenInformation(token.value, TokenUser, nullptr, 0, &bytes); std::vector<BYTE> tokenData(bytes);
@@ -198,7 +209,7 @@ static std::vector<BYTE> ReadPhonePublicKey() {
     return bytes;
 }
 static void Install(bool phone) {
-    std::wstring account; auto sid = CurrentLocalSid(&account); auto directory = InstallDirectory(); auto destination = directory / L"BandKey.CredentialProvider.dll";
+    std::wstring account; VmAccountKind accountKind = VmAccountKind::Local; auto sid = CurrentVmSid(&account, &accountKind); auto directory = InstallDirectory(); auto destination = directory / L"BandKey.CredentialProvider.dll";
     auto source = ExecutablePath().parent_path() / destination.filename();
     Require(FileHash(source) == BandKeyExpectedProviderHash, L"Provider DLL hash does not match this setup build");
     Require(!KeyExists(BandKeyLabConfig) && !KeyExists(BandKeyLabCom) && !KeyExists(BandKeyLabRegistration), L"Existing lab registration found; remove it first", ERROR_ALREADY_EXISTS);
@@ -216,6 +227,10 @@ static void Install(bool phone) {
         EnrollVault(directory, sid, account, publicKey, phone);
         Key config; NewKey(BandKeyLabConfig, config); configCreated = true;
         EnabledValue(config.value, 0); TextValue(config.value, L"TargetSid", sid);
+        TextValue(config.value, L"QualifiedAccount", account);
+        DWORD accountType = static_cast<DWORD>(accountKind);
+        auto accountSetting = RegSetValueExW(config.value, L"AccountKind", 0, REG_DWORD, reinterpret_cast<const BYTE*>(&accountType), sizeof(accountType));
+        Require(accountSetting == ERROR_SUCCESS, L"Cannot bind VM account type", accountSetting);
         DWORD mode = 2;
         auto setting = RegSetValueExW(config.value, L"Mode", 0, REG_DWORD, reinterpret_cast<const BYTE*>(&mode), sizeof(mode));
         Require(setting == ERROR_SUCCESS, L"Cannot set experiment mode", setting);

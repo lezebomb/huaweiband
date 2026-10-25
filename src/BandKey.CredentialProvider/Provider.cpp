@@ -17,6 +17,7 @@
 #include <optional>
 #include "GrantRuntime.h"
 #include "LabDiagnostics.h"
+#include "OnlineCredentialPacking.h"
 
 using Microsoft::WRL::ComPtr;
 static LONG objectCount = 0;
@@ -93,7 +94,9 @@ class BandKeyCredential final : public ICredentialProviderCredential2 {
     }
     bool CurrentPolicy() const {
         auto current = GrantPolicy();
-        return current.enabled && current.mode == 2 && current.signerKind == policy.signerKind && current.sid == sid && current.publicKey == policy.publicKey;
+        return current.enabled && current.mode == 2 && current.signerKind == policy.signerKind && current.sid == sid && current.publicKey == policy.publicKey &&
+            current.accountKind == policy.accountKind && current.qualifiedAccount == policy.qualifiedAccount &&
+            MatchesBoundAccount(policy.accountKind, policy.qualifiedAccount, name, policy.accountKind == VmAccountKind::Local);
     }
     void EnsureChallenge() {
         if (policy.mode != 2 || attempted || grant || !GrantIsSystem() || !CurrentPolicy()) return;
@@ -216,7 +219,13 @@ public:
         }
         if (!password.data[0]) { *icon = CPSI_WARNING; return SHStrDupW(L"Enter the independent VM account password. Band authorization is not connected.", status); }
         HRESULT hr = E_OUTOFMEMORY;
-        try { hr = PackLocalCredential(scenario, name, password.data.data(), result); }
+        try {
+            if (policy.accountKind == VmAccountKind::MicrosoftAccount) {
+                ULONG package = 0;
+                hr = policy.mode == 2 ? NegotiatePackage(&package) : E_ACCESSDENIED;
+                if (SUCCEEDED(hr)) hr = PackMicrosoftAccountCredential(scenario, name, password.data.data(), package, BandKeyLabClsid, result);
+            } else hr = PackLocalCredential(scenario, name, password.data.data(), result);
+        }
         catch (const std::bad_alloc&) { hr = E_OUTOFMEMORY; }
         ClearPassword();
         if (SUCCEEDED(hr)) *response = CPGSR_RETURN_CREDENTIAL_FINISHED;
@@ -292,12 +301,12 @@ class BandKeyProvider final : public ICredentialProvider, public ICredentialProv
         for (DWORD i = 0; i < count; i++) {
             ComPtr<ICredentialProviderUser> user;
             hr = users->GetAt(i, &user); if (FAILED(hr) || !user) continue;
-            GUID provider = {}; if (FAILED(user->GetProviderID(&provider)) || provider != Identity_LocalUserProvider) continue;
+            GUID provider = {}; if (FAILED(user->GetProviderID(&provider)) || provider == GUID_NULL) continue;
             PWSTR sid = nullptr, name = nullptr;
             hr = user->GetSid(&sid);
             bool matches = SUCCEEDED(hr) && sid && policy.sid == sid;
             if (matches) hr = user->GetStringValue(PKEY_Identity_QualifiedUserName, &name);
-            if (matches && SUCCEEDED(hr) && name && wcschr(name, L'\\')) {
+            if (matches && SUCCEEDED(hr) && name && MatchesBoundAccount(policy.accountKind, policy.qualifiedAccount, name, provider == Identity_LocalUserProvider)) {
                 try { credential.Attach(new(std::nothrow) BandKeyCredential(scenario, sid, name, policy)); }
                 catch (const std::bad_alloc&) { hr = E_OUTOFMEMORY; }
                 if (!credential) hr = E_OUTOFMEMORY;
@@ -374,12 +383,13 @@ public:
         if (value && policy.mode == 2 && credential && !static_cast<BandKeyCredential*>(credential.Get())->Finished()) {
             DWORD count = 0;
             if (SUCCEEDED(value->GetCount(&count)) && count <= 128) for (DWORD i = 0; i < count; i++) {
-                ComPtr<ICredentialProviderUser> user; GUID identity{}; PWSTR id = nullptr;
-                if (SUCCEEDED(value->GetAt(i, &user)) && user && SUCCEEDED(user->GetProviderID(&identity)) && identity == Identity_LocalUserProvider && SUCCEEDED(user->GetSid(&id)) && id && policy.sid == id) keep = true;
-                CoTaskMemFree(id);
+                ComPtr<ICredentialProviderUser> user; GUID identity{}; PWSTR id = nullptr, name = nullptr;
+                if (SUCCEEDED(value->GetAt(i, &user)) && user && SUCCEEDED(user->GetProviderID(&identity)) && identity != GUID_NULL && SUCCEEDED(user->GetSid(&id)) && id && policy.sid == id &&
+                    SUCCEEDED(user->GetStringValue(PKEY_Identity_QualifiedUserName, &name)) && name && MatchesBoundAccount(policy.accountKind, policy.qualifiedAccount, name, identity == Identity_LocalUserProvider)) keep = true;
+                CoTaskMemFree(id); CoTaskMemFree(name);
             }
         }
-        if (!keep) credential.Reset(); users = value; return value ? S_OK : E_POINTER;
+        if (!keep) { if (policy.mode == 2 && credential) static_cast<BandKeyCredential*>(credential.Get())->Cancel(); credential.Reset(); } users = value; return value ? S_OK : E_POINTER;
     }
 };
 

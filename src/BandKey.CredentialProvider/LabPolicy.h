@@ -8,6 +8,7 @@
 #include <shlobj.h>
 #include <knownfolders.h>
 #include <wtsapi32.h>
+#include "AccountBinding.h"
 
 // This CLSID belongs only to the VM laboratory provider. No system provider is replaced.
 inline constexpr GUID BandKeyLabClsid = {0x76b424b6,0xa72d,0x4e98,{0x9d,0xc1,0x48,0x5e,0x37,0xa5,0x42,0x9c}};
@@ -51,6 +52,8 @@ struct LabPolicy {
     DWORD mode = 0; // 0 = manual password; 2 = isolated VM simulated-signature + vault experiment.
     DWORD signerKind = 0; // 0 = local simulation key; 1 = separately enrolled phone-lab key.
     std::vector<BYTE> publicKey;
+    VmAccountKind accountKind = VmAccountKind::Local;
+    std::wstring qualifiedAccount;
     LabPolicy(bool active = false, std::wstring target = {}) : enabled(active), sid(std::move(target)) {}
 };
 inline LabPolicy ReadLabPolicy() {
@@ -73,6 +76,13 @@ inline LabPolicy ReadLabPolicy() {
         policy.publicKey.resize(72); bytes = static_cast<DWORD>(policy.publicKey.size());
         if (RegGetValueW(HKEY_LOCAL_MACHINE, BandKeyLabConfig, L"LabPublicKey", RRF_RT_REG_BINARY | RRF_SUBKEY_WOW6464KEY, nullptr, policy.publicKey.data(), &bytes) != ERROR_SUCCESS || bytes != 72) return LabPolicy{};
     }
+    DWORD accountKind = 0; bytes = sizeof(accountKind);
+    auto accountResult = RegGetValueW(HKEY_LOCAL_MACHINE, BandKeyLabConfig, L"AccountKind", RRF_RT_REG_DWORD | RRF_SUBKEY_WOW6464KEY, nullptr, &accountKind, &bytes);
+    if ((accountResult != ERROR_SUCCESS && accountResult != ERROR_FILE_NOT_FOUND) || accountKind > 1) return LabPolicy{};
+    policy.accountKind = static_cast<VmAccountKind>(accountKind);
+    policy.qualifiedAccount = ReadMachineString(BandKeyLabConfig, L"QualifiedAccount");
+    if ((accountResult == ERROR_SUCCESS && policy.qualifiedAccount.empty()) || (!policy.qualifiedAccount.empty() && !ValidQualifiedAccount(policy.qualifiedAccount, policy.accountKind)) ||
+        (policy.accountKind == VmAccountKind::MicrosoftAccount && (mode != 2 || policy.qualifiedAccount.empty()))) return LabPolicy{};
     if (valid) { policy.enabled = true; policy.sid = sid; policy.mode = mode; }
     return policy;
 }

@@ -127,6 +127,18 @@ static void TestOnlineCredentialPacking(std::vector<std::pair<const char*, bool>
     check("online packer rejects missing secret", PackMicrosoftAccountCredential(CPUS_LOGON, L"MicrosoftAccount\\fake@example.invalid", nullptr, package, BandKeyLabClsid, &packed) == E_INVALIDARG);
     check("online packer rejects absent provider identity", PackMicrosoftAccountCredential(CPUS_LOGON, L"MicrosoftAccount\\fake@example.invalid", password.data.data(), package, GUID_NULL, &packed) == E_INVALIDARG);
 }
+static void TestAccountBinding(std::vector<std::pair<const char*, bool>>& tests) {
+    auto check = [&](const char* name, bool success) { tests.emplace_back(name, success); if (!success) throw std::runtime_error(name); };
+    auto msa = VmAccountKind::MicrosoftAccount, local = VmAccountKind::Local;
+    check("legacy local enrollment remains local-only", MatchesBoundAccount(local, L"", L"BANDKEYLAB\\TestUser", true) && !MatchesBoundAccount(local, L"", L"MicrosoftAccount\\test@example.invalid", false));
+    check("online enrollment requires explicit qualified identity", !MatchesBoundAccount(msa, L"", L"MicrosoftAccount\\test@example.invalid", false));
+    check("online bound identity accepts case-insensitive canonical account", MatchesBoundAccount(msa, L"MicrosoftAccount\\test@example.invalid", L"microsoftaccount\\TEST@example.invalid", false));
+    check("account type and identity provider must agree", !MatchesBoundAccount(msa, L"MicrosoftAccount\\test@example.invalid", L"MicrosoftAccount\\test@example.invalid", true) && !MatchesBoundAccount(local, L"", L"BANDKEYLAB\\TestUser", false));
+    check("bound account change is rejected", !MatchesBoundAccount(msa, L"MicrosoftAccount\\test@example.invalid", L"MicrosoftAccount\\other@example.invalid", false));
+    check("unrecognized account kind is rejected", !ValidQualifiedAccount(L"BANDKEYLAB\\TestUser", static_cast<VmAccountKind>(2)));
+    for (const std::wstring& name : {std::wstring(L"AzureAD\\test@example.invalid"), std::wstring(L"MicrosoftAccount\\"), std::wstring(L"MicrosoftAccount\\a\\b"), std::wstring(L"MicrosoftAccount\\a\nb"), std::wstring(L"MicrosoftAccount\\a\0b", 20), std::wstring(1024, L'x')})
+        check("malformed or unsupported online identity is rejected", !ValidQualifiedAccount(name, msa));
+}
 int wmain(int argc, wchar_t** argv) {
     if (argc == 3 && (wcscmp(argv[1], L"--verify-interop") == 0 || wcscmp(argv[1], L"--verify-java") == 0 || wcscmp(argv[1], L"--verify-phone") == 0)) {
         auto directory = std::filesystem::path(argv[2]); bool passed = false;
@@ -152,6 +164,7 @@ int wmain(int argc, wchar_t** argv) {
     try {
         check("COM initialized", SUCCEEDED(com));
         TestOnlineCredentialPacking(tests);
+        TestAccountBinding(tests);
         {
             SyntheticGrantRuntime runtime;
             runtime.directory = std::filesystem::absolute(std::filesystem::path(argv[2]).parent_path()) / (L"grant-flow-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
@@ -223,6 +236,8 @@ int wmain(int argc, wchar_t** argv) {
                 if (action == 5) runtime.locked = false;
                 if (action == 6) runtime.policy.signerKind = 1;
                 if (action == 7) runtime.policy.publicKey[8] ^= 1;
+                if (action == 8) runtime.policy.accountKind = VmAccountKind::MicrosoftAccount;
+                if (action == 9) runtime.policy.qualifiedAccount = L"BANDKEYLAB\\OtherUser";
                 CREDENTIAL_PROVIDER_GET_SERIALIZATION_RESPONSE response; CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION serialization{}; PWSTR text = nullptr; CREDENTIAL_PROVIDER_STATUS_ICON icon;
                 auto result = value->GetSerialization(&response, &serialization, &text, &icon); CoTaskMemFree(text);
                 bool refused = SUCCEEDED(result) && !serialization.rgbSerialization && runtime.vaultReads == reads;
@@ -236,6 +251,11 @@ int wmain(int argc, wchar_t** argv) {
             check("unlock after UI refresh prevents vault read", checkRefusal(5));
             check("changing signer kind cancels pending proof before vault read", checkRefusal(6));
             check("changing enrolled public key cancels pending proof before vault read", checkRefusal(7));
+            runtime.policy.publicKey = key.Export(false);
+            check("changing account kind cancels pending proof before vault read", checkRefusal(8));
+            runtime.policy.accountKind = VmAccountKind::Local;
+            check("changing account name cancels pending proof before vault read", checkRefusal(9));
+            runtime.policy.qualifiedAccount.clear();
             runtime.policy.publicKey = key.Export(false); runtime.policy.signerKind = 1; runtime.policy.enabled = true; runtime.locked = true;
             runtime.wall = 100000; runtime.monotonic = 1000;
             {
@@ -247,6 +267,44 @@ int wmain(int argc, wchar_t** argv) {
                 auto result = phone->GetSerialization(&response, &serialization, &text, &icon); CoTaskMemFree(text);
                 check("phone-kind proof uses same guarded native serialization", SUCCEEDED(result) && serialization.rgbSerialization && runtime.vaultReads == reads + 1);
                 FreeSerialization(serialization);
+            }
+            {
+                runtime.policy.accountKind = VmAccountKind::MicrosoftAccount;
+                runtime.policy.qualifiedAccount = L"MicrosoftAccount\\bandkey-vm-test@example.invalid";
+                unsigned reads = runtime.vaultReads;
+                ComPtr<BandKeyProvider> provider; provider.Attach(new BandKeyProvider(runtime.policy));
+                ComPtr<SyntheticUsers> users; users.Attach(new SyntheticUsers());
+                GUID testInternetProvider = {0x667f1d7a,0x2110,0x405e,{0x9d,0x8c,0x30,0x19,0x22,0x05,0x01,0x08}};
+                users->Add(TestSid, runtime.policy.qualifiedAccount.c_str(), testInternetProvider);
+                provider->SetUsageScenario(CPUS_UNLOCK_WORKSTATION, 0); provider->SetUserArray(users.Get());
+                DWORD count = 0, selected = 0; BOOL automatic = TRUE;
+                check("explicit MSA binding enumerates without automatic credential or vault access", SUCCEEDED(provider->GetCredentialCount(&count, &selected, &automatic)) && count == 1 && !automatic && runtime.vaultReads == reads);
+                ComPtr<ICredentialProviderCredential> credential; provider->GetCredentialAt(0, &credential);
+                CREDENTIAL_PROVIDER_GET_SERIALIZATION_RESPONSE response; CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION serialization{}; PWSTR text = nullptr; CREDENTIAL_PROVIDER_STATUS_ICON icon;
+                check("MSA backend cannot serialize or read vault without device approval", SUCCEEDED(credential->GetSerialization(&response, &serialization, &text, &icon)) && !serialization.rgbSerialization && runtime.vaultReads == reads); CoTaskMemFree(text); text = nullptr;
+                writeApproval(false);
+                check("MSA backend requests automatic serialization only after valid signature", SUCCEEDED(provider->GetCredentialCount(&count, &selected, &automatic)) && automatic && runtime.vaultReads == reads);
+                check("MSA backend submits protected online format after one-time authorization", SUCCEEDED(credential->GetSerialization(&response, &serialization, &text, &icon)) && response == CPGSR_RETURN_CREDENTIAL_FINISHED && serialization.rgbSerialization && runtime.vaultReads == reads + 1); CoTaskMemFree(text); text = nullptr;
+                ScopedAuthIdentity identity;
+                check("MSA backend serialization is an encrypted SSPI identity", SspiUnmarshalAuthIdentity(serialization.cbSerialization, reinterpret_cast<char*>(serialization.rgbSerialization), &identity.value) == SEC_E_OK && SspiIsAuthIdentityEncrypted(identity.value));
+                FreeSerialization(serialization);
+                credential->GetSerialization(&response, &serialization, &text, &icon); CoTaskMemFree(text);
+                check("MSA consumed authorization cannot reread vault", !serialization.rgbSerialization && runtime.vaultReads == reads + 1);
+            }
+            {
+                unsigned reads = runtime.vaultReads;
+                ComPtr<BandKeyProvider> provider; provider.Attach(new BandKeyProvider(runtime.policy));
+                ComPtr<SyntheticUsers> users; users.Attach(new SyntheticUsers());
+                GUID testInternetProvider = {0x667f1d7a,0x2110,0x405e,{0x9d,0x8c,0x30,0x19,0x22,0x05,0x01,0x08}};
+                users->Add(TestSid, runtime.policy.qualifiedAccount.c_str(), testInternetProvider);
+                provider->SetUsageScenario(CPUS_UNLOCK_WORKSTATION, 0); provider->SetUserArray(users.Get()); Count(provider.Get());
+                ComPtr<ICredentialProviderCredential> original; provider->GetCredentialAt(0, &original); writeApproval(false);
+                ComPtr<SyntheticUsers> changed; changed.Attach(new SyntheticUsers()); changed->Add(TestSid, L"MicrosoftAccount\\different@example.invalid", testInternetProvider);
+                provider->SetUserArray(changed.Get());
+                check("LogonUI account change removes MSA tile", Count(provider.Get()) == 0);
+                CREDENTIAL_PROVIDER_GET_SERIALIZATION_RESPONSE response; CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION serialization{}; PWSTR text = nullptr; CREDENTIAL_PROVIDER_STATUS_ICON icon;
+                original->GetSerialization(&response, &serialization, &text, &icon); CoTaskMemFree(text);
+                check("stale credential COM reference is cancelled after account change", !serialization.rgbSerialization && runtime.vaultReads == reads); FreeSerialization(serialization);
             }
             auto log = runtime.directory / L"Diagnostics" / L"provider.log";
             auto bytes = ReadBoundedFile(log, 262304); std::string messages(bytes.begin(), bytes.end());

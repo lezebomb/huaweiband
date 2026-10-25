@@ -4,8 +4,8 @@
 #include <wincred.h>
 #include <string>
 
-// Future host-provider building block. Packing is not Windows authentication.
-// The existing VM provider still rejects non-local identities before serialization.
+// Shared protected-identity serializer. Packing is not Windows authentication.
+// The VM provider accepts MSA only after explicit SID/name/type-bound enrollment.
 inline HRESULT PackMicrosoftAccountCredential(CREDENTIAL_PROVIDER_USAGE_SCENARIO scenario, const std::wstring& qualifiedName,
     wchar_t* password, ULONG authenticationPackage, REFGUID provider, CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION* result) {
     if (!result) return E_POINTER;
