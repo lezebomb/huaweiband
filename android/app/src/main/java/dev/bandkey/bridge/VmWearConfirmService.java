@@ -50,6 +50,8 @@ public final class VmWearConfirmService extends Service {
                 .put("pollResponsesObserved",current==null?0:current.polls()).put("promptAttempts",current==null?0:current.prompts())
                 .put("authorizationResponsesObserved",current==null?0:current.delivered()).put("denialResponsesObserved",current==null?0:current.denied())
                 .put("fixedPhoneMode",fixedPhoneMode).put("fixedStateResponses",fixedClient==null?0:fixedClient.reports()).put("requestRenewalResponses",fixedClient==null?0:fixedClient.renewals())
+                .put("connectionSource",bandConnection==null?JSONObject.NULL:bandConnection.report())
+                .put("fixedPhoneDiagnostic",fixedClient==null?JSONObject.NULL:fixedClient.report())
                 .put("independentlyValidated",false).put("windowsUnlockObserved",false).toString(2);
         }catch(JSONException ignored){}
     }
@@ -93,12 +95,12 @@ public final class VmWearConfirmService extends Service {
             }))throw new IllegalStateException("transport-start-failed");
             session=new VmWearSession<>(()->System.currentTimeMillis()/1000,SystemClock::elapsedRealtime,BleBackgroundLease.MAX_DURATION,this::configurationCurrent,()->ble!=null && ble.isConnected() && (!fixedPhoneMode || fixedClient.ready() && bandConnection.connected()),new VmWearSession.Client<JSONObject>(){
                 @Override public VmWearSession.Request<JSONObject> poll()throws Exception{
-                    JSONObject prompt=client.poll();if(prompt==null)return null;
+                    JSONObject prompt=client.poll(fixedPhoneMode?3000:0);if(prompt==null)return null;
                     WindowsGrantWire.Challenge body=WindowsGrantWire.read(android.util.Base64.decode(prompt.getString("challenge"),android.util.Base64.NO_WRAP));
                     return new VmWearSession.Request<>(prompt,prompt.getString("challenge"),(body.expires-WindowsGrantWire.FILETIME_UNIX_MILLISECONDS)/1000);
                 }
                 @Override public VmWearSession.Result decide(JSONObject prompt,boolean approved)throws Exception{
-                    JSONObject result=client.decide(prompt,approved);
+                    JSONObject result=client.decide(prompt,approved,fixedPhoneMode?3000:0);
                     if(result.optBoolean("windowsUnlocked"))throw new SecurityException("Unobserved Windows unlock claim");
                     if(approved && result.optBoolean("authorized") && result.optBoolean("submitted"))return VmWearSession.Result.DELIVERED;
                     if(!approved && !result.optBoolean("authorized") && !result.optBoolean("submitted") && "user-denied".equals(result.optString("code")))return VmWearSession.Result.DENIED;
@@ -113,9 +115,9 @@ public final class VmWearConfirmService extends Service {
                     fixedClient.pulse(bandConnection.sample());
                     // A brief HTTP interruption blocks submission through the link predicate but
                     // must not consume the still-current notification. A refreshed native request
-                    // or loss of the selected band does cancel that old notification.
+                    // cancels the old notification. Unknown/brief loss only blocks its submission.
                     int renewals=fixedClient.renewals();
-                    if(!bandConnection.connected() || renewals!=observedFixedRenewals){if(current!=null)current.invalidatePending();}
+                    if(renewals!=observedFixedRenewals){if(current!=null)current.invalidatePending();}
                     observedFixedRenewals=renewals;
                 }
                 if(current!=null)current.poll();
@@ -135,7 +137,7 @@ public final class VmWearConfirmService extends Service {
         BleBackgroundLease.Snapshot stats=lease.snapshot();String state=current==null?"启动中":label(current.state());
         lastSummary="VM 后台手环确认："+state+"\n剩余 "+((stats.remaining+999)/1000)+" 秒；完整流 "+stats.streams+"。\n仅真实手环本次点击可确认；交付签名不代表 Windows 已解锁。";
         if(!wearableStatus.isEmpty())lastSummary+="\n最近手环状态："+wearableStatus;
-        if(fixedPhoneMode)lastSummary+="\n手机固定在电脑旁："+fixedClient.status();
+        if(fixedPhoneMode)lastSummary+="\n手机固定在电脑旁："+fixedClient.status()+"\n状态报告 "+fixedClient.reports()+"；刷新请求 "+fixedClient.renewals()+"。";
         updateReport("running");
         if(!state.equals(noticeState)){noticeState=state;getSystemService(NotificationManager.class).notify(NOTIFICATION,notification(state));}
         handler.postDelayed(this,1000);

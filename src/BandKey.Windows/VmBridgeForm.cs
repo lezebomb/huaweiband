@@ -101,7 +101,7 @@ internal sealed class VmBridgeForm : Form
         var activity = relay?.Activity ?? lastActivity;
         sessionStatus.Text = $"会话记录：WTS {(notificationsRegistered ? "已注册" : "不可用，保留查询结果")}；观察到锁定后解锁：通知 {sessionEvidence.NotificationUnlocksAfterLock}／查询 {sessionEvidence.QueryUnlocksAfterLock}\n最近一轮中继：授权文件交付 {activity?.ApprovalFilesSubmitted ?? 0}；签名拒绝 {activity?.SignedDenials ?? 0}；无效／失败 {activity?.Rejections ?? 0}\n交付与会话解锁分别记录，不推断解锁由 BandKey 导致。\n{(reportError == null ? reportPath : "报告保存失败：" + reportError)}";
         var range = fixedPhone?.Snapshot ?? lastFixedPhone;
-        if (range != null) sessionStatus.Text += $"\n固定手机：手环连接 {range.BandConnected?.ToString() ?? "Unknown"}；接近状态 {range.Presence}；有效报告 {range.Reports}；新请求 {range.Renewals}；原生就绪 {range.NativeRequestReady}";
+        if (range != null) sessionStatus.Text += $"\n固定手机：手环连接 {range.BandConnected?.ToString() ?? "Unknown"}；接近状态 {range.Presence}；有效报告 {range.Reports}；新请求 {range.Renewals}；原生就绪 {range.NativeRequestReady}；{range.NativeState}";
     }
     private void SaveReport()
     {

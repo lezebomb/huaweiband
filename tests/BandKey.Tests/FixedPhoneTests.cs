@@ -50,6 +50,29 @@ internal static class FixedPhoneTests
             using var f=new Fixture();f.Near();f.Mono=0;Check(!f.Channel.CanSubmit);var snapshot=f.Channel.Snapshot;
             Check(snapshot.Revoked && !snapshot.Fresh && snapshot.Presence==PresenceState.Unknown && !snapshot.NativeRequestReady);
         });
+        test("transient unknown pauses approval without replacing the current native challenge",()=>{
+            using var f=new Fixture();var p=f.Near();f.Channel.Renew(f.ApproveRenewal(p));f.Exchange.NewNative();Check(f.Channel.CanSubmit);
+            f.Advance(1000);f.Channel.Observe(f.Report(null));Check(!f.Channel.CanSubmit);
+            f.Advance(1000);Check(f.Channel.Observe(f.Report(true)).Renewal==null);
+            f.Advance(1000);Check(f.Channel.Observe(f.Report(true)).Renewal==null && f.Channel.CanSubmit && f.Exchange.Submissions==1);
+        });
+        test("heartbeat gap cannot repeatedly renew an already handled arrival",()=>{
+            using var f=new Fixture();var p=f.Near();f.Channel.Renew(f.ApproveRenewal(p));f.Exchange.NewNative();
+            for(int i=0;i<3;i++){f.Advance(6000);Check(!f.Channel.CanSubmit);f.Channel.Observe(f.Report(true));f.Advance(1000);Check(f.Channel.Observe(f.Report(true)).Renewal==null);}
+            Check(f.Exchange.Submissions==1 && f.Channel.Snapshot.Renewals==1);
+        });
+        test("brief false status does not churn a pending request before departure dwell",()=>{
+            using var f=new Fixture();var p=f.Near();f.Channel.Renew(f.ApproveRenewal(p));f.Exchange.NewNative();
+            f.Advance(1);f.Channel.Observe(f.Report(false));Check(!f.Channel.CanSubmit);
+            f.Advance(1000);f.Channel.Observe(f.Report(true));f.Advance(1000);
+            Check(f.Channel.Observe(f.Report(true)).Renewal==null && f.Channel.CanSubmit && f.Exchange.Submissions==1);
+        });
+        test("unknown recovery never extends expired authorization or auto-renews it",()=>{
+            using var f=new Fixture();var p=f.Near();f.Channel.Renew(f.ApproveRenewal(p));f.Exchange.NewNative();
+            f.Advance(31000);Check(!f.Channel.CanSubmit);f.Channel.Observe(f.Report(true));f.Advance(1000);
+            Check(f.Channel.Observe(f.Report(true)).Renewal==null && !f.Channel.CanSubmit);
+            f.Channel.RetryRequest();Check(f.Channel.Observe(f.Report(true)).Renewal!=null);
+        });
         test("fixed-phone context is PC-signed and poll replay is rejected",()=>{
             using var f=new Fixture();Check(Protocol.Verify(Protocol.ExportPublicKey(f.Pc),FixedPhoneWire.ContextText(f.Context),f.Context.Signature));
             var poll=f.Poll();f.Channel.GetContext(poll);Refuses(()=>f.Channel.GetContext(poll));
@@ -93,7 +116,7 @@ internal static class FixedPhoneTests
         });
         test("return creates a new renewal after old grant expiry without replaying the old nonce",()=>{
             using var f=new Fixture();var first=f.Near();f.Channel.Renew(f.ApproveRenewal(first));f.Exchange.NewNative();
-            f.Advance(1);f.Channel.Observe(f.Report(false));f.Advance(60000);f.Channel.Observe(f.Report(false));f.Advance(1000);f.Channel.Observe(f.Report(true));f.Advance(1000);
+            f.Advance(1);f.Channel.Observe(f.Report(false));f.Advance(3000);f.Channel.Observe(f.Report(false));f.Advance(60000);f.Channel.Observe(f.Report(false));f.Advance(1000);f.Channel.Observe(f.Report(true));f.Advance(1000);
             var next=f.Channel.Observe(f.Report(true)).Renewal;Check(next!=null && next.Body!=first.Body && !f.Channel.Renew(f.ApproveRenewal(first)).Accepted);
         });
         test("default fixed-phone channel never auto-locks and explicit mode uses delayed disconnect",()=>{

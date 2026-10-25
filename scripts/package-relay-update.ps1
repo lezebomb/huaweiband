@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][string]$SourceZip)
+param([Parameter(Mandatory=$true)][string]$SourceZip,[string]$ReadMeDocument='docs/vm-relay-observation-20261023.md',[string]$PhonePublicKey,[string]$ExpectedPhoneSha256)
 $ErrorActionPreference='Stop'
 $bandKeyRoot=Split-Path -Parent $PSScriptRoot
 $bandKeyZipPath=(Resolve-Path -LiteralPath $SourceZip).Path
@@ -20,11 +20,17 @@ foreach($bandKeyRequired in @('BandKey.exe','BandKey.dll','BandKey.Core.dll','co
     if(!(Test-Path -LiteralPath (Join-Path $bandKeyPayload $bandKeyRequired))){throw 'Incomplete self-contained relay'}
 }
 '@echo off'+"`r`n"+'start "" "%~dp0BandKey.exe" --vm-bridge'+"`r`n" | Set-Content -LiteralPath (Join-Path $bandKeyPayload 'Start-VM-Bridge.cmd') -Encoding ascii -NoNewline
-Copy-Item -LiteralPath (Join-Path $bandKeyRoot 'docs\vm-relay-observation-20261023.md') -Destination (Join-Path $bandKeyUpdate 'READ-ME-FIRST.txt')
+Copy-Item -LiteralPath (Join-Path $bandKeyRoot $ReadMeDocument) -Destination (Join-Path $bandKeyUpdate 'READ-ME-FIRST.txt')
+if($PhonePublicKey){
+    $bandKeyPublic=(Resolve-Path -LiteralPath $PhonePublicKey).Path
+    if((Get-Item -LiteralPath $bandKeyPublic).Length -ne 72 -or !$ExpectedPhoneSha256 -or
+        (Get-FileHash -LiteralPath $bandKeyPublic -Algorithm SHA256).Hash.ToLowerInvariant() -cne $ExpectedPhoneSha256.ToLowerInvariant()){throw 'Public key fingerprint mismatch'}
+    Copy-Item -LiteralPath $bandKeyPublic -Destination (Join-Path $bandKeyUpdate 'Phone-VM-public.bandkeypub')
+}
 $bandKeyFiles=@(Get-ChildItem -LiteralPath $bandKeyUpdate -Recurse -File | Sort-Object FullName | ForEach-Object {
     [ordered]@{name=([IO.Path]::GetRelativePath($bandKeyUpdate,$_.FullName) -replace '\\','/');bytes=$_.Length;sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()}
 })
-[ordered]@{schema='bandkey.relay-update.v1';relayOnly=$true;loginInstallerIncluded=$false;phoneKeyIncluded=$false;guestTested=$false;hostInstalled=$false;sourceZipSha256=(Get-FileHash -LiteralPath $bandKeyZipPath -Algorithm SHA256).Hash.ToLowerInvariant();files=$bandKeyFiles} | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $bandKeyUpdate 'manifest.json') -Encoding utf8
+[ordered]@{schema='bandkey.relay-update.v1';relayOnly=$true;loginInstallerIncluded=$false;phoneKeyIncluded=[bool]$PhonePublicKey;guestTested=$false;hostInstalled=$false;sourceZipSha256=(Get-FileHash -LiteralPath $bandKeyZipPath -Algorithm SHA256).Hash.ToLowerInvariant();files=$bandKeyFiles} | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $bandKeyUpdate 'manifest.json') -Encoding utf8
 & (Join-Path $PSScriptRoot 'new-lab-data-iso.ps1') -SourceDirectory $bandKeyUpdate
 # Verify the actual image bytes and payload, without mounting or operating a VM.
 $bandKeyVerified=Join-Path $bandKeyRoot ('artifacts\relay-update-verification-'+[Guid]::NewGuid().ToString('N'))

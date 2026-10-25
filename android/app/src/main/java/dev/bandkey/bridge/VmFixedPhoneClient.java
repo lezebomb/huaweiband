@@ -12,7 +12,13 @@ final class VmFixedPhoneClient {
     private volatile long lastSuccess=-10000;
     private volatile boolean ready,stopped;
     private volatile String status="等待固定手机状态通道";
-    private volatile int reports,renewals;
+    private volatile int reports,renewals,connectedReports,disconnectedReports,unknownReports;
+    private volatile long maxReportGap;
+    private volatile String nativeState="not-observed";
+    org.json.JSONObject report()throws org.json.JSONException{
+        return new JSONObject().put("connectedReports",connectedReports).put("disconnectedReports",disconnectedReports).put("unknownReports",unknownReports)
+            .put("maxReportGapMilliseconds",maxReportGap).put("nativeState",nativeState).put("ready",ready());
+    }
     VmFixedPhoneClient(VmRelayClient relay,String uuid)throws Exception{
         this.relay=relay;bandHash=Identity.hex(MessageDigest.getInstance("SHA-256").digest(uuid.getBytes(StandardCharsets.UTF_8)));
     }
@@ -43,7 +49,9 @@ final class VmFixedPhoneClient {
             JSONObject result=relay.transport.post("/v2/windows/fixed/state",p,3000);
             if(stopped)return;
             if(result==null || !result.optBoolean("accepted") || result.optBoolean("windowsUnlocked"))throw new SecurityException("Fixed phone state response");
-            reports++;ready=result.optBoolean("canPoll");
+            reports++;if(sample.connected==null)unknownReports++;else if(sample.connected)connectedReports++;else disconnectedReports++;
+            if(lastSuccess>=0)maxReportGap=Math.max(maxReportGap,SystemClock.elapsedRealtime()-lastSuccess);
+            nativeState=result.optString("nativeState","not-observed");ready=result.optBoolean("canPoll");
             Object pending=result.opt("renewal");
             if(pending instanceof JSONObject){
                 JSONObject renewal=(JSONObject)pending;
@@ -58,7 +66,7 @@ final class VmFixedPhoneClient {
                 result=relay.transport.post("/v2/windows/fixed/renew",proof,3000);
                 if(stopped)return;
                 if(result==null || !result.optBoolean("accepted") || result.optBoolean("windowsUnlocked"))throw new SecurityException("Request renewal response");
-                renewals++;ready=result.optBoolean("canPoll");
+                renewals++;nativeState=result.optString("nativeState","not-observed");ready=result.optBoolean("canPoll");
             }
             lastSuccess=SystemClock.elapsedRealtime();status=sample.connected==null?"手环连接状态未知":sample.connected?(ready?"手环在连接范围内，等待新请求":"手环已连接，等待原生新请求"):"手环已断开，等待返回";
         }catch(Exception error){context=null;ready=false;status="固定手机通道："+error.getClass().getSimpleName();}
