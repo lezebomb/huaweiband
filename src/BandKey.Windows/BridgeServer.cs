@@ -82,13 +82,31 @@ public sealed class BridgeServer : IAsyncDisposable
                 catch(UnauthorizedAccessException){return Results.Unauthorized();}
                 catch(Exception e)when(e is ArgumentException or FormatException){return Results.BadRequest();}
             });
+            FixedPhoneResult AttachPrompt(FixedPhoneResult status,PollRequest? poll){
+                if(!status.Accepted || poll==null || windowsRelay==null || !fixedPhone.CanSubmit)return status;
+                try{
+                    var prompt=windowsRelay.Poll(poll);
+                    return status with{CanPoll=prompt!=null,Prompt=prompt,NativeState=fixedPhone.Snapshot.NativeState};
+                }catch(Exception error)when(error is UnauthorizedAccessException or ArgumentException or FormatException or CryptographicException){
+                    return status with{Prompt=null}; // The state proof does not replace the separate signed poll.
+                }
+            }
             app.MapPost("/v2/windows/fixed/state",(BandConnectionReport request)=>{
-                try{var status=fixedPhone.Observe(request);return Results.Json(status,statusCode:status.Accepted?200:403);}
+                try{var status=AttachPrompt(fixedPhone.Observe(request),request.Poll);return Results.Json(status,statusCode:status.Accepted?200:403);}
                 catch(Exception e)when(e is ArgumentException or FormatException){return Results.BadRequest();}
                 catch(IOException){return Results.StatusCode(503);}
             });
-            app.MapPost("/v2/windows/fixed/renew",(RequestRenewalDecision request)=>{
-                try{var status=fixedPhone.Renew(request);return Results.Json(status,statusCode:status.Accepted?200:403);}
+            app.MapPost("/v2/windows/fixed/renew",async (RequestRenewalDecision request,CancellationToken aborted)=>{
+                try{
+                    var status=fixedPhone.Renew(request);
+                    // Native notification timer is 250ms. A bounded wait can deliver its
+                    // fresh, independently signed challenge in this response, with no approval.
+                    if(status.Accepted && request.Poll!=null && windowsRelay!=null){
+                        for(int i=0;i<4 && !fixedPhone.CanSubmit;i++)await Task.Delay(100,aborted);
+                        status=AttachPrompt(status,request.Poll);
+                    }
+                    return Results.Json(status,statusCode:status.Accepted?200:403);
+                }
                 catch(Exception e)when(e is ArgumentException or FormatException){return Results.BadRequest();}
                 catch(IOException){return Results.StatusCode(503);}
             });

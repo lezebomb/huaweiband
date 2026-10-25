@@ -48,8 +48,9 @@ public final class VmWearSession<P> {
     public long decisionCallMilliseconds(){return decisionCallMilliseconds;}
     /** The fixed-phone adapter explicitly invalidates on a native renewal. Do not
      * fetch the same signed body repeatedly while its single ticket waits for a click. */
+    public boolean needsNewRequest(){return active() && state!=State.QUEUED && !gate.isActive(pending);}
     public void pollIfNewRequestNeeded(){
-        if(!active() || state==State.QUEUED || gate.isActive(pending))return;
+        if(!needsNewRequest())return;
         poll();
     }
     public void poll(){

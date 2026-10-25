@@ -52,6 +52,28 @@ internal static class WindowsGrantRelayIntegrationTests
             Body = WindowsGrantWire.WriteChallenge(new(session, now, now + 30000, sid, Protocol.Nonce()));
             RequestPath = Path.Combine(Root, "Exchange", Convert.ToHexStringLower(Body.AsSpan(36, 32)) + ".request"); File.WriteAllBytes(RequestPath, Body);
         }
+        private FixedPhoneContext? fixedContext;private long fixedSequence;
+        internal BandConnectionReport StateProof(bool? connected,PollRequest? inlinePoll=null){
+            if(fixedContext==null){var p=PollRequest();fixedContext=Fixed!.GetContext(p with{Signature=Protocol.Sign(Phone,FixedPhoneWire.ContextPollText(p))});}
+            var report=new BandConnectionReport(Relay.PcId,Device.DeviceId,fixedContext.ContextNonce,++fixedSequence,Wall,new string('a',64),connected,"",inlinePoll);
+            return report with{Signature=Protocol.Sign(Phone,FixedPhoneWire.ReportText(report))};
+        }
+        internal async Task<FixedPhoneResult> FixedState(bool? connected,PollRequest? inlinePoll=null){
+            using var response=await Client.PostAsJsonAsync("/v2/windows/fixed/state",StateProof(connected,inlinePoll));response.EnsureSuccessStatusCode();
+            return (await response.Content.ReadFromJsonAsync<FixedPhoneResult>())!;
+        }
+        internal async Task<RequestRenewalPrompt> NearForRenewal(){
+            await FixedState(true);Wall+=4000;Mono+=4000;
+            return (await FixedState(true)).Renewal??throw new Exception("Expected renewal");
+        }
+        internal RequestRenewalDecision RenewalProof(RequestRenewalPrompt prompt,PollRequest? inlinePoll=null){
+            var proof=WindowsRequestRenewalWire.Sign(WindowsRequestRenewalWire.Read(Convert.FromBase64String(prompt.Body)),Phone);
+            return new(prompt.PcId,prompt.DeviceId,prompt.ContextNonce,prompt.Body,Convert.ToBase64String(proof.AsSpan(436)),inlinePoll);
+        }
+        internal async Task ReadyFixedNative(){
+            var renewal=await NearForRenewal();Check(Fixed!.Renew(RenewalProof(renewal)).Accepted);
+            Wall++;Mono++;NewRequest();Check(Fixed.CanSubmit);
+        }
         internal PollRequest PollRequest()
         {
             var p = new PollRequest(Relay.PcId, Device.DeviceId, Protocol.Nonce(), Wall / 1000, "");
@@ -181,6 +203,39 @@ internal static class WindowsGrantRelayIntegrationTests
             f.Fixed.Renew(new(r.PcId,r.DeviceId,r.ContextNonce,r.Body,Convert.ToBase64String(raw.AsSpan(436))));
             f.Wall++;f.Mono++;f.NewRequest();var prompt=await f.Poll();State(false);
             using var response=await f.Decide(f.Decision(prompt));Check(response.StatusCode==HttpStatusCode.Forbidden && !File.Exists(f.ApprovalPath));
+        });
+        await test("inline renewal returns a PC-signed new native challenge without approval",async()=>{
+            await using var f=new Fixture(directory,true);await f.Start();var renewal=await f.NearForRenewal();var poll=f.PollRequest();
+            var native=Task.Run(async()=>{await Task.Delay(100);f.Wall++;f.Mono++;f.NewRequest();});
+            using var response=await f.Client.PostAsJsonAsync("/v2/windows/fixed/renew",f.RenewalProof(renewal,poll));
+            response.EnsureSuccessStatusCode();await native;var result=(await response.Content.ReadFromJsonAsync<FixedPhoneResult>())!;
+            var prompt=result.Prompt??throw new Exception("Inline prompt missing");
+            Check(result.Accepted && result.CanPoll && !result.WindowsUnlocked && prompt.Challenge==Convert.ToBase64String(f.Body) &&
+                Protocol.Verify(Protocol.ExportPublicKey(f.Pc),WindowsGrantRelayWire.PromptText(prompt),prompt.Signature) && !File.Exists(f.ApprovalPath));
+            using var replay=await f.Client.PostAsJsonAsync("/v2/windows/poll",poll);Check(replay.StatusCode==HttpStatusCode.Unauthorized);
+        });
+        await test("inline state preserves native and poll signatures",async()=>{
+            await using var f=new Fixture(directory,true);await f.Start();await f.ReadyFixedNative();
+            var result=await f.FixedState(true,f.PollRequest());var prompt=result.Prompt??throw new Exception("Inline state prompt missing");
+            Check(prompt.Challenge==Convert.ToBase64String(f.Body) &&
+                Protocol.Verify(Protocol.ExportPublicKey(f.Pc),WindowsGrantRelayWire.PromptText(prompt),prompt.Signature) && !File.Exists(f.ApprovalPath));
+        });
+        await test("valid state proof cannot replace a forged inline poll signature",async()=>{
+            await using var f=new Fixture(directory,true);await f.Start();await f.ReadyFixedNative();
+            var result=await f.FixedState(true,f.PollRequest() with{Signature="AAAA"});
+            Check(result.Accepted && result.Prompt==null && !File.Exists(f.ApprovalPath));
+        });
+        await test("forged parent state cannot consume a valid inline poll nonce",async()=>{
+            await using var f=new Fixture(directory,true);await f.Start();await f.ReadyFixedNative();var poll=f.PollRequest();
+            using var bad=await f.Client.PostAsJsonAsync("/v2/windows/fixed/state",f.StateProof(true,poll) with{Signature="AAAA"});
+            Check(bad.StatusCode==HttpStatusCode.Forbidden);
+            using var stillValid=await f.Client.PostAsJsonAsync("/v2/windows/poll",poll);Check(stillValid.IsSuccessStatusCode && !File.Exists(f.ApprovalPath));
+        });
+        await test("inline poll must independently match the enrolled phone",async()=>{
+            await using var f=new Fixture(directory,true);await f.Start();await f.ReadyFixedNative();
+            var poll=f.PollRequest() with{DeviceId=new string('b',64),Signature=""};
+            poll=poll with{Signature=Protocol.Sign(f.Phone,WindowsGrantRelayWire.PollText(poll))};
+            var result=await f.FixedState(true,poll);Check(result.Accepted && result.Prompt==null && !File.Exists(f.ApprovalPath));
         });
         await test("VM native policy rejects physical host without changing registry", () =>
         { try { VmNativePolicy.RequireGuest(); } catch (InvalidOperationException) { return Task.CompletedTask; } throw new Exception("This host should fail the VM guard"); });

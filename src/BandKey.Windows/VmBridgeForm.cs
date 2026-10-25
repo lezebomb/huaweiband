@@ -162,7 +162,7 @@ internal sealed class VmBridgeForm : Form
             await server.StartAsync(settings, certificate, emptyLegacy, _ => { }, windowsRelay: relay, fixedPhone: fixedPhone);
             pairing = System.Text.Json.JsonSerializer.Serialize(new { endpoint = url.GetLeftPart(UriPartial.Authority), pcId = relay.PcId, pcPublicKey = Protocol.ExportPublicKey(pc), certificateSha256 = BridgeServer.CertificatePin(certificate), protocol = "bandkey-vm-phone-v1", testOnly = true }, Store.Json);
             bind.Enabled = endpoint.Enabled = fixedMode.Enabled = walkLock.Enabled = false; start.Enabled = false;
-            status.AppendText("\r\n中继已启动。电脑 ID：\r\n" + relay.PcId + "\r\nTLS：\r\n" + BridgeServer.CertificatePin(certificate) + "\r\n手机访问：" + url.GetLeftPart(UriPartial.Authority) + "\r\n导出配对资料，在手机实验页导入并核对指纹。");
+            status.AppendText("\r\n中继已启动（0.7 挑战随响应返回）。电脑 ID：\r\n" + relay.PcId + "\r\nTLS：\r\n" + BridgeServer.CertificatePin(certificate) + "\r\n手机访问：" + url.GetLeftPart(UriPartial.Authority) + "\r\n导出配对资料，在手机实验页导入并核对指纹。");
         }
         catch (Exception error) { await StopRelay(); MessageBox.Show(this, error is InvalidOperationException ? error.Message : "中继启动失败：" + error.GetType().Name); }
     }

@@ -103,7 +103,8 @@ public final class VmWearConfirmService extends Service {
             }))throw new IllegalStateException("transport-start-failed");
             session=new VmWearSession<>(()->System.currentTimeMillis()/1000,SystemClock::elapsedRealtime,BleBackgroundLease.MAX_DURATION,this::configurationCurrent,()->ble!=null && ble.isConnected() && (!fixedPhoneMode || fixedClient.ready() && bandConnection.connected()),new VmWearSession.Client<JSONObject>(){
                 @Override public VmWearSession.Request<JSONObject> poll()throws Exception{
-                    JSONObject prompt=client.poll(fixedPhoneMode?3000:0);if(prompt==null)return null;
+                    JSONObject prompt=fixedPhoneMode?fixedClient.takePrompt():null;
+                    if(prompt==null)prompt=client.poll(fixedPhoneMode?3000:0);if(prompt==null)return null;
                     lastVerifiedPrompt=prompt;WindowsGrantWire.Challenge body=WindowsGrantWire.read(android.util.Base64.decode(prompt.getString("challenge"),android.util.Base64.NO_WRAP));
                     return new VmWearSession.Request<>(prompt,prompt.getString("challenge"),(body.expires-WindowsGrantWire.FILETIME_UNIX_MILLISECONDS)/1000);
                 }
@@ -133,7 +134,7 @@ public final class VmWearConfirmService extends Service {
                 VmWearSession<JSONObject> current=session;
                 if(fixedPhoneMode && current!=null && current.state()==VmWearSession.State.QUEUED)return;
                 if(fixedPhoneMode && ble!=null && ble.isConnected()){
-                    fixedClient.pulse(bandConnection.sample());
+                    fixedClient.pulse(bandConnection.sample(),current==null || current.needsNewRequest());
                     // A brief HTTP interruption blocks submission through the link predicate but
                     // must not consume the still-current notification. A refreshed native request
                     // cancels the old notification. Unknown/brief loss only blocks its submission.

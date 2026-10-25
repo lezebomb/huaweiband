@@ -4,10 +4,10 @@ using System.Security.Cryptography;
 namespace BandKey.Core;
 
 public sealed record FixedPhoneContext(string PcId,string DeviceId,string ContextNonce,long ExpiresAt,long NextSequence,string Signature);
-public sealed record BandConnectionReport(string PcId,string DeviceId,string ContextNonce,long Sequence,long ObservedAtMilliseconds,string BandHash,bool? Connected,string Signature);
+public sealed record BandConnectionReport(string PcId,string DeviceId,string ContextNonce,long Sequence,long ObservedAtMilliseconds,string BandHash,bool? Connected,string Signature,PollRequest? Poll=null);
 public sealed record RequestRenewalPrompt(string PcId,string DeviceId,string ContextNonce,string Body,string Signature);
-public sealed record RequestRenewalDecision(string PcId,string DeviceId,string ContextNonce,string Body,string Signature);
-public sealed record FixedPhoneResult(bool Accepted,bool CanPoll,string Code,RequestRenewalPrompt? Renewal=null,string? NativeState=null)
+public sealed record RequestRenewalDecision(string PcId,string DeviceId,string ContextNonce,string Body,string Signature,PollRequest? Poll=null);
+public sealed record FixedPhoneResult(bool Accepted,bool CanPoll,string Code,RequestRenewalPrompt? Renewal=null,string? NativeState=null,WindowsGrantPrompt? Prompt=null)
 { public bool WindowsUnlocked=>false; public bool TestOnly=>true; }
 public sealed record FixedPhoneSnapshot(bool? BandConnected,bool Fresh,PresenceState Presence,long Reports,long Renewals,bool NativeRequestReady,bool Revoked,string NativeState="not-requested");
 
