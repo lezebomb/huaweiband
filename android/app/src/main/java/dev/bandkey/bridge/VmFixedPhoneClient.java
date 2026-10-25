@@ -8,7 +8,7 @@ import java.security.MessageDigest;
 /** Only creates request-renewal signatures. Unlock approval remains in VmWearSession's real button callback. */
 final class VmFixedPhoneClient {
     private final VmRelayClient relay;private final String bandHash;
-    private JSONObject context;private long sequence,lastAttempt=-10000;
+    private JSONObject context;private String lastRenewalBody;private long sequence,lastAttempt=-10000,probeUntil,probeAt;
     private volatile long lastSuccess=-10000;
     private volatile boolean ready,stopped;
     private volatile String status="等待固定手机状态通道";
@@ -39,7 +39,7 @@ final class VmFixedPhoneClient {
         sequence=c.getLong("nextSequence")-1;return c;
     }
     void pulse(WearableConnectionSource.Sample sample){
-        long now=SystemClock.elapsedRealtime();if(stopped || now-lastAttempt<3000)return;lastAttempt=now;ready=false;
+        long now=SystemClock.elapsedRealtime();if(stopped || now-lastAttempt<3000 && !(now>=probeAt && now<probeUntil))return;lastAttempt=now;ready=false;
         try{
             if(context==null || context.getLong("expiresAt")<=System.currentTimeMillis()/1000)context=context();
             if(stopped)return;
@@ -66,8 +66,9 @@ final class VmFixedPhoneClient {
                 result=relay.transport.post("/v2/windows/fixed/renew",proof,3000);
                 if(stopped)return;
                 if(result==null || !result.optBoolean("accepted") || result.optBoolean("windowsUnlocked"))throw new SecurityException("Request renewal response");
-                renewals++;nativeState=result.optString("nativeState","not-observed");ready=result.optBoolean("canPoll");
+                if(!renewal.getString("body").equals(lastRenewalBody)){renewals++;lastRenewalBody=renewal.getString("body");}nativeState=result.optString("nativeState","not-observed");ready=result.optBoolean("canPoll");
             }
+            if(ready){probeUntil=0;}else if(pending instanceof JSONObject){probeUntil=SystemClock.elapsedRealtime()+2000;}if(probeUntil>0)probeAt=SystemClock.elapsedRealtime()+250;
             lastSuccess=SystemClock.elapsedRealtime();status=sample.connected==null?"手环连接状态未知":sample.connected?(ready?"手环在连接范围内，等待新请求":"手环已连接，等待原生新请求"):"手环已断开，等待返回";
         }catch(Exception error){context=null;ready=false;status="固定手机通道："+error.getClass().getSimpleName();}
     }

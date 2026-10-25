@@ -25,6 +25,7 @@ public final class VmWearConfirmService extends Service {
     private final ScheduledExecutorService worker=Executors.newSingleThreadScheduledExecutor();
     private volatile VmWearSession<JSONObject> session;
     private JSONObject lastVerifiedPrompt;
+    private VmRelayClient relayClient;
     private BlePhonePeripheral ble;
     private String token,pcSaved,wearableUuid,noticeState="";
     private volatile String wearableStatus="";
@@ -56,6 +57,8 @@ public final class VmWearConfirmService extends Service {
                 .put("lastNotificationLabel",lastNotificationLabel).put("lastNotificationDeadlineMilliseconds",lastNotificationDeadlineMilliseconds)
                 .put("fixedPhoneMode",fixedPhoneMode).put("fixedStateResponses",fixedClient==null?0:fixedClient.reports()).put("requestRenewalResponses",fixedClient==null?0:fixedClient.renewals())
                 .put("connectionSource",bandConnection==null?JSONObject.NULL:bandConnection.report())
+                .put("http",relayClient==null?JSONObject.NULL:relayClient.transport.metrics())
+                .put("decisionQueueMilliseconds",current==null?-1:current.decisionQueueMilliseconds()).put("decisionCallMilliseconds",current==null?-1:current.decisionCallMilliseconds())
                 .put("fixedPhoneDiagnostic",fixedClient==null?JSONObject.NULL:fixedClient.report())
                 .put("independentlyValidated",false).put("windowsUnlockObserved",false).toString(2);
         }catch(JSONException ignored){}
@@ -90,8 +93,8 @@ public final class VmWearConfirmService extends Service {
             if(pcSaved==null || wearableUuid.isEmpty() || getSharedPreferences(BridgeService.PREFS,MODE_PRIVATE).getBoolean("enabled",false))throw new IllegalStateException("configuration-unavailable");
             JSONObject config=new JSONObject(pcSaved);URI endpoint=new URI(config.getString("endpoint"));
             if(!"127.0.0.1".equals(endpoint.getHost()) || endpoint.getPort()!=19443)throw new IllegalStateException("BLE-loopback-required");
-            final VmRelayClient client=new VmRelayClient(config,new Identity("bandkey-vm-lab-identity-v1"));
             fixedPhoneMode=getSharedPreferences("bandkey-vm-phone-lab",MODE_PRIVATE).getBoolean("fixedPhoneMode",false);
+            final VmRelayClient client=new VmRelayClient(config,new Identity("bandkey-vm-lab-identity-v1"),fixedPhoneMode);relayClient=client;
             if(fixedPhoneMode){bandConnection=new WearableConnectionSource(this,wearableUuid);fixedClient=new VmFixedPhoneClient(client,wearableUuid);bandConnection.start();}
             if(!lease.start(SystemClock.elapsedRealtime(),BleBackgroundLease.MAX_DURATION,()->new BleBackgroundLease.Transport(){
                 @Override public void start()throws Exception{ble=new BlePhonePeripheral(VmWearConfirmService.this,19443,ignored->{},()->lease.allows(SystemClock.elapsedRealtime()));ble.start();}
@@ -128,6 +131,7 @@ public final class VmWearConfirmService extends Service {
             },task->worker.execute(()->withWake(task)));
             worker.scheduleWithFixedDelay(()->withWake(()->{
                 VmWearSession<JSONObject> current=session;
+                if(fixedPhoneMode && current!=null && current.state()==VmWearSession.State.QUEUED)return;
                 if(fixedPhoneMode && ble!=null && ble.isConnected()){
                     fixedClient.pulse(bandConnection.sample());
                     // A brief HTTP interruption blocks submission through the link predicate but
@@ -137,8 +141,8 @@ public final class VmWearConfirmService extends Service {
                     if(renewals!=observedFixedRenewals){if(current!=null)current.invalidatePending();}
                     observedFixedRenewals=renewals;
                 }
-                if(current!=null)current.poll();
-            }),0,2,TimeUnit.SECONDS);
+                if(current!=null){if(fixedPhoneMode)current.pollIfNewRequestNeeded();else current.poll();}
+            }),0,fixedPhoneMode?500:2000,TimeUnit.MILLISECONDS);
             handler.post(timer);
         }catch(Exception error){finish("startup-"+error.getClass().getSimpleName());}
         return START_NOT_STICKY;
@@ -151,7 +155,7 @@ public final class VmWearConfirmService extends Service {
         if(finishing)return;lease.tick(SystemClock.elapsedRealtime(),bluetoothAllowed());
         if(lease.snapshot().stage==BleBackgroundLease.Stage.STOPPED){finish(lease.snapshot().reason.name());return;}
         VmWearSession<JSONObject> current=session;if(current!=null && !current.active()){finish("session-ended");return;}
-        BleBackgroundLease.Snapshot stats=lease.snapshot();String state=current==null?"启动中":label(current.state());
+        BleBackgroundLease.Snapshot stats=lease.snapshot();String state=current==null?"启动中":label(current.state());if(fixedPhoneMode && current!=null && current.state()==VmWearSession.State.WAIT_LINK && ble!=null && ble.isConnected())state="BLE已连接，等待有效请求";
         lastSummary="VM 后台手环确认："+state+"\n剩余 "+((stats.remaining+999)/1000)+" 秒；完整流 "+stats.streams+"。\n仅真实手环本次点击可确认；交付签名不代表 Windows 已解锁。";
         if(!wearableStatus.isEmpty())lastSummary+="\n最近手环状态："+wearableStatus;
         if(fixedPhoneMode)lastSummary+="\n手机固定在电脑旁："+fixedClient.status()+"\n状态报告 "+fixedClient.reports()+"；刷新请求 "+fixedClient.renewals()+"。";
@@ -174,7 +178,7 @@ public final class VmWearConfirmService extends Service {
     }
     private void finish(String reason){
         if(finishing)return;finishing=true;handler.removeCallbacks(timer);VmWearSession<JSONObject> current=session;if(current!=null)current.stop();
-        if(fixedClient!=null)fixedClient.stop();if(bandConnection!=null)bandConnection.stop();
+        if(fixedClient!=null)fixedClient.stop();if(relayClient!=null)relayClient.transport.close();if(bandConnection!=null)bandConnection.stop();
         worker.shutdownNow();lease.stop(BleBackgroundLease.Reason.USER);lastSummary="VM 后台手环确认已停止："+reason+"。已交付的签名无法撤回，原生有效期与一次性检查仍适用。";
         updateReport(reason);
         stopForeground(STOP_FOREGROUND_REMOVE);stopSelf();

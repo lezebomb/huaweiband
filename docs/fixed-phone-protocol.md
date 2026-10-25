@@ -3,7 +3,7 @@
 复用手机P-256 Keystore、电脑签名、证书固定的HTTPS及BLE字节流；只在VM中继显式开启固定模式时开放。手机报告所选设备状态，不是手环硬件签名或精确测距证明。
 
 - POST /v2/windows/fixed/context：手机签名PollRequest，用途 bandkey.fixed-phone.context-poll.v1。PC签名用途 bandkey.fixed-phone.context.v1，返回PcId、DeviceId、32字节ContextNonce、ExpiresAt、NextSequence。每次运行独立上下文，最多30分钟；请求nonce不可重放。
-- POST /v2/windows/fixed/state：PcId、DeviceId、ContextNonce、Sequence、ObservedAtMilliseconds、BandHash、Connected、Signature。用途 bandkey.fixed-phone.state.v1。布尔规范 true／false／unknown，JSON未知为null；UUID的UTF-8 SHA-256固定本轮目标，改选撤销。递增序号≤2^53-1；拒绝超过10秒／超前3秒的样本、错身份与无效签名。字符串沿用ProtocolText的UTF-8字节长度分隔。
+- POST /v2/windows/fixed/state：PcId、DeviceId、ContextNonce、Sequence、ObservedAtMilliseconds、BandHash、Connected、Signature。用途 bandkey.fixed-phone.state.v1。布尔规范 true／false／unknown，JSON未知为null；UUID的UTF-8 SHA-256固定本轮目标，改选撤销。递增序号≤2^53-1；拒绝超过10秒／超前3秒的样本、错身份与无效签名。字符串沿用ProtocolText：按字段顺序以换行分隔，字段非空、不含换行且长度受限。
 - Unknown、来源不健康、过期会清除接近状态，不能当成走远。自动锁屏默认关闭且限VM交互会话。
 
 ## 刷新与批准分离

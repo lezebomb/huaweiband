@@ -9,9 +9,10 @@ final class VmRelayClient {
     final JSONObject config;
     final Identity identity;
     final BridgeClient transport;
-    VmRelayClient(JSONObject config,Identity identity)throws Exception{
+    VmRelayClient(JSONObject config,Identity identity)throws Exception{this(config,identity,false);}
+    VmRelayClient(JSONObject config,Identity identity,boolean reuseConnection)throws Exception{
         if(!config.optBoolean("testOnly") || !"bandkey-vm-phone-v1".equals(config.optString("protocol")))throw new SecurityException("VM lab configuration required");
-        this.config=config;this.identity=identity;transport=new BridgeClient(config,identity);
+        this.config=config;this.identity=identity;transport=new BridgeClient(config,identity,reuseConnection);
         WindowsGrantWire.exportNative(KeyFactory.getInstance("EC").generatePublic(new X509EncodedKeySpec(android.util.Base64.decode(config.getString("pcPublicKey"),android.util.Base64.NO_WRAP))));
     }
     JSONObject poll()throws Exception{return poll(0);}
