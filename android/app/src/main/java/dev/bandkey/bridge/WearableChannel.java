@@ -38,7 +38,10 @@ final class WearableChannel {
                     @Override public void onResult(Notification n,int feedback){
                         // 0=exit, 1=delete, 2=first button, 3=second button. Delivery success never approves.
                         if(!enabled.getAsBoolean())return;
-                        if(feedback==2 || feedback==3){if(gate.consume(ticket))clicked.accept(feedback==2);}
+                        if(feedback==2 || feedback==3){
+                            if(gate.consume(ticket)){status.accept(feedback==2?"已收到本次有效确认，正在提交":"已收到本次有效拒绝，正在提交");clicked.accept(feedback==2);}
+                            else status.accept("该条请求已过期或被替换，请等待新的请求");
+                        }
                         else if(gate.isActive(ticket))status.accept("手环反馈："+feedback);
                     }
                     @Override public void onError(Notification n,int code,String message){if(gate.isActive(ticket)){gate.cancel(ticket);status.accept("Wear Engine Notify 错误："+code);}}

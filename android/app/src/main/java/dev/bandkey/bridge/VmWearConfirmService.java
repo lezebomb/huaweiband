@@ -24,6 +24,7 @@ public final class VmWearConfirmService extends Service {
     private final Handler handler=new Handler(Looper.getMainLooper());
     private final ScheduledExecutorService worker=Executors.newSingleThreadScheduledExecutor();
     private volatile VmWearSession<JSONObject> session;
+    private JSONObject lastVerifiedPrompt;
     private BlePhonePeripheral ble;
     private String token,pcSaved,wearableUuid,noticeState="";
     private volatile String wearableStatus="";
@@ -31,7 +32,10 @@ public final class VmWearConfirmService extends Service {
     private boolean fixedPhoneMode;
     private WearableConnectionSource bandConnection;
     private VmFixedPhoneClient fixedClient;
-    private int observedFixedRenewals;
+    private int observedFixedRenewals,notificationSerial;
+    private final String notificationRun=UUID.randomUUID().toString().substring(0,4).toUpperCase(java.util.Locale.ROOT);
+    private volatile String lastNotificationLabel="";
+    private volatile long lastNotificationDeadlineMilliseconds;
     static boolean active(){VmWearConfirmService s=running;return s!=null && !s.finishing && s.lease.allows(SystemClock.elapsedRealtime());}
     static boolean requestStart(Activity activity,Dialog consent){
         boolean focused=activity.hasWindowFocus() || (consent!=null && consent.getOwnerActivity()==activity && consent.isShowing() && consent.getWindow()!=null && consent.getWindow().getDecorView().hasWindowFocus());
@@ -49,6 +53,7 @@ public final class VmWearConfirmService extends Service {
                 .put("remainingMilliseconds",stats.remaining).put("streams",stats.streams).put("disconnects",stats.disconnects)
                 .put("pollResponsesObserved",current==null?0:current.polls()).put("promptAttempts",current==null?0:current.prompts())
                 .put("authorizationResponsesObserved",current==null?0:current.delivered()).put("denialResponsesObserved",current==null?0:current.denied())
+                .put("lastNotificationLabel",lastNotificationLabel).put("lastNotificationDeadlineMilliseconds",lastNotificationDeadlineMilliseconds)
                 .put("fixedPhoneMode",fixedPhoneMode).put("fixedStateResponses",fixedClient==null?0:fixedClient.reports()).put("requestRenewalResponses",fixedClient==null?0:fixedClient.renewals())
                 .put("connectionSource",bandConnection==null?JSONObject.NULL:bandConnection.report())
                 .put("fixedPhoneDiagnostic",fixedClient==null?JSONObject.NULL:fixedClient.report())
@@ -96,7 +101,7 @@ public final class VmWearConfirmService extends Service {
             session=new VmWearSession<>(()->System.currentTimeMillis()/1000,SystemClock::elapsedRealtime,BleBackgroundLease.MAX_DURATION,this::configurationCurrent,()->ble!=null && ble.isConnected() && (!fixedPhoneMode || fixedClient.ready() && bandConnection.connected()),new VmWearSession.Client<JSONObject>(){
                 @Override public VmWearSession.Request<JSONObject> poll()throws Exception{
                     JSONObject prompt=client.poll(fixedPhoneMode?3000:0);if(prompt==null)return null;
-                    WindowsGrantWire.Challenge body=WindowsGrantWire.read(android.util.Base64.decode(prompt.getString("challenge"),android.util.Base64.NO_WRAP));
+                    lastVerifiedPrompt=prompt;WindowsGrantWire.Challenge body=WindowsGrantWire.read(android.util.Base64.decode(prompt.getString("challenge"),android.util.Base64.NO_WRAP));
                     return new VmWearSession.Request<>(prompt,prompt.getString("challenge"),(body.expires-WindowsGrantWire.FILETIME_UNIX_MILLISECONDS)/1000);
                 }
                 @Override public VmWearSession.Result decide(JSONObject prompt,boolean approved)throws Exception{
@@ -107,7 +112,19 @@ public final class VmWearConfirmService extends Service {
                     return VmWearSession.Result.REJECTED;
                 }
             },(gate,ticket,allowed,clicked)->{
-                wearableStatus="";new WearableChannel(this).prompt(wearableUuid,"VM 后台解锁确认","仅此 VM · 本次请求30秒内有效",gate,ticket,allowed,clicked,message->wearableStatus=message.substring(0,Math.min(160,message.length())));
+                final String label=notificationRun+"-"+(++notificationSerial);
+                final long deadline;
+                try{
+                    JSONObject body=lastVerifiedPrompt;
+                    deadline=WindowsGrantWire.read(android.util.Base64.decode(body.getString("challenge"),android.util.Base64.NO_WRAP)).expires-WindowsGrantWire.FILETIME_UNIX_MILLISECONDS;
+                }catch(Exception error){gate.cancel(ticket);wearableStatus="无法读取本次请求期限";return;}
+                lastNotificationLabel=label;lastNotificationDeadlineMilliseconds=deadline;
+                String cutoff=new java.text.SimpleDateFormat("HH:mm:ss",java.util.Locale.ROOT).format(new java.util.Date(deadline));
+                wearableStatus="#"+label+" · 截止 "+cutoff;
+                new WearableChannel(this).prompt(wearableUuid,"VM确认 #"+label,"本次截止 "+cutoff+"；过期请忽略",gate,ticket,allowed,clicked,message->{
+                    String value="#"+label+" · 截止 "+cutoff+" · "+message;
+                    wearableStatus=value.substring(0,Math.min(160,value.length()));
+                });
             },task->worker.execute(()->withWake(task)));
             worker.scheduleWithFixedDelay(()->withWake(()->{
                 VmWearSession<JSONObject> current=session;
