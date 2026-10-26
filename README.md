@@ -8,6 +8,8 @@
 
 正式主机尚未安装登录组件。主机MicrosoftAccount密码已由用户本地输入，经Windows核验、SID一致及登录／解锁保护格式检查通过；实际LogonUI解锁、长期BLE与恢复路径仍待验收。安装／卸载后端已加入先禁用后清理、中断进度和并发保护，原生236项、账户策略11项及静态分析通过。见[后端进展与边界](docs/deployment-backend-20261026.md)、[后续VM步骤](docs/host-account-rollout-20261025.md)。
 
+已增加Wear Engine 5.0.3.304及依赖的本地离线归档、源码快照、原签名APK和完整性校验；可选本地Maven镜像按固定SHA-256核对。本机现有工具链离线构建已通过；归档不冻结华为服务授权，也不包含整套开发工具链或签名私钥。见[归档与恢复说明](docs/wearengine-offline-archive-20261026.md)。
+
 此前修复记录：[0.5.1刷新循环](docs/fixed-phone-recovery-0.5.1.md)、[0.5.2通知轮次](docs/wear-notification-rounds-0.5.2.md)、[0.6连接复用](docs/fixed-phone-latency-0.6.0.md)、[0.7附带挑战](docs/fixed-phone-inline-0.7.0.md)。0.8仅替换中继5个文件并保留数据更新手机，未更改原生登录组件或手环配对。
 
 ## 直接运行

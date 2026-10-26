@@ -1,0 +1,34 @@
+{
+  "schema": "bandkey.wearengine-artifact-pins.v1",
+  "repository": "https://developer.huawei.com/repo/",
+  "artifacts": [
+    {
+      "group": "com.huawei.hms",
+      "module": "wearengine",
+      "version": "5.0.3.304",
+      "extension": "aar",
+      "sha256": "2121eb20de77d60aebabaf323479fc5135375fc2f6e1c4a09315fc288e53bca3"
+    },
+    {
+      "group": "com.huawei.hms",
+      "module": "wearengine",
+      "version": "5.0.3.304",
+      "extension": "pom",
+      "sha256": "393d328ea06264db631d820dccc7760e118e8fafe138aeaff36621525b534b7d"
+    },
+    {
+      "group": "com.huawei.hmf",
+      "module": "tasks",
+      "version": "1.5.2.206",
+      "extension": "jar",
+      "sha256": "53c34f931aaed824217adbaa3d2a52bd27ac1afccce8c99ce152501fa4a1b0d7"
+    },
+    {
+      "group": "com.huawei.hmf",
+      "module": "tasks",
+      "version": "1.5.2.206",
+      "extension": "pom",
+      "sha256": "e9d9ed5430aa99e4ee573ff029cd0077a3cab0d33f6858e24ab3eb92634f39b7"
+    }
+  ]
+}

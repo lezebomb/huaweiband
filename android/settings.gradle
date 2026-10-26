@@ -1,7 +1,33 @@
 pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+
+// Optional, verified local mirror for restoring the exact Wear Engine integration.
+def bandKeyMirrorProperty = providers.gradleProperty('bandKeyWearEngineMirror').orNull
+File bandKeyMirror = bandKeyMirrorProperty == null ? null : file(bandKeyMirrorProperty)
+if (bandKeyMirror != null) {
+    if (!bandKeyMirror.isDirectory()) throw new GradleException('Wear Engine local mirror directory is missing')
+    def pins = new groovy.json.JsonSlurper().parse(file('wearengine-artifacts.json'))
+    if (pins.schema != 'bandkey.wearengine-artifact-pins.v1' || pins.artifacts.size() != 4)
+        throw new GradleException('Wear Engine artifact pin catalog is invalid')
+    pins.artifacts.each { pin ->
+        def relative = pin.group.replace('.', '/') + '/' + pin.module + '/' + pin.version + '/' + pin.module + '-' + pin.version + '.' + pin.extension
+        def artifact = new File(bandKeyMirror, relative)
+        if (!artifact.isFile() || java.security.MessageDigest.getInstance('SHA-256').digest(artifact.bytes).encodeHex().toString() != pin.sha256)
+            throw new GradleException('Wear Engine local mirror hash mismatch: ' + pin.module + '.' + pin.extension)
+    }
+}
+
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-    repositories { google(); mavenCentral(); maven { url 'https://developer.huawei.com/repo/' } }
+    repositories {
+        google(); mavenCentral()
+        if (bandKeyMirror != null) {
+            exclusiveContent {
+                forRepository { maven { name = 'BandKeyWearEngineOffline'; url = bandKeyMirror.toURI() } }
+                filter { includeModule('com.huawei.hms', 'wearengine'); includeModule('com.huawei.hmf', 'tasks') }
+            }
+        }
+        maven { url 'https://developer.huawei.com/repo/' }
+    }
 }
 rootProject.name = 'BandKeyBridge'
 include ':app'
