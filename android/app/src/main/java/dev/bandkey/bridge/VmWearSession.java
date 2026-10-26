@@ -28,6 +28,7 @@ public final class VmWearSession<P> {
     private volatile State state=State.WAIT_LINK;
     private volatile PromptGate.Ticket pending;
     private int polls,prompts,delivered,denied;private volatile long decisionQueueMilliseconds=-1,decisionCallMilliseconds=-1;
+    private volatile String decisionStage="not-started";
     public VmWearSession(LongSupplier wall,LongSupplier elapsed,long duration,BooleanSupplier contextCurrent,BooleanSupplier link,Client<P> client,Wearable wearable,Executor decisions){
         long now=elapsed.getAsLong();if(now<0 || duration<=0 || duration>MAX_DURATION || now>Long.MAX_VALUE-duration)throw new IllegalArgumentException("VM background duration");
         this.elapsed=elapsed;deadline=now+duration;lastNow=now;this.contextCurrent=contextCurrent;this.link=link;this.client=client;this.wearable=wearable;this.decisions=decisions;gate=new PromptGate(wall,elapsed);
@@ -46,6 +47,7 @@ public final class VmWearSession<P> {
     public synchronized int delivered(){return delivered;}public synchronized int denied(){return denied;}
     public long decisionQueueMilliseconds(){return decisionQueueMilliseconds;}
     public long decisionCallMilliseconds(){return decisionCallMilliseconds;}
+    public String decisionStage(){return decisionStage;}
     /** The fixed-phone adapter explicitly invalidates on a native renewal. Do not
      * fetch the same signed body repeatedly while its single ticket waits for a click. */
     public boolean needsNewRequest(){return active() && state!=State.QUEUED && !gate.isActive(pending);}
@@ -64,20 +66,25 @@ public final class VmWearSession<P> {
             wearable.prompt(gate,ticket,this::active,approved->{
                 if(!active() || !gate.canSubmit(ticket) || !claimed.compareAndSet(false,true))return;
                 state(State.QUEUED);
-                long queuedAt=elapsed.getAsLong();try{decisions.execute(()->submit(request,ticket,approved,queuedAt));}catch(RuntimeException error){state(State.SUBMIT_ERROR);}
+                decisionStage="queued";
+                long queuedAt=elapsed.getAsLong();try{decisions.execute(()->submit(request,ticket,approved,queuedAt));}catch(RuntimeException error){decisionStage="queue-unavailable";state(State.SUBMIT_ERROR);}
             });
         }catch(Exception error){if(active()){recovery.failed(elapsed.getAsLong());state(State.POLL_ERROR);}}
     }
     private void submit(Request<P> request,PromptGate.Ticket ticket,boolean approved,long queuedAt){
         decisionQueueMilliseconds=Math.max(0,elapsed.getAsLong()-queuedAt);
         try{
-            if(!active() || !gate.canSubmit(ticket) || !link.getAsBoolean()){state(State.REJECTED);return;}
+            if(!active()){decisionStage="session-inactive";state(State.REJECTED);return;}
+            if(!gate.canSubmit(ticket)){decisionStage="ticket-not-current";state(State.REJECTED);return;}
+            if(!link.getAsBoolean()){decisionStage="link-not-ready";state(State.REJECTED);return;}
+            decisionStage="calling-relay";
             long began=elapsed.getAsLong();Result result;
             try{result=client.decide(request.body,approved);}finally{decisionCallMilliseconds=Math.max(0,elapsed.getAsLong()-began);}
-            if(!active())return;
+            if(!active()){decisionStage="session-inactive-after-call";return;}
+            decisionStage="response-"+result.name();
             if(approved && result==Result.DELIVERED){synchronized(this){delivered++;}state(State.DELIVERED);}
             else if(!approved && result==Result.DENIED){synchronized(this){denied++;}state(State.DENIED);}
             else state(State.REJECTED);
-        }catch(Exception error){state(State.SUBMIT_ERROR);} // A consumed decision is never retried.
+        }catch(Exception error){decisionStage="submit-error-"+error.getClass().getSimpleName();state(State.SUBMIT_ERROR);} // A consumed decision is never retried.
     }
 }

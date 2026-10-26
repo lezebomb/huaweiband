@@ -18,9 +18,15 @@ final class BridgeClient {
     private volatile boolean closed;
     private long reuseStarted;
     private volatile long requests,completed,lastRequestMilliseconds,maxRequestMilliseconds,retirements;
+    private volatile long failedRequests,rateLimitedResponses,unavailableResponses;
+    private volatile int lastStatusCode;
+    private volatile String lastFailureKind="none";
     JSONObject metrics()throws org.json.JSONException{return new JSONObject().put("reuseEnabled",reuseConnection).put("requests",requests).put("completed",completed)
-        .put("lastRequestMilliseconds",lastRequestMilliseconds).put("maxRequestMilliseconds",maxRequestMilliseconds).put("retirements",retirements);}
+        .put("lastRequestMilliseconds",lastRequestMilliseconds).put("maxRequestMilliseconds",maxRequestMilliseconds).put("retirements",retirements)
+        .put("failedRequests",failedRequests).put("lastStatusCode",lastStatusCode).put("rateLimitedResponses",rateLimitedResponses)
+        .put("unavailableResponses",unavailableResponses).put("lastFailureKind",lastFailureKind);}
     void close(){closed=true;HttpsURLConnection active=activeConnection;if(active!=null)try{active.disconnect();}catch(RuntimeException ignored){}}
+    void retireForReconnect(){reuseStarted=0;HttpsURLConnection active=activeConnection;if(active!=null)try{active.disconnect();}catch(RuntimeException ignored){}}
     BridgeClient(JSONObject config, Identity identity) throws Exception {this(config,identity,false);}
     BridgeClient(JSONObject config, Identity identity,boolean reuseConnection) throws Exception {
         this.config=config; this.identity=identity;this.reuseConnection=reuseConnection;
@@ -56,6 +62,7 @@ final class BridgeClient {
     JSONObject post(String path,JSONObject body,int shortTimeout)throws Exception {
         if(closed)throw new IOException("VM transport stopped");
         long began=android.os.SystemClock.elapsedRealtime();requests++;
+        lastStatusCode=0;lastFailureKind="none";
         if(reuseStarted==0)reuseStarted=began;
         // Each BLE byte stream is bounded to 45 seconds. Retire through an HTTP
         // Connection: close response after 20 seconds, well before that limit.
@@ -76,6 +83,7 @@ final class BridgeClient {
         try {
             try(OutputStream output=connection.getOutputStream()){output.write(bytes);}
             int code=connection.getResponseCode();
+            lastStatusCode=code;if(code==429)rateLimitedResponses++;if(code==503)unavailableResponses++;
             if(code==204){try(InputStream input=connection.getInputStream()){}reusable=true;completed++;return null;}
             if(code!=200 && !((path.equals("/v1/approval") || path.equals("/v2/windows/decision") || path.startsWith("/v2/windows/fixed/")) && code==403))throw new IOException("PC HTTP "+code);
             try(InputStream input=code==200?connection.getInputStream():connection.getErrorStream()) {
@@ -85,7 +93,7 @@ final class BridgeClient {
                 if(code==403 && result.optBoolean("authorized"))throw new SecurityException("Inconsistent denial response");
                 reusable=true;completed++;return result;
             }
-        }finally{
+        }catch(Exception error){failedRequests++;lastFailureKind=error.getClass().getSimpleName();throw error;}finally{
             lastRequestMilliseconds=Math.max(0,android.os.SystemClock.elapsedRealtime()-began);maxRequestMilliseconds=Math.max(maxRequestMilliseconds,lastRequestMilliseconds);
             if(!reuseConnection || !reusable || retire || closed){connection.disconnect();reuseStarted=0;if(retire)retirements++;}
         }

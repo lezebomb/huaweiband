@@ -31,12 +31,12 @@ internal static class WindowsGrantRelayIntegrationTests
         internal byte[] Body = [];
         internal string RequestPath = "";
         internal string ApprovalPath => RequestPath + ".approval";
-        internal Fixture(string directory,bool fixedPhone=false)
+        internal Fixture(string directory,bool fixedPhone=false,bool freshLock=false)
         {
             Root = Path.Combine(directory, "native-exchange-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(Path.Combine(Root, "Exchange"));
             var publicKey = Protocol.ExportPublicKey(Phone); Device = new(Protocol.Fingerprint(publicKey), "VM integration test", publicKey, ConfirmationSources.TestClient, true);
             Exchange = new(Root, Sid, 5, () => Current, () => WindowsGrantRelayWire.FileTimeMilliseconds(Wall));
-            if(fixedPhone) Fixed=new(Pc,Device,Exchange,Desktop,()=>Current,false,()=>Wall,()=>Mono);
+            if(fixedPhone) Fixed=new(Pc,Device,Exchange,Desktop,()=>Current,false,()=>Wall,()=>Mono,useFreshLockRequest:freshLock);
             Relay = new(Pc, Device, Exchange, () => Current, () => Wall, () => Mono, proximityCurrent:()=>Fixed?.CanSubmit??true);
             Certificate = new Store(Path.Combine(Root, "pc-identity")).LoadTlsCertificate();
             var listener = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0); listener.Start(); int port = ((IPEndPoint)listener.LocalEndpoint).Port; listener.Stop();
@@ -72,6 +72,8 @@ internal static class WindowsGrantRelayIntegrationTests
         }
         internal async Task ReadyFixedNative(){
             var renewal=await NearForRenewal();Check(Fixed!.Renew(RenewalProof(renewal)).Accepted);
+            // Model the SYSTEM provider consuming the NEW file before it creates WIN.
+            File.Delete(Path.Combine(Root,"Exchange","request-renewal.bin"));
             Wall++;Mono++;NewRequest();Check(Fixed.CanSubmit);
         }
         internal PollRequest PollRequest()
@@ -95,6 +97,24 @@ internal static class WindowsGrantRelayIntegrationTests
     internal static async Task RunAsync(Func<string, Func<Task>, Task> test, string directory)
     {
         async Task Case(string name, Func<Fixture, Task> action) => await test(name, async () => { await using var f = new Fixture(directory); await f.Start(); await action(f); });
+        await test("fresh lock HTTPS returns the current signed challenge without renewal or automatic approval",async()=>{
+            await using var f=new Fixture(directory,true,true);f.Desktop.Locked=false;await f.Start();
+            await f.FixedState(true);f.Wall+=4000;f.Mono+=4000;await f.FixedState(true);
+            f.Desktop.Locked=true;f.Wall++;f.Mono++;f.NewRequest();
+            var result=await f.FixedState(true,f.PollRequest());
+            Check(result.Renewal==null && result.Prompt!=null && result.CanPoll && f.Fixed!.Snapshot.DirectRequest && f.Fixed.Snapshot.Renewals==0 && !File.Exists(f.ApprovalPath));
+            using var approval=await f.Decide(f.Decision(result.Prompt!));var status=await approval.Content.ReadFromJsonAsync<WindowsGrantRelayResult>();
+            Check(approval.IsSuccessStatusCode && status is{Submitted:true,WindowsUnlocked:false} && File.Exists(f.ApprovalPath));
+        });
+        await test("replaced native HTTPS request rejects the old decision and recovers through a fresh signed renewal",async()=>{
+            await using var f=new Fixture(directory,true);await f.Start();await f.ReadyFixedNative();var old=await f.Poll();
+            f.Wall++;f.Mono++;f.NewRequest();Check(!f.Fixed!.CanSubmit);
+            var state=await f.FixedState(true,f.PollRequest());Check(state.Renewal!=null && state.Prompt==null);
+            using var refused=await f.Decide(f.Decision(old));Check(refused.StatusCode==HttpStatusCode.Forbidden && !File.Exists(f.ApprovalPath));
+            var proof=f.RenewalProof(state.Renewal!);Check(f.Fixed.Renew(proof).Accepted);f.Wall++;f.Mono++;f.NewRequest();
+            var prompt=await f.Poll();Check(prompt.Challenge!=old.Challenge && f.Fixed.Snapshot.ReplacementRecoveries==1);
+            using var accepted=await f.Decide(f.Decision(prompt));Check(accepted.IsSuccessStatusCode && File.Exists(f.ApprovalPath));
+        });
         await Case("VM relay HTTPS signs native request with PC identity", async f =>
         { var p = await f.Poll(); Check(p.Challenge == Convert.ToBase64String(f.Body) && Protocol.Verify(Protocol.ExportPublicKey(f.Pc), WindowsGrantRelayWire.PromptText(p), p.Signature)); });
         await Case("VM relay HTTPS approval writes exactly 500 bytes, native signature valid, no unlock claim", async f =>

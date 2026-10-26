@@ -29,6 +29,14 @@ VM使用用户新注册的个人微软测试账号；它需要成为VM实际登�
 5. 这是新Windows用户，DPAPI电脑身份和证书可能改变。点“导出电脑配对资料给手机”，把公开JSON文字发来，开发端负责手机导入与BLE连接。不发送密码；手机无需重装。
 6. 接通后只测一次“锁VM → 手环确认 → 无手动密码回桌面”，再测一次新请求拒绝仍保持锁屏。需实际观察，HTTP交付不等于Windows解锁。
 
+### 安装前提示账户类型不符（旧包可能显示错误13）
+
+若提示“Sign into the Microsoft-connected Windows user…This option refuses local accounts”，本次安装在创建目录或注册前已停止。这里旧包显示的13是BandKey前置条件失败的通用错误码，不是密码验证失败。实现依据当前WTS会话用户的NetUserGetInfo(24)身份标记，并交叉核对用户SID和当前进程Token；不会用设置首页的邮箱卡片代替Windows登录身份。
+
+设置中出现微软邮箱、Microsoft 365卡片或“停止自动登录到所有Microsoft应用”，不能单独证明Windows已经用该微软身份登录。保留xsy，从VM“设置 → 账户 → 其他用户”添加新注册的微软账户，设为管理员，再注销当前用户并从Windows登录页进入新增用户；如果该用户已存在，直接切换，不重复创建。再次安装仍不符时停止，保留完整提示，不改注册表或跳过账户校验。
+
+依据：[添加Windows用户与应用账户是不同入口](https://support.microsoft.com/en-us/windows/security/identity-signin/manage-user-accounts-in-windows)、[Windows本地／微软登录切换](https://support.microsoft.com/en-us/accounts-billing/manage/change-from-a-local-account-to-a-microsoft-account-in-windows)。
+
 ## C：恢复／卸载
 
 在微软用户中运行同一安装器选Remove，只移除BandKey固定实验注册及专属文件。确认移除完成，锁VM后用原系统登录方式返回桌面；必要时按明确的占用提示重启再清理。系统Provider没有被过滤或替换。
@@ -36,6 +44,12 @@ VM使用用户新注册的个人微软测试账号；它需要成为VM实际登�
 若不能正常进入VM，通过VMware快照管理器恢复03-before-MSA；不要在宿主机运行安装器、编辑登录注册表或删除系统Provider。回退快照会还原VM电脑身份；手机如已导入新用户资料，需恢复此前公开配对资料，无需清除手机数据或重新配对手环。卸载和快照恢复必须按实际结果记录。
 
 原生认证DLL仍是协议3且本阶段未改变，原生组件合计236项及互操作检查通过；本轮安装器增加明确的微软账户测试入口，安装前拒绝本地账户，并更新提示文字；经静态分析／只读主机拒绝检查，没有取消VM限制。完整包不含APK、密码、私钥、Vault、Exchange或运行数据。安装／卸载已有进度记录、先禁用后清理和并发保护，见[部署后端](deployment-backend-20261026.md)。
+
+## 已取得的微软账户 VM 结果
+
+用户已进入新增微软账户的 Windows 桌面，并完成专用安装和公开配对更新。原 0.8 组合下，用户确认真实手环批准后 VM 自动回桌面、未输入密码；另一次等待 8 秒及手环拒绝后始终保持锁屏。初次失败发生在原生请求过期、没有批准交付的阶段，后续重接 BLE 后成功；不能据此将所有连接问题视为已解决。
+
+以上是用户实际观察的 VM 微软账户结果；没有独立采集该轮 Windows ReportResult／WTS 归因，且尚未完成 C 项卸载恢复，也不是主机登录验收。0.8.1 提速试验失败后已恢复手机 0.8.0。后续候选只换用户态中继，见[0.9 修复及回滚](fixed-phone-native-recovery-0.9.md)。
 
 ## 本地检查工具
 

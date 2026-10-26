@@ -13,6 +13,8 @@ internal static class FixedPhoneTests
     private sealed class Exchange:IWindowsRequestRenewalExchange
     {
         public Func<long> Wall=()=>0;public byte[]? Native,Proof;public int Submissions;
+        public WindowsRequestBinding? Target=new(Sid,5);
+        public WindowsRequestBinding? Binding=>Target;
         public byte[] CreateRequestRenewal(){ulong now=WindowsGrantRelayWire.FileTimeMilliseconds(Wall());return WindowsRequestRenewalWire.Write(new(5,now,now+10000,Sid,Protocol.Nonce()));}
         public bool SubmitRequestRenewal(ReadOnlySpan<byte> proof){Proof=proof.ToArray();Submissions++;return true;}
         public byte[]? ReadCurrentChallenge()=>Native?.ToArray();
@@ -23,10 +25,10 @@ internal static class FixedPhoneTests
         public readonly ECDsa Pc=ECDsa.Create(ECCurve.NamedCurves.nistP256),Phone=ECDsa.Create(ECCurve.NamedCurves.nistP256);
         public readonly Desktop Session=new();public readonly Exchange Exchange=new();public readonly PublicDevice Device;
         public readonly FixedPhoneChannel Channel;public FixedPhoneContext Context;public long Wall=1700000000000,Mono=1000,Sequence;
-        public Fixture(bool autoLock=false){
+        public Fixture(bool autoLock=false,bool freshLock=false){
             string key=Protocol.ExportPublicKey(Phone);Device=new(Protocol.Fingerprint(key),"VM test",key,ConfirmationSources.TestClient,true);
             Exchange.Wall=()=>Wall;
-            Channel=new(Pc,Device,Exchange,Session,()=>true,autoLock,()=>Wall,()=>Mono,new(){NearSeconds=1,FarSeconds=3,StaleSeconds=5,MissingSeconds=12});
+            Channel=new(Pc,Device,Exchange,Session,()=>true,autoLock,()=>Wall,()=>Mono,new(){NearSeconds=1,FarSeconds=3,StaleSeconds=5,MissingSeconds=12},freshLock);
             Context=Channel.GetContext(Poll());
         }
         public PollRequest Poll(){var p=new PollRequest(Channel.PcId,Device.DeviceId,Protocol.Nonce(),Wall/1000,"");return p with{Signature=Protocol.Sign(Phone,FixedPhoneWire.ContextPollText(p))};}
@@ -35,6 +37,7 @@ internal static class FixedPhoneTests
             return p with{Signature=Protocol.Sign(Phone,FixedPhoneWire.ReportText(p))};
         }
         public void Advance(long ms){Wall+=ms;Mono+=ms;}
+        public void DesktopNear(){Session.Locked=false;Channel.Observe(Report(true));Advance(1000);Channel.Observe(Report(true));}
         public RequestRenewalPrompt Near(){Channel.Observe(Report(true));Advance(1000);return Channel.Observe(Report(true)).Renewal??throw new Exception("Renewal missing");}
         public RequestRenewalDecision ApproveRenewal(RequestRenewalPrompt p){
             var body=Convert.FromBase64String(p.Body);var c=WindowsRequestRenewalWire.Read(body);var signed=WindowsRequestRenewalWire.Sign(c,Phone);
@@ -46,6 +49,47 @@ internal static class FixedPhoneTests
     {
         void Check(bool value){if(!value)throw new Exception("Fixed phone invariant");}
         void Refuses(Action a){try{a();}catch(FormatException){return;}catch(UnauthorizedAccessException){return;}throw new Exception("Expected refusal");}
+        test("fresh lock uses a new bound native request without a redundant renewal",()=>{
+            using var f=new Fixture(freshLock:true);f.DesktopNear();f.Session.Locked=true;f.Advance(1);f.Exchange.NewNative();
+            var result=f.Channel.Observe(f.Report(true));Check(result.CanPoll && result.Renewal==null && f.Channel.CanSubmit && f.Channel.Snapshot.DirectRequest && f.Exchange.Submissions==0);
+        });
+        test("fresh lock briefly waits for native creation before requesting a renewal",()=>{
+            using var f=new Fixture(freshLock:true);f.DesktopNear();f.Session.Locked=true;f.Advance(1);
+            Check(f.Channel.Observe(f.Report(true)).Renewal==null && !f.Channel.CanSubmit);f.Advance(500);f.Exchange.NewNative();
+            Check(f.Channel.Observe(f.Report(true)).CanPoll && f.Channel.Snapshot.DirectRequest);
+        });
+        test("fresh lock wait is bounded and a missing native request falls back to signed renewal",()=>{
+            using var f=new Fixture(freshLock:true);f.DesktopNear();f.Session.Locked=true;f.Advance(1);f.Channel.Observe(f.Report(true));f.Advance(1000);
+            Check(f.Channel.Observe(f.Report(true)).Renewal!=null && !f.Channel.Snapshot.DirectRequest && !f.Channel.CanSubmit);
+        });
+        test("fresh lock cannot inherit a pre-lock request even when it is not expired",()=>{
+            using var f=new Fixture(freshLock:true);f.DesktopNear();f.Exchange.NewNative();f.Session.Locked=true;f.Advance(1);
+            Check(!f.Channel.Observe(f.Report(true)).CanPoll);f.Advance(1000);Check(f.Channel.Observe(f.Report(true)).Renewal!=null && !f.Channel.Snapshot.DirectRequest);
+        });
+        test("fresh lock requires a known native binding and matching account and session",()=>{
+            foreach(int variant in new[]{0,1,2}){using var f=new Fixture(freshLock:true);f.DesktopNear();f.Session.Locked=true;f.Advance(1);f.Exchange.NewNative();
+                f.Exchange.Target=variant switch{0=>null,1=>new("S-1-5-21-1-2-3-1002",5),_=>new(Sid,6)};
+                Check(!f.Channel.Observe(f.Report(true)).CanPoll && !f.Channel.Snapshot.DirectRequest);
+            }
+        });
+        test("starting already locked and stale pre-lock presence still require a renewal",()=>{
+            using var a=new Fixture(freshLock:true);a.Exchange.NewNative();Check(a.Near()!=null && !a.Channel.Snapshot.DirectRequest);
+            using var f=new Fixture(freshLock:true);f.DesktopNear();f.Advance(6000);f.Session.Locked=true;f.Exchange.NewNative();
+            f.Channel.Observe(f.Report(true));f.Advance(1000);Check(f.Channel.Observe(f.Report(true)).Renewal!=null && !f.Channel.Snapshot.DirectRequest);
+        });
+        test("native replacement cannot resurrect the old request and requires a new signed renewal",()=>{
+            using var f=new Fixture();var first=f.Near();f.Channel.Renew(f.ApproveRenewal(first));f.Advance(1);f.Exchange.NewNative();Check(f.Channel.CanSubmit);
+            var old=f.Exchange.Native!.ToArray();f.Advance(1);f.Exchange.NewNative();Check(!f.Channel.CanSubmit);
+            var replacement=f.Exchange.Native;f.Exchange.Native=old;Check(!f.Channel.CanSubmit);f.Exchange.Native=replacement;
+            var retry=f.Channel.Observe(f.Report(true)).Renewal;Check(retry!=null && retry.Body!=first.Body && !f.Channel.CanSubmit && !f.Channel.Renew(f.ApproveRenewal(first)).Accepted);
+            f.Channel.Renew(f.ApproveRenewal(retry!));f.Advance(1);f.Exchange.NewNative();Check(f.Channel.CanSubmit && f.Channel.Snapshot.ReplacementRecoveries==1 && f.Exchange.Submissions==2);
+        });
+        test("native replacement recovery is bounded rather than an endless refresh loop",()=>{
+            using var f=new Fixture();var first=f.Near();f.Channel.Renew(f.ApproveRenewal(first));f.Advance(1);f.Exchange.NewNative();Check(f.Channel.CanSubmit);
+            for(int i=0;i<2;i++){f.Advance(1);f.Exchange.NewNative();Check(!f.Channel.CanSubmit);var next=f.Channel.Observe(f.Report(true)).Renewal;Check(next!=null);f.Channel.Renew(f.ApproveRenewal(next!));f.Advance(1);f.Exchange.NewNative();Check(f.Channel.CanSubmit);}
+            f.Advance(1);f.Exchange.NewNative();Check(!f.Channel.CanSubmit);for(int i=0;i<4;i++)Check(f.Channel.Observe(f.Report(true)).Renewal==null);
+            Check(f.Channel.Snapshot is{ReplacementRecoveries:2,NativeState:"native-replacement-limit"} && f.Exchange.Submissions==3);
+        });
         test("fixed-phone status stays readable after monotonic clock rollback revokes the run",()=>{
             using var f=new Fixture();f.Near();f.Mono=0;Check(!f.Channel.CanSubmit);var snapshot=f.Channel.Snapshot;
             Check(snapshot.Revoked && !snapshot.Fresh && snapshot.Presence==PresenceState.Unknown && !snapshot.NativeRequestReady);

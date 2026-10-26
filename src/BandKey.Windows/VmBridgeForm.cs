@@ -167,14 +167,14 @@ internal sealed class VmBridgeForm : Form
             bool Current() => nativePublicKey != null && VmNativePolicy.MatchesPhone(nativePublicKey);
             using var identity = WindowsIdentity.GetCurrent();
             var raw = new WindowsGrantDirectoryExchange(VmNativePolicy.DirectoryPath, identity.User!.Value, (uint)Process.GetCurrentProcess().SessionId, () => Current() && WindowsSession.IsLocked() == true);
-            if (fixedMode.Checked) fixedPhone = new FixedPhoneChannel(pc, device, raw, new VmGuardedSession(), Current, walkLock.Checked,options:new PresenceOptions{NearSeconds=(double)nearDelay.Value});
+            if (fixedMode.Checked) fixedPhone = new FixedPhoneChannel(pc, device, raw, new VmGuardedSession(), Current, walkLock.Checked,options:new PresenceOptions{NearSeconds=(double)nearDelay.Value},useFreshLockRequest:true);
             var exchange = new WindowsGrantDirectoryExchange(VmNativePolicy.DirectoryPath, identity.User!.Value, (uint)Process.GetCurrentProcess().SessionId, () => Current() && WindowsSession.IsLocked() == true && (fixedPhone?.CanSubmit ?? true));
             relay = new WindowsGrantRelay(pc, device, exchange, Current, proximityCurrent: () => fixedPhone?.CanSubmit ?? true);
             server = new BridgeServer(); var emptyLegacy = new AuthorizationBroker(relay.PcId, pc);
             await server.StartAsync(settings, certificate, emptyLegacy, _ => { }, windowsRelay: relay, fixedPhone: fixedPhone);
             pairing = System.Text.Json.JsonSerializer.Serialize(new { endpoint = url.GetLeftPart(UriPartial.Authority), pcId = relay.PcId, pcPublicKey = Protocol.ExportPublicKey(pc), certificateSha256 = BridgeServer.CertificatePin(certificate), protocol = "bandkey-vm-phone-v1", testOnly = true }, Store.Json);
             bind.Enabled = endpoint.Enabled = fixedMode.Enabled = walkLock.Enabled = nearDelay.Enabled = false; start.Enabled = false;
-            status.AppendText("\r\n中继已启动（0.8 快速接近，挑战随响应返回）。电脑 ID：\r\n" + relay.PcId + "\r\nTLS：\r\n" + BridgeServer.CertificatePin(certificate) + "\r\n手机访问：" + url.GetLeftPart(UriPartial.Authority) + "\r\n导出配对资料，在手机实验页导入并核对指纹。");
+            status.AppendText("\r\n中继已启动（0.9 新锁屏请求直达，重建恢复）。电脑 ID：\r\n" + relay.PcId + "\r\nTLS：\r\n" + BridgeServer.CertificatePin(certificate) + "\r\n手机访问：" + url.GetLeftPart(UriPartial.Authority) + "\r\n导出配对资料，在手机实验页导入并核对指纹。");
         }
         catch (Exception error) { await StopRelay(); MessageBox.Show(this, error is InvalidOperationException ? error.Message : "中继启动失败：" + error.GetType().Name); }
     }

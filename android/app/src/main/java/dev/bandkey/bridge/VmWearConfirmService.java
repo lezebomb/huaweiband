@@ -59,6 +59,7 @@ public final class VmWearConfirmService extends Service {
                 .put("connectionSource",bandConnection==null?JSONObject.NULL:bandConnection.report())
                 .put("http",relayClient==null?JSONObject.NULL:relayClient.transport.metrics())
                 .put("decisionQueueMilliseconds",current==null?-1:current.decisionQueueMilliseconds()).put("decisionCallMilliseconds",current==null?-1:current.decisionCallMilliseconds())
+                .put("decisionStage",current==null?"not-started":current.decisionStage())
                 .put("fixedPhoneDiagnostic",fixedClient==null?JSONObject.NULL:fixedClient.report())
                 .put("independentlyValidated",false).put("windowsUnlockObserved",false).toString(2);
         }catch(JSONException ignored){}
@@ -142,6 +143,7 @@ public final class VmWearConfirmService extends Service {
                     if(renewals!=observedFixedRenewals){if(current!=null)current.invalidatePending();}
                     observedFixedRenewals=renewals;
                 }
+                else if(fixedPhoneMode && fixedClient!=null)fixedClient.onBleDisconnected();
                 if(current!=null){if(fixedPhoneMode)current.pollIfNewRequestNeeded();else current.poll();}
             }),0,fixedPhoneMode?500:2000,TimeUnit.MILLISECONDS);
             handler.post(timer);

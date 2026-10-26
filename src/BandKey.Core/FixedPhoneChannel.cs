@@ -9,10 +9,12 @@ public sealed record RequestRenewalPrompt(string PcId,string DeviceId,string Con
 public sealed record RequestRenewalDecision(string PcId,string DeviceId,string ContextNonce,string Body,string Signature,PollRequest? Poll=null);
 public sealed record FixedPhoneResult(bool Accepted,bool CanPoll,string Code,RequestRenewalPrompt? Renewal=null,string? NativeState=null,WindowsGrantPrompt? Prompt=null)
 { public bool WindowsUnlocked=>false; public bool TestOnly=>true; }
-public sealed record FixedPhoneSnapshot(bool? BandConnected,bool Fresh,PresenceState Presence,long Reports,long Renewals,bool NativeRequestReady,bool Revoked,string NativeState="not-requested");
+public sealed record FixedPhoneSnapshot(bool? BandConnected,bool Fresh,PresenceState Presence,long Reports,long Renewals,bool NativeRequestReady,bool Revoked,string NativeState="not-requested",bool DirectRequest=false,int ReplacementRecoveries=0);
+public sealed record WindowsRequestBinding(string UserSid,uint WindowsSessionId);
 
 public interface IWindowsRequestRenewalExchange
 {
+    WindowsRequestBinding? Binding=>null;
     byte[] CreateRequestRenewal();
     bool SubmitRequestRenewal(ReadOnlySpan<byte> proof);
     byte[]? ReadCurrentChallenge();
@@ -46,20 +48,39 @@ public sealed class FixedPhoneChannel
     private bool? bandConnected,lastLocked;
     private string? bandHash; private string nativeState="not-requested";
     private byte[]? renewalBody,previousNative,readyNative;
+    private readonly bool useFreshLockRequest;
+    private long lastUnlockedWall=long.MinValue,fastWaitUntil;
+    private bool freshLockEligible,directRequest,replacementPending;
+    private int replacementRecoveries;
+    private const int MaxReplacementRecoveries=2;
     public string PcId{get;}
     public FixedPhoneChannel(ECDsa pc,PublicDevice phone,IWindowsRequestRenewalExchange exchange,IInteractiveSession session,Func<bool> current,
-        bool autoLock=false,Func<long>? wall=null,Func<long>? mono=null,PresenceOptions? options=null)
+        bool autoLock=false,Func<long>? wall=null,Func<long>? mono=null,PresenceOptions? options=null,bool useFreshLockRequest=false)
     {
         if(!phone.TestOnly || phone.ConfirmationSource!=ConfirmationSources.TestClient || phone.DeviceId!=Protocol.Fingerprint(phone.PublicKey))throw new ArgumentException("Explicit VM phone enrollment required");
         using var key=Protocol.ReadPublicKey(phone.PublicKey);publicKey=WindowsGrantWire.ExportNativePublicKey(key);
         this.pc=pc;this.phone=phone;this.exchange=exchange;this.session=session;this.current=current;
         this.wall=wall??(()=>DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());this.mono=mono??(()=>Environment.TickCount64);
+        this.useFreshLockRequest=useFreshLockRequest;
         startedMono=this.mono();expiresAt=checked(this.wall()/1000+1800);PcId=Protocol.Fingerprint(Protocol.ExportPublicKey(pc));
         control=new(options??new PresenceOptions{NearSeconds=1},session){Enabled=autoLock};control.SelectInputMode(ProximityInputMode.FixedPhoneBandConnection);
     }
     public void Revoke(){lock(gate){revoked=true;ResetArrival();control.Reset("fixed-phone-revoked");}}
     public void RetryRequest(){lock(gate){ResetArrival();}}
-    private void ResetArrival(){arrivalHandled=submitted=false;renewalBody=previousNative=readyNative=null;}
+    private void ClearRequest(){arrivalHandled=submitted=directRequest=replacementPending=false;renewalBody=previousNative=readyNative=null;}
+    private void ResetArrival(){ClearRequest();freshLockEligible=false;fastWaitUntil=0;replacementRecoveries=0;}
+    private void ObserveSession(bool? locked,bool previousEvidenceFresh)
+    {
+        // Check the old evidence before a new report or lock edge can inherit it.
+        control.Tick(mono()/1000d,Fresh);
+        if(locked!=lastLocked){
+            bool keep=lastLocked==false && locked==true && previousEvidenceFresh && bandConnected==true && control.Presence.State==PresenceState.Near;
+            bool fast=keep && useFreshLockRequest && lastUnlockedWall!=long.MinValue && exchange.Binding!=null;
+            lastLocked=locked;control.SetSession(locked,keep);ResetArrival();
+            if(fast){freshLockEligible=true;fastWaitUntil=mono()+1000;}
+        }
+        if(locked==false)lastUnlockedWall=wall();
+    }
     private bool Current()
     {
         long w=wall(),m=mono();
@@ -70,7 +91,7 @@ public sealed class FixedPhoneChannel
     private void Synchronize()
     {
         bool? locked=session.IsLocked();
-        if(locked!=lastLocked){bool keep=lastLocked==false && locked==true && Fresh && bandConnected==true;lastLocked=locked;control.SetSession(locked,keep);ResetArrival();}
+        ObserveSession(locked,Fresh && bandConnected==true);
         control.Tick(mono()/1000d,Fresh);
         if(control.Presence.State==PresenceState.Far)ResetArrival();
         // Unknown/Uncertain suspends submission through Ready(), but is not a new
@@ -99,12 +120,17 @@ public sealed class FixedPhoneChannel
             if(bandHash!=null && bandHash!=p.BandHash){Revoke();return new(false,false,"fixed-phone-band-changed");}
             bool previousEvidenceFresh=Fresh && bandConnected==true;bandHash=p.BandHash;sequence=p.Sequence;reports++;bandConnected=p.Connected;
             freshUntil=mono()+Math.Clamp(p.ObservedAtMilliseconds+10000-now,0,10000);
-            bool? locked=session.IsLocked();if(locked!=lastLocked){bool keep=lastLocked==false && locked==true && previousEvidenceFresh && bandConnected==true;lastLocked=locked;control.SetSession(locked,keep);ResetArrival();}
+            ObserveSession(session.IsLocked(),previousEvidenceFresh);
             control.ObserveBandConnection(p.Connected,mono()/1000d,Fresh);
             if(control.Presence.State==PresenceState.Far)ResetArrival();
+            if(arrivalHandled)Ready();
+            RecoverReplacement();
             if(control.CanRequestConfirmation && !arrivalHandled){
-                renewalBody=exchange.CreateRequestRenewal();WindowsRequestRenewalWire.Read(renewalBody);
-                previousNative=exchange.ReadCurrentChallenge();arrivalHandled=true;submitted=false;readyNative=null;
+                bool wait=false;
+                if(!TryFreshLockRequest(out wait) && !wait){
+                    renewalBody=exchange.CreateRequestRenewal();WindowsRequestRenewalWire.Read(renewalBody);
+                    previousNative=exchange.ReadCurrentChallenge();arrivalHandled=true;submitted=false;readyNative=null;freshLockEligible=false;
+                }
             }
             RequestRenewalPrompt? prompt=null;
             if(renewalBody!=null && !submitted && WindowsRequestRenewalWire.IsCurrent(WindowsRequestRenewalWire.Read(renewalBody),WindowsGrantRelayWire.FileTimeMilliseconds(now))){
@@ -113,6 +139,33 @@ public sealed class FixedPhoneChannel
             }
             bool ready=Ready();return new(true,ready,"fixed-phone-state-accepted",prompt,nativeState);
         }
+    }
+    private bool TryFreshLockRequest(out bool wait)
+    {
+        wait=false;if(!freshLockEligible)return false;
+        var native=exchange.ReadCurrentChallenge();var binding=exchange.Binding;
+        if(native!=null && binding!=null){
+            var c=WindowsGrantWire.ReadChallenge(native);ulong now=WindowsGrantRelayWire.FileTimeMilliseconds(wall());
+            if(c.UserSid==binding.UserSid && c.WindowsSessionId==binding.WindowsSessionId &&
+                c.IssuedFileTimeMilliseconds>WindowsGrantRelayWire.FileTimeMilliseconds(lastUnlockedWall) &&
+                WindowsGrantWire.IsCurrent(c,now) && c.ExpiresFileTimeMilliseconds-now>=10000){
+                readyNative=native.ToArray();directRequest=arrivalHandled=true;freshLockEligible=false;nativeState="ready-direct";return true;
+            }
+        }
+        wait=mono()<fastWaitUntil;if(wait)nativeState="waiting-first-native";return false;
+    }
+    private void RecoverReplacement()
+    {
+        if(!replacementPending || !control.CanRequestConfirmation)return;
+        if(replacementRecoveries>=MaxReplacementRecoveries){nativeState="native-replacement-limit";return;}
+        var native=exchange.ReadCurrentChallenge();if(native==null)return;
+        var c=WindowsGrantWire.ReadChallenge(native);var binding=exchange.Binding;
+        if(binding==null && renewalBody!=null){var r=WindowsRequestRenewalWire.Read(renewalBody);binding=new(r.UserSid,r.WindowsSessionId);}
+        if(binding==null || c.UserSid!=binding.UserSid || c.WindowsSessionId!=binding.WindowsSessionId ||
+            !WindowsGrantWire.IsCurrent(c,WindowsGrantRelayWire.FileTimeMilliseconds(wall())))return;
+        replacementRecoveries++;ClearRequest();freshLockEligible=false;
+        // A replacement requires a new NEW proof and a new native WIN challenge.
+        // The phone invalidates its old notification on the accepted renewal count.
     }
     private bool Ready()
     {
@@ -123,15 +176,25 @@ public sealed class FixedPhoneChannel
     {
         if(!Fresh){nativeState="state-stale";return false;}
         if(!control.CanRequestConfirmation){nativeState="range-or-session-unconfirmed";return false;}
-        if(!submitted || renewalBody==null){nativeState="renewal-not-submitted";return false;}
+        if(replacementPending){nativeState=replacementRecoveries>=MaxReplacementRecoveries?"native-replacement-limit":"native-replaced";return false;}
+        if(!directRequest && (!submitted || renewalBody==null)){nativeState=freshLockEligible?"waiting-first-native":"renewal-not-submitted";return false;}
         var native=exchange.ReadCurrentChallenge();
         if(native==null){nativeState="native-challenge-unavailable";return false;}
-        var challenge=WindowsGrantWire.ReadChallenge(native);var renewal=WindowsRequestRenewalWire.Read(renewalBody);
-        if(challenge.UserSid!=renewal.UserSid || challenge.WindowsSessionId!=renewal.WindowsSessionId){nativeState="native-context-mismatch";return false;}
-        if(challenge.IssuedFileTimeMilliseconds<renewal.IssuedFileTimeMilliseconds){nativeState="native-before-renewal";return false;}
+        var challenge=WindowsGrantWire.ReadChallenge(native);
+        if(directRequest){
+            var binding=exchange.Binding;
+            if(binding==null || challenge.UserSid!=binding.UserSid || challenge.WindowsSessionId!=binding.WindowsSessionId ||
+                challenge.IssuedFileTimeMilliseconds<=WindowsGrantRelayWire.FileTimeMilliseconds(lastUnlockedWall)){nativeState="native-context-mismatch";return false;}
+        }else{
+            var renewal=WindowsRequestRenewalWire.Read(renewalBody!);
+            if(challenge.UserSid!=renewal.UserSid || challenge.WindowsSessionId!=renewal.WindowsSessionId){nativeState="native-context-mismatch";return false;}
+            if(challenge.IssuedFileTimeMilliseconds<renewal.IssuedFileTimeMilliseconds){nativeState="native-before-renewal";return false;}
+        }
         if(!WindowsGrantWire.IsCurrent(challenge,WindowsGrantRelayWire.FileTimeMilliseconds(wall()))){nativeState="native-expired";return false;}
         if(previousNative!=null && native.AsSpan().SequenceEqual(previousNative)){nativeState="native-unchanged";return false;}
-        readyNative??=native.ToArray();bool same=native.AsSpan().SequenceEqual(readyNative);nativeState=same?"ready":"native-replaced";return same;
+        readyNative??=native.ToArray();bool same=native.AsSpan().SequenceEqual(readyNative);
+        if(!same)replacementPending=true;
+        nativeState=same?(directRequest?"ready-direct":"ready"):(replacementRecoveries>=MaxReplacementRecoveries?"native-replacement-limit":"native-replaced");return same;
     }
     public bool CanSubmit {get{lock(gate){if(!Current())return false;Synchronize();return Ready();}}}
     public FixedPhoneResult Renew(RequestRenewalDecision p)
@@ -150,6 +213,6 @@ public sealed class FixedPhoneChannel
     }
     public FixedPhoneSnapshot Snapshot
     {
-        get{lock(gate){if(!Current())return new(null,false,PresenceState.Unknown,reports,renewals,false,true,"revoked");Synchronize();bool ready=Ready();return new(Fresh?bandConnected:null,Fresh,control.Presence.State,reports,renewals,ready,revoked,nativeState);}}
+        get{lock(gate){if(!Current())return new(null,false,PresenceState.Unknown,reports,renewals,false,true,"revoked");Synchronize();bool ready=Ready();return new(Fresh?bandConnected:null,Fresh,control.Presence.State,reports,renewals,ready,revoked,nativeState,directRequest,replacementRecoveries);}}
     }
 }

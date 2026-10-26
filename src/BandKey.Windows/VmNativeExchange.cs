@@ -65,6 +65,7 @@ public sealed class WindowsGrantDirectoryExchange : IWindowsGrantExchange, IWind
     private readonly uint session;
     private readonly Func<bool> current;
     private readonly Func<ulong> now;
+    public WindowsRequestBinding Binding=>new(sid,session);
     public WindowsGrantDirectoryExchange(string directory, string sid, uint session, Func<bool> current, Func<ulong>? now = null)
     { root = Path.GetFullPath(directory); this.sid = sid; this.session = session; this.current = current; this.now = now ?? (() => WindowsGrantRelayWire.FileTimeMilliseconds(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())); }
     private void CheckDirectory()
@@ -78,7 +79,7 @@ public sealed class WindowsGrantDirectoryExchange : IWindowsGrantExchange, IWind
     private static byte[] ReadBody(string path)
     {
         if ((File.GetAttributes(path) & (FileAttributes.ReparsePoint | FileAttributes.Directory)) != 0) throw new IOException("Unexpected exchange entry");
-        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read|FileShare.Delete);
         if (stream.Length != WindowsGrantWire.ChallengeSize) throw new IOException("Native request size");
         var body = new byte[WindowsGrantWire.ChallengeSize]; stream.ReadExactly(body); return body;
     }

@@ -7,6 +7,9 @@ import java.security.MessageDigest;
 
 /** Only creates request-renewal signatures. Unlock approval remains in VmWearSession's real button callback. */
 final class VmFixedPhoneClient {
+    private static final long CONNECTED_INTERVAL_MS=3000,OTHER_INTERVAL_MS=3000;
+    private final RetrySchedule retries=new RetrySchedule();
+    private boolean linkUnavailable;
     private final VmRelayClient relay;private final String bandHash;
     private JSONObject context;private String lastRenewalBody;private Boolean observedConnection;private boolean sourceObserved;private long sequence,lastAttempt=-10000,probeUntil,probeAt;
     private volatile long lastSuccess=-10000;
@@ -18,6 +21,7 @@ final class VmFixedPhoneClient {
     private volatile String nativeState="not-observed";
     org.json.JSONObject report()throws org.json.JSONException{
         return new JSONObject().put("connectedReports",connectedReports).put("disconnectedReports",disconnectedReports).put("unknownReports",unknownReports)
+            .put("connectedStateIntervalMilliseconds",CONNECTED_INTERVAL_MS).put("otherStateIntervalMilliseconds",OTHER_INTERVAL_MS)
             .put("inlinePromptResponses",inlinePrompts).put("maxReportGapMilliseconds",maxReportGap).put("nativeState",nativeState).put("ready",ready());
     }
     VmFixedPhoneClient(VmRelayClient relay,String uuid)throws Exception{
@@ -26,6 +30,7 @@ final class VmFixedPhoneClient {
     boolean ready(){long now=SystemClock.elapsedRealtime();return !stopped && ready && now>=lastSuccess && now-lastSuccess<9000;}
     String status(){return status;}int reports(){return reports;}int renewals(){return renewals;}
     void stop(){stopped=true;ready=false;offeredPrompt=null;}
+    void onBleDisconnected(){if(!linkUnavailable){linkUnavailable=true;ready=false;relay.transport.retireForReconnect();}}
     JSONObject takePrompt()throws Exception{
         JSONObject value=offeredPrompt;offeredPrompt=null;if(stopped || !ready() || value==null)return null;
         relay.validate(value);return value;
@@ -50,8 +55,12 @@ final class VmFixedPhoneClient {
     }
     void pulse(WearableConnectionSource.Sample sample,boolean wantPrompt){
         long now=SystemClock.elapsedRealtime();
+        if(linkUnavailable){linkUnavailable=false;retries.succeeded();}
         boolean changed=!sourceObserved || !java.util.Objects.equals(observedConnection,sample.connected);
-        if(stopped || !changed && now-lastAttempt<3000 && !(now>=probeAt && now<probeUntil))return;
+        if(changed)retries.succeeded();
+        if(!retries.ready(now))return;
+        long interval=Boolean.TRUE.equals(sample.connected)?CONNECTED_INTERVAL_MS:OTHER_INTERVAL_MS;
+        if(stopped || !changed && now-lastAttempt<interval && !(now>=probeAt && now<probeUntil))return;
         sourceObserved=true;observedConnection=sample.connected;lastAttempt=now;ready=false;
         if(changed && Boolean.TRUE.equals(sample.connected)){probeUntil=now+2200;probeAt=now+500;}
         else if(!Boolean.TRUE.equals(sample.connected)){probeUntil=0;}
@@ -86,7 +95,7 @@ final class VmFixedPhoneClient {
                 acceptPrompt(result);if(!renewal.getString("body").equals(lastRenewalBody)){renewals++;lastRenewalBody=renewal.getString("body");}nativeState=result.optString("nativeState","not-observed");ready=result.optBoolean("canPoll");
             }
             if(ready){probeUntil=0;}else if(pending instanceof JSONObject){probeUntil=SystemClock.elapsedRealtime()+2000;}if(probeUntil>0)probeAt=SystemClock.elapsedRealtime()+250;
-            lastSuccess=SystemClock.elapsedRealtime();status=sample.connected==null?"手环连接状态未知":sample.connected?(ready?"手环在连接范围内，等待新请求":"手环已连接，等待原生新请求"):"手环已断开，等待返回";
-        }catch(Exception error){context=null;ready=false;offeredPrompt=null;status="固定手机通道："+error.getClass().getSimpleName();}
+            retries.succeeded();lastSuccess=SystemClock.elapsedRealtime();status=sample.connected==null?"手环连接状态未知":sample.connected?(ready?"手环在连接范围内，等待新请求":"手环已连接，等待原生新请求"):"手环已断开，等待返回";
+        }catch(Exception error){retries.failed(SystemClock.elapsedRealtime());context=null;ready=false;offeredPrompt=null;status="固定手机通道："+error.getClass().getSimpleName();}
     }
 }

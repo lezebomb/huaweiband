@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][string]$BaselineDirectory)
+param([Parameter(Mandatory=$true)][string]$BaselineDirectory,[string]$ReadMeDocument='docs/fixed-phone-fast-0.8.0.md',[string]$Version='0.8.0',[int]$MinimumCoreChecks=151,[int]$MinimumWindowsChecks=88)
 $ErrorActionPreference='Stop'
 $bandKeyRoot=Split-Path -Parent $PSScriptRoot
 $bandKeyPublished=Join-Path $bandKeyRoot 'artifacts/BandKey-win-x64'
@@ -7,7 +7,7 @@ foreach($bandKeyRuntime in @('BandKey.runtimeconfig.json','coreclr.dll','System.
     if((Get-FileHash -LiteralPath (Join-Path $bandKeyPublished $bandKeyRuntime)).Hash -ne
        (Get-FileHash -LiteralPath (Join-Path $bandKeyBaseline $bandKeyRuntime)).Hash){throw ('Runtime differs; use a full relay package: '+$bandKeyRuntime)}
 }
-foreach($bandKeyCheck in @(@{name='core-tests.json';count=151},@{name='windows-tests.json';count=88})){
+foreach($bandKeyCheck in @(@{name='core-tests.json';count=$MinimumCoreChecks},@{name='windows-tests.json';count=$MinimumWindowsChecks})){
     $bandKeyReport=Get-Content -LiteralPath (Join-Path $bandKeyRoot ('artifacts/'+$bandKeyCheck.name)) -Raw|ConvertFrom-Json
     if($bandKeyReport.failed -ne 0 -or $bandKeyReport.passed -lt $bandKeyCheck.count){throw 'Required software checks missing'}
 }
@@ -17,11 +17,11 @@ New-Item -ItemType Directory -Path $bandKeyPatch | Out-Null
 foreach($bandKeyName in @('BandKey.exe','BandKey.dll','BandKey.Core.dll','BandKey.deps.json','BandKey.runtimeconfig.json')){
     Copy-Item -LiteralPath (Join-Path $bandKeyPublished $bandKeyName) -Destination $bandKeyPatch
 }
-Copy-Item -LiteralPath (Join-Path $bandKeyRoot 'docs/fixed-phone-fast-0.8.0.md') -Destination (Join-Path $bandKeyOutput 'READ-ME-FIRST.txt')
+Copy-Item -LiteralPath (Join-Path $bandKeyRoot $ReadMeDocument) -Destination (Join-Path $bandKeyOutput 'READ-ME-FIRST.txt')
 $bandKeyFiles=@(Get-ChildItem -LiteralPath $bandKeyOutput -Recurse -File|Sort-Object FullName|ForEach-Object{
     [ordered]@{name=([IO.Path]::GetRelativePath($bandKeyOutput,$_.FullName)-replace '\\','/');bytes=$_.Length;sha256=(Get-FileHash -LiteralPath $_.FullName).Hash.ToLowerInvariant()}
 })
-[ordered]@{schema='bandkey.relay-patch.v1';version='0.8.0';baseline='complete 0.7 relay directory';runtimeHashesMatched=4;loginInstallerIncluded=$false;hostRegistered=$false;guestTested=$false;files=$bandKeyFiles}|
+[ordered]@{schema='bandkey.relay-patch.v1';version=$Version;baseline='complete relay directory with the four matching runtime files';runtimeHashesMatched=4;loginInstallerIncluded=$false;hostRegistered=$false;guestTested=$false;files=$bandKeyFiles}|
     ConvertTo-Json -Depth 5|Set-Content -LiteralPath (Join-Path $bandKeyOutput 'manifest.json') -Encoding utf8
 & (Join-Path $PSScriptRoot 'new-lab-data-iso.ps1') -SourceDirectory $bandKeyOutput
 $bandKeyIso=$bandKeyOutput+'.iso'
