@@ -52,7 +52,7 @@ public final class WearTestActivity extends Activity {
         final PromptGate current=gate;
         new WearableChannel(this).prompt(uuid,"BandKey 按钮测试","仅测试，不解锁电脑 · 30 秒内有效",current,ticket,()->active && gate==current,
             approved->runOnUiThread(()->{if(!active || gate!=current || !current.canSubmit(ticket))return;active=false;display.removeCallbacks(expire);send.setEnabled(true);record(approved?"confirmed":"denied",approved?"已收到真实手环确认回调。此测试未签名，也未解锁电脑。":"已收到真实手环拒绝回调。电脑认证未被调用。");}),
-            value->runOnUiThread(()->{if(!active || gate!=current)return;record("sdk-status",value);if(!current.isActive(ticket)){active=false;display.removeCallbacks(expire);send.setEnabled(true);}}));
+            value->runOnUiThread(()->{if(!active || gate!=current)return;record("sdk-status",value);if(!current.isActive(ticket) && !current.canSubmit(ticket)){active=false;display.removeCallbacks(expire);send.setEnabled(true);}}));
         display.postDelayed(expire,Math.max(1,deadline-SystemClock.elapsedRealtime()));
     }
     private void record(String stage,String message){

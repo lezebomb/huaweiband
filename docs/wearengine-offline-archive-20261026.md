@@ -27,7 +27,7 @@ android/settings.gradle新增可选Gradle属性bandKeyWearEngineMirror。指定�
 
 在源码副本的android目录运行：
 
-    gradlew.bat --offline -PbandKeyWearEngineMirror=归档完整路径/maven assembleDebug
+    ./gradlew.bat --offline '-PbandKeyWearEngineMirror=归档完整路径/maven' assembleDebug
 
 还需JDK21、Android SDK API36／build-tools36.0.0，以及Gradle9.3.1、AGP9.1.0和其余构建缓存。归档不包含整套JDK／Android SDK／Gradle缓存，不能保证全新电脑零安装构建。本机验证若成功，只证明现有工具链在禁用Gradle网络解析时能使用归档SDK完成构建。
 
