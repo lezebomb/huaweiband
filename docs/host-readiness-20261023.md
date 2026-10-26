@@ -37,3 +37,7 @@
 - [SspiDecryptAuthIdentityEx](https://learn.microsoft.com/en-us/windows/win32/api/sspi/nf-sspi-sspidecryptauthidentityex)：同一登录会话解密选项。
 - [USER_INFO_24](https://learn.microsoft.com/en-us/windows/win32/api/lmaccess/ns-lmaccess-user_info_24)：账户身份提供方查询。
 - [CheckAvailabilityAsync](https://learn.microsoft.com/en-us/uwp/api/windows.security.credentials.ui.userconsentverifier.checkavailabilityasync)：Hello 可用性检查。
+
+## 2026-10-26后续进度
+
+用户随后完成真实主机微软账户密码核验、SID匹配及保护格式检查，原始结果仅本地保存。新增部署恢复后端和微软账户专用VM安装入口，原生236项、账户策略11项及静态分析通过；本阶段未请求真实密码或安装主机组件。实际MSA LogonUI与恢复仍待验收，见[最新后端记录](deployment-backend-20261026.md)。

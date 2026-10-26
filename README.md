@@ -6,7 +6,7 @@
 
 两种接近模式：手机固定在电脑旁时，签名上报手环与手机的连接状态；手机随身时，可用手机与电脑的BLE信号，当前仅完成后端接口。电脑扫描尚未找到可归属的手环广播，Wear Engine公开接口没有提供额外广播或RSSI控制。两种模式都要求真实手环明确确认，不自动批准。见[场景与边界](docs/proximity-modes.md)。
 
-正式主机尚未安装登录组件。主机是MicrosoftAccount／Hello，现有成功结果来自VM本地账户；微软账户后端仅完成候选代码、合成检查及静态分析，真实MSA登录、长期BLE稳定性与恢复路径仍待验收。见[认证后端](docs/vm-account-backend-20261025.md)、[主机安装缺口](docs/host-readiness-20261023.md)。
+正式主机尚未安装登录组件。主机MicrosoftAccount密码已由用户本地输入，经Windows核验、SID一致及登录／解锁保护格式检查通过；实际LogonUI解锁、长期BLE与恢复路径仍待验收。安装／卸载后端已加入先禁用后清理、中断进度和并发保护，原生236项、账户策略11项及静态分析通过。见[后端进展与边界](docs/deployment-backend-20261026.md)、[后续VM步骤](docs/host-account-rollout-20261025.md)。
 
 此前修复记录：[0.5.1刷新循环](docs/fixed-phone-recovery-0.5.1.md)、[0.5.2通知轮次](docs/wear-notification-rounds-0.5.2.md)、[0.6连接复用](docs/fixed-phone-latency-0.6.0.md)、[0.7附带挑战](docs/fixed-phone-inline-0.7.0.md)。0.8仅替换中继5个文件并保留数据更新手机，未更改原生登录组件或手环配对。
 
@@ -38,7 +38,7 @@
 | 电脑同时作为第二个华为协议主机 | 技术上仍存在障碍 | 未拿到已有配对会话的合法认证通道；未重配或重置手环；并发连接能力未知 |
 | Windows 真实身份认证/解锁 | VM 本地账户真实手环 USB／BLE 模式获用户确认 | 真实手环确认后自动回桌面，无需手动密码／切换选项；工具观察交付，桌面由用户确认，未独立采集 WTS。宿主机 **MicrosoftAccount**、Hello 尚未验证 |
 | 微软 V2 Credential Provider 参考接口 | 宿主机接口验证通过，未验证登录 | 控制台和图形入口各 42/42，两个失败场景通过；已生成只读来宾测试 ISO，未注册、未提交系统认证，测试身份为虚构用户 |
-| 独立 BandKey VM Provider | 原生221项及静态分析通过；已有VM本地账户实测 | 含用途隔离的请求刷新；0.8未更改原生DLL。真实MSA登录、正式主机部署及完整恢复路径尚未验收 |
+| 独立 BandKey VM Provider | 原生236项及静态分析通过；已有VM本地账户实测 | 含用途隔离的请求刷新；0.8未更改原生DLL。真实MSA登录、正式主机部署及完整恢复路径尚未验收 |
 | Android/Java/C#/CNG 原生授权互通 | 软件及实机 USB / BLE 验签通过 | .NET 验原生 15/15、原生验 .NET 2/2、Java 编码 26/26、.NET 与 CNG 各验 Java 2/2；一加 USB、Mate60 USB / BLE Keystore 真实签名及 CNG 篡改拒绝，非账户认证 |
 | 手机手动确认 → VM 原生认证 | Mate60 USB / BLE 实机联调获用户确认 | 工具代点前台测试按钮，真实 Keystore 签名；实际返回桌面由用户确认；非手环回调，不验证距离、原生过期或长期后台 |
 | Windows 隔离测试环境 | 来宾参考接口 42/42，基线快照已核实 | 用户截图确认 build 26300 / 26H2；“快照 1”存在，恢复未测；Ubuntu 配置哈希未变 |

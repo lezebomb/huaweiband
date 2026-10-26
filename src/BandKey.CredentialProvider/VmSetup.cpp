@@ -12,11 +12,13 @@
 #include <vector>
 #include <array>
 #include <stdexcept>
+#include <exception>
 #include <wincred.h>
 #include <strsafe.h>
 #include <commdlg.h>
 #include "SignedGrant.h"
 #include "LabCleanup.h"
+#include "DeploymentLifecycle.h"
 #include "LabPolicy.h"
 #include "ProviderHash.h"
 #pragma comment(linker, "/manifestdependency:\"type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='amd64' publicKeyToken='6595b64144ccf1df' language='*'\"")
@@ -48,7 +50,23 @@ static void EnabledValue(HKEY key, DWORD value) {
 }
 static DWORD DeleteOwnedKey(const wchar_t* path) {
     auto code = RegDeleteTreeW(HKEY_LOCAL_MACHINE, path);
-    return code == ERROR_FILE_NOT_FOUND ? ERROR_SUCCESS : code;
+    return MissingDeploymentKeyIsSuccess(code);
+}
+static DWORD DisableOwnedPolicy() {
+    Key config;
+    auto code = RegOpenKeyExW(HKEY_LOCAL_MACHINE, BandKeyLabConfig, 0, KEY_SET_VALUE | KEY_WOW64_64KEY, &config.value);
+    if (code != ERROR_SUCCESS) return MissingDeploymentKeyIsSuccess(code);
+    const DWORD disabled = 0;
+    return MissingDeploymentKeyIsSuccess(RegSetValueExW(config.value, L"Enabled", 0, REG_DWORD,
+        reinterpret_cast<const BYTE*>(&disabled), sizeof(disabled)));
+}
+static DeploymentRevocation RevokeOwnedRegistration(DeploymentOwnedKeys owned) {
+    return RevokeDeployment(owned, DisableOwnedPolicy, [](DeploymentKey key) {
+        return DeleteOwnedKey(key == DeploymentKey::Provider ? BandKeyLabRegistration : key == DeploymentKey::Policy ? BandKeyLabConfig : BandKeyLabCom);
+    });
+}
+static void RecordRecoveryRequired(const std::filesystem::path& directory, DWORD error) noexcept {
+    try { WriteDeploymentProgress(directory, DeploymentPhase::RecoveryRequired, error); } catch (...) {}
 }
 static std::filesystem::path ExecutablePath() {
     std::vector<wchar_t> path(32768); DWORD n = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
@@ -111,7 +129,7 @@ static void EnrollVault(const std::filesystem::path& directory, const std::wstri
     wchar_t user[513]{}; NativeRequire(SUCCEEDED(StringCchCopyW(user, ARRAYSIZE(user), account.c_str())), "account-name-too-long");
     SecretBuffer<257> password; BOOL save = FALSE;
     CREDUI_INFOW info{}; info.cbSize = sizeof(info); info.pszCaptionText = L"BandKey VM encrypted credential enrollment";
-    info.pszMessageText = L"Enter the password for the displayed VM account, not its Windows Hello PIN. Windows must verify it and return this exact account SID before anything is saved. The VM-only vault is protected for SYSTEM/administrators. Do not use a personal Microsoft account or a host password in this lab.";
+    info.pszMessageText = L"Enter the password for the displayed VM account, not its Windows Hello PIN. Windows must verify it and return this exact account SID before anything is saved. The VM-only vault is protected for SYSTEM/administrators. Use only the account you explicitly selected for this isolated VM test; do not send its password through chat or commands.";
     DWORD result = CredUIPromptForCredentialsW(&info, L"BandKey VM lab", nullptr, 0, user, ARRAYSIZE(user), password.data.data(), static_cast<ULONG>(password.data.size()), &save,
         CREDUI_FLAGS_GENERIC_CREDENTIALS | CREDUI_FLAGS_ALWAYS_SHOW_UI | CREDUI_FLAGS_DO_NOT_PERSIST | CREDUI_FLAGS_KEEP_USERNAME);
     Require(result == NO_ERROR, L"Enrollment cancelled or unavailable; no credential was saved", result);
@@ -204,12 +222,13 @@ static std::vector<BYTE> ReadPhonePublicKey() {
     NativeRequire(CryptHashCertificate2(BCRYPT_SHA256_ALGORITHM, 0, nullptr, bytes.data(), static_cast<DWORD>(bytes.size()), digest, &digestSize) && digestSize == sizeof(digest), "phone-key-fingerprint-failed");
     constexpr wchar_t hex[] = L"0123456789abcdef"; std::wstring wide;
     for (BYTE value : digest) { wide += hex[value >> 4]; wide += hex[value & 15]; }
-    auto message = L"Compare this full native-public-key SHA-256 with the phone VM lab screen:\n\n" + wide + L"\n\nThis is a phone TEST key for this isolated VM, not a Wear Engine button. Continue only if the fingerprints match.";
+    auto message = L"Compare this full native-public-key SHA-256 with the phone VM lab screen:\n\n" + wide + L"\n\nThis is a phone TEST key for this isolated VM. The key alone does not prove a band button action. Continue only if the fingerprints match.";
     Require(MessageBoxW(nullptr, message.c_str(), L"BandKey VM phone key", MB_OKCANCEL | MB_ICONWARNING) == IDOK, L"Phone key enrollment cancelled");
     return bytes;
 }
-static void Install(bool phone) {
+static void Install(bool phone, bool microsoftOnly = false) {
     std::wstring account; VmAccountKind accountKind = VmAccountKind::Local; auto sid = CurrentVmSid(&account, &accountKind); auto directory = InstallDirectory(); auto destination = directory / L"BandKey.CredentialProvider.dll";
+    Require(!microsoftOnly || accountKind == VmAccountKind::MicrosoftAccount, L"Sign into the Microsoft-connected Windows user inside this VM first. This option refuses local accounts; no installation was performed.");
     auto source = ExecutablePath().parent_path() / destination.filename();
     Require(FileHash(source) == BandKeyExpectedProviderHash, L"Provider DLL hash does not match this setup build");
     Require(!KeyExists(BandKeyLabConfig) && !KeyExists(BandKeyLabCom) && !KeyExists(BandKeyLabRegistration), L"Existing lab registration found; remove it first", ERROR_ALREADY_EXISTS);
@@ -219,12 +238,15 @@ static void Install(bool phone) {
     bool configCreated = false, comCreated = false, registrationCreated = false, fileCopied = false;
     try {
         CheckOrdinaryDirectory(directory); ProtectDirectory(directory);
+        WriteDeploymentProgress(directory, DeploymentPhase::DirectoryPrepared);
         BOOL copied = CopyFileW(source.c_str(), destination.c_str(), TRUE);
         Require(copied != FALSE, L"Cannot copy provider DLL", copied ? ERROR_SUCCESS : GetLastError()); fileCopied = true;
         auto attributeError = PrepareCopiedLabFile(destination);
         Require(attributeError == ERROR_SUCCESS, L"Cannot normalize the copied DLL attributes", attributeError);
         Require(FileHash(destination) == BandKeyExpectedProviderHash, L"Copied DLL hash mismatch");
+        WriteDeploymentProgress(directory, DeploymentPhase::PayloadVerified);
         EnrollVault(directory, sid, account, publicKey, phone);
+        WriteDeploymentProgress(directory, DeploymentPhase::CredentialEnrolled);
         Key config; NewKey(BandKeyLabConfig, config); configCreated = true;
         EnabledValue(config.value, 0); TextValue(config.value, L"TargetSid", sid);
         TextValue(config.value, L"QualifiedAccount", account);
@@ -242,38 +264,51 @@ static void Install(bool phone) {
         Require(setting == ERROR_SUCCESS, L"Cannot bind signer kind", setting);
         setting = RegSetValueExW(config.value, L"LabPublicKey", 0, REG_BINARY, publicKey.data(), static_cast<DWORD>(publicKey.size()));
         Require(setting == ERROR_SUCCESS, L"Cannot pin VM simulation key", setting);
+        WriteDeploymentProgress(directory, DeploymentPhase::PolicyWritten);
         Key com; NewKey(BandKeyLabCom, com); comCreated = true; TextValue(com.value, nullptr, L"BandKey VM credential test");
         Key server; DWORD disposition = 0;
         auto code = RegCreateKeyExW(com.value, L"InprocServer32", 0, nullptr, 0, KEY_WRITE | KEY_WOW64_64KEY, nullptr, &server.value, &disposition);
         Require(code == ERROR_SUCCESS, L"Cannot register lab COM server", code);
         TextValue(server.value, nullptr, destination.wstring()); TextValue(server.value, L"ThreadingModel", L"Apartment");
+        WriteDeploymentProgress(directory, DeploymentPhase::ComRegistered);
         Key registration; NewKey(BandKeyLabRegistration, registration); registrationCreated = true;
         TextValue(registration.value, nullptr, L"BandKey VM credential test");
-        EnabledValue(config.value, 1); // Last operation: partial installs cannot expose a tile.
+        WriteDeploymentProgress(directory, DeploymentPhase::ReadyToActivate);
+        EnabledValue(config.value, 1); // Last operation; the journal is not activation authority.
     } catch (...) {
-        if (registrationCreated) DeleteOwnedKey(BandKeyLabRegistration);
-        if (configCreated) DeleteOwnedKey(BandKeyLabConfig);
-        if (comCreated) DeleteOwnedKey(BandKeyLabCom);
-        try { LabCleanupResult cleanup; RemoveExperimentFiles(directory, cleanup); } catch (...) {}
-        if (fileCopied) RemoveOrdinaryLabFile(destination);
-        RemoveDirectoryW(directory.c_str()); throw;
+        const auto original = std::current_exception();
+        const auto revoke = RevokeOwnedRegistration({registrationCreated, configCreated, comCreated});
+        if (!revoke.Complete()) {
+            RecordRecoveryRequired(directory, revoke.firstError);
+            throw SetupFailure{L"Installation failed and registration rollback is incomplete. Run this setup's Remove before trying again; system sign-in options remain available.", revoke.firstError};
+        }
+        LabCleanupResult cleanup; RemoveExperimentFiles(directory, cleanup);
+        if (fileCopied) cleanup.File(destination);
+        if (cleanup.complete) { cleanup.File(directory / DeploymentTempName); cleanup.File(directory / DeploymentStateName); }
+        if (cleanup.complete) cleanup.Directory(directory);
+        if (!cleanup.complete) {
+            const auto error = cleanup.issues.front().error; RecordRecoveryRequired(directory, error);
+            throw SetupFailure{L"Installation failed. Registration was revoked, but file cleanup is incomplete; run this setup's Remove.", error};
+        }
+        std::rethrow_exception(original);
     }
 }
 static LabCleanupResult Remove() {
     // Only this lab's exact registry subtrees, fixed files and known message names.
-    DWORD firstError = ERROR_SUCCESS;
-    for (auto path : { BandKeyLabRegistration, BandKeyLabConfig, BandKeyLabCom }) {
-        auto code = DeleteOwnedKey(path); if (code && !firstError) firstError = code;
-    }
-    Require(firstError == ERROR_SUCCESS, L"Could not remove all lab registration; restore the baseline snapshot if necessary", firstError);
+    const auto revoke = RevokeOwnedRegistration({true, true, true});
+    if (!revoke.Complete()) { try { RecordRecoveryRequired(InstallDirectory(), revoke.firstError); } catch (...) {} }
+    Require(revoke.Complete(), L"Could not fully revoke the lab registration. Retry Remove or restore the VM baseline snapshot.", revoke.firstError);
     auto directory = InstallDirectory();
     LabCleanupResult result;
     NativeHandle directoryGuard;
     if (!CheckCleanupDirectory(directory, result, &directoryGuard)) return result;
+    try { WriteDeploymentProgress(directory, DeploymentPhase::Removing); } catch (...) {}
     RemoveExperimentFiles(directory, result);
     result.File(directory / L"BandKey.CredentialProvider.dll");
+    if (result.complete) { result.File(directory / DeploymentTempName); result.File(directory / DeploymentStateName); }
     CloseHandle(directoryGuard.value); directoryGuard.value = INVALID_HANDLE_VALUE;
-    result.Directory(directory);
+    if (result.complete) result.Directory(directory);
+    if (!result.complete) RecordRecoveryRequired(directory, result.issues.front().error);
     return result;
 }
 static std::wstring RemovalMessage(const LabCleanupResult& result) {
@@ -289,32 +324,70 @@ static std::wstring RemovalMessage(const LabCleanupResult& result) {
     text += L"\n\nUse this updated setup to retry. If it still fails, report this message; do not repeatedly restart without a sharing/lock error.";
     return text;
 }
+static bool WriteDeploymentStatus(const std::filesystem::path& output) {
+    const bool guest = IsSupportedVmwareGuest();
+    const bool provider = KeyExists(BandKeyLabRegistration);
+    bool policy = false, com = false, directoryExists = false, journalReadable = true, payloadMatched = false;
+    int enabled = -1; DWORD phase = 0, progressError = 0;
+    if (guest) {
+        policy = KeyExists(BandKeyLabConfig); com = KeyExists(BandKeyLabCom);
+        DWORD value = 0, bytes = sizeof(value);
+        const auto code = RegGetValueW(HKEY_LOCAL_MACHINE, BandKeyLabConfig, L"Enabled",
+            RRF_RT_REG_DWORD | RRF_SUBKEY_WOW6464KEY, nullptr, &value, &bytes);
+        if (code == ERROR_SUCCESS && value <= 1) enabled = static_cast<int>(value);
+        else if (!policy && MissingDeploymentKeyIsSuccess(code) == ERROR_SUCCESS) enabled = 0;
+        const auto directory = InstallDirectory();
+        const auto attributes = GetFileAttributesW(directory.c_str());
+        directoryExists = attributes != INVALID_FILE_ATTRIBUTES;
+        if (directoryExists) {
+            try {
+                CheckNoReparseDirectory(directory);
+                auto progress = ReadDeploymentProgress(directory);
+                if (progress) { phase = progress->phase; progressError = progress->error; }
+            } catch (...) { journalReadable = false; }
+            try { CheckNoReparseDirectory(directory); payloadMatched = FileHash(directory / L"BandKey.CredentialProvider.dll") == BandKeyExpectedProviderHash; }
+            catch (...) { payloadMatched = false; }
+        }
+    }
+    const bool healthy = provider && policy && com && enabled == 1 && directoryExists && payloadMatched;
+    const bool anything = provider || policy || com || directoryExists;
+    const bool recovery = guest && ((!healthy && anything) || !journalReadable ||
+        (phase != 0 && phase != static_cast<DWORD>(DeploymentPhase::ReadyToActivate)));
+    std::ofstream report(output);
+    report << "{\"schema\":\"bandkey.setup-preflight.v2\",\"vmGuardAccepted\":" << (guest ? "true" : "false")
+        << ",\"mutationPerformed\":false,\"supportedBuild\":26300,\"providerRegistered\":" << (provider ? "true" : "false")
+        << ",\"policyPresent\":" << (policy ? "true" : "false") << ",\"comPresent\":" << (com ? "true" : "false")
+        << ",\"policyEnabled\":" << (enabled < 0 ? "null" : enabled ? "true" : "false")
+        << ",\"journalInspected\":" << (guest ? "true" : "false") << ",\"journalReadable\":" << (journalReadable ? "true" : "false")
+        << ",\"deploymentRecoveryVersion\":1,\"deploymentPhase\":" << phase << ",\"deploymentError\":" << progressError
+        << ",\"payloadHashMatched\":" << (payloadMatched ? "true" : "false")
+        << ",\"recoveryRequired\":" << (recovery ? "true" : "false") << ",\"windowsAuthenticationSubmitted\":false}";
+    report.close(); return report.good();
+}
 int WINAPI wWinMain(_In_ HINSTANCE, _In_opt_ HINSTANCE, _In_ PWSTR, _In_ int) {
     int argc = 0; PWSTR* args = CommandLineToArgvW(GetCommandLineW(), &argc);
     if (!args) return 2;
     std::vector<std::wstring> arguments; for (int i = 0; i < argc; i++) arguments.emplace_back(args[i]); LocalFree(args);
     if (argc == 3 && arguments[1] == L"--check") {
         try {
-            std::ofstream report{std::filesystem::path(arguments[2])};
-            report << "{\"vmGuardAccepted\":" << (IsSupportedVmwareGuest() ? "true" : "false") << ",\"mutationPerformed\":false,\"supportedBuild\":26300,\"providerRegistered\":" << (KeyExists(BandKeyLabRegistration) ? "true" : "false") << '}';
-            report.close(); return report ? 0 : 1;
+            return WriteDeploymentStatus(arguments[2]) ? 0 : 1;
         } catch (...) { return 1; }
     }
     try {
         Require(IsSupportedVmwareGuest() && !GetSystemMetrics(SM_REMOTESESSION), L"This laboratory setup only supports the local VMware Windows 11 build 26300 guest. No changes were made.");
         std::wstring operation;
-        if (argc == 2 && (arguments[1] == L"--install" || arguments[1] == L"--install-phone" || arguments[1] == L"--remove")) operation = arguments[1];
+        if (argc == 2 && (arguments[1] == L"--install" || arguments[1] == L"--install-phone" || arguments[1] == L"--install-phone-msa" || arguments[1] == L"--remove")) operation = arguments[1];
         else {
             Require(argc == 1, L"Unsupported setup arguments");
-            const TASKDIALOG_BUTTON buttons[] = {{101, L"Install local simulation experiment\nUse the existing Arm confirmation client"}, {103, L"Install phone-confirmation VM experiment\nImport a phone-lab public key; no local signing key will be created"}, {102, L"Remove VM experiment\nRemove the lab vault, simulation key and provider; keep system sign-in options"}};
+            const TASKDIALOG_BUTTON buttons[] = {{101, L"Install local simulation experiment\nUse the existing Arm confirmation client"}, {103, L"Install phone-confirmation VM experiment\nImport a phone-lab public key; no local signing key will be created"}, {104, L"Install Microsoft-account phone test\nRequire a Microsoft-connected VM user; refuse local accounts"}, {102, L"Remove VM experiment\nRemove the lab vault, simulation key and provider; keep system sign-in options"}};
             TASKDIALOGCONFIG dialog = {}; dialog.cbSize = sizeof(dialog); dialog.dwFlags = TDF_USE_COMMAND_LINKS | TDF_ALLOW_DIALOG_CANCELLATION;
             dialog.dwCommonButtons = TDCBF_CANCEL_BUTTON; dialog.pszWindowTitle = L"BandKey VM lab setup";
-            dialog.pszMainInstruction = L"VM-only signed confirmation - lifecycle fix 2 with diagnostics";
-            dialog.pszContent = L"Keep a baseline snapshot and working system sign-in option. Enrollment verifies and encrypts this VM password. Choose a local simulation or separately enrolled phone TEST key; neither proves a real band action. Setup does not lock, sign out or reboot. Administrator approval is requested after choosing an action.";
+            dialog.pszMainInstruction = L"VM-only account authentication and phone confirmation";
+            dialog.pszContent = L"Keep a baseline snapshot and working system sign-in option. Enrollment verifies the selected local or Microsoft-connected VM account password and encrypts it for SYSTEM/administrators. Choose a local simulation or separately enrolled phone TEST key; neither proves a real band action. Setup does not lock, sign out or reboot. Administrator approval is requested after choosing an action.";
             dialog.cButtons = ARRAYSIZE(buttons); dialog.pButtons = buttons; int choice = IDCANCEL;
             Require(SUCCEEDED(TaskDialogIndirect(&dialog, &choice, nullptr, nullptr)), L"Cannot open setup dialog");
-            if (choice != 101 && choice != 102 && choice != 103) return 0;
-            operation = choice == 103 ? L"--install-phone" : (choice == 101 ? L"--install" : L"--remove");
+            if (choice != 101 && choice != 102 && choice != 103 && choice != 104) return 0;
+            operation = choice == 104 ? L"--install-phone-msa" : choice == 103 ? L"--install-phone" : (choice == 101 ? L"--install" : L"--remove");
             if (!IsAdmin()) {
                 auto executable = ExecutablePath(); SHELLEXECUTEINFOW start = {}; start.cbSize = sizeof(start);
                 start.lpVerb = L"runas"; start.lpFile = executable.c_str(); start.lpParameters = operation.c_str(); start.nShow = SW_SHOWNORMAL;
@@ -323,10 +396,12 @@ int WINAPI wWinMain(_In_ HINSTANCE, _In_opt_ HINSTANCE, _In_ PWSTR, _In_ int) {
             }
         }
         Require(IsAdmin(), L"Administrator approval is required for this action");
-        if (operation == L"--install" || operation == L"--install-phone") { bool phone = operation == L"--install-phone"; Install(phone); MessageBoxW(nullptr, phone ? L"Phone-confirmation VM experiment installed. Start BandKey.exe --vm-bridge from the lab disc and import the same phone public key. No local simulation signer exists; the phone test button must sign each request.\n\nThis phone path still needs guest/network testing. System sign-in options were preserved." : L"Signed-confirmation VM experiment installed. Start BandKey.VmConfirmation.exe from the lab disc. Arm one confirmation, then manually lock the VM within 10 seconds.\n\nKeep the system password sign-in option. To roll back, run this setup and choose Remove.", L"BandKey VM lab", MB_OK | MB_ICONINFORMATION); }
+        SetupOperationLock operationLock(L"Global\\BandKeyVmSetup-76B424B6-A72D-4E98-9DC1-485E37A5429C");
+        if (operation == L"--install" || operation == L"--install-phone" || operation == L"--install-phone-msa") { bool phone = operation != L"--install"; Install(phone, operation == L"--install-phone-msa"); MessageBoxW(nullptr, phone ? L"Phone-confirmation VM experiment installed. Start BandKey.exe --vm-bridge from the lab disc and import the same phone public key. No local simulation signer exists; the enrolled phone must sign each new request after explicit confirmation.\n\nAccount compatibility and desktop unlock must be checked in this VM. Keep its working system sign-in option and baseline snapshot." : L"Signed-confirmation VM experiment installed. Start BandKey.VmConfirmation.exe from the lab disc. Arm one confirmation, then manually lock the VM within 10 seconds.\n\nKeep the system password sign-in option. To roll back, run this setup and choose Remove.", L"BandKey VM lab", MB_OK | MB_ICONINFORMATION); }
         else { auto result = Remove(); auto text = RemovalMessage(result); MessageBoxW(nullptr, text.c_str(), L"BandKey VM lab - cleanup fix 1", MB_OK | (result.complete ? MB_ICONINFORMATION : MB_ICONWARNING)); if (!result.complete) return 1; }
         return 0;
     } catch (const SetupFailure& error) { auto text = error.text + L"\nWindows error: " + std::to_wstring(error.code); MessageBoxW(nullptr, text.c_str(), L"BandKey VM lab - action not completed", MB_OK | MB_ICONERROR); }
+    catch (const SetupOperationBusy&) { MessageBoxW(nullptr, L"Another BandKey setup operation is still running. Wait for it to finish or close it, then retry. No competing install or removal was started.", L"BandKey VM lab - setup busy", MB_OK | MB_ICONINFORMATION); }
     catch (const std::exception&) { MessageBoxW(nullptr, L"Setup failed. Use Remove or the VM baseline snapshot for recovery.", L"BandKey VM lab", MB_OK | MB_ICONERROR); }
     return 1;
 }

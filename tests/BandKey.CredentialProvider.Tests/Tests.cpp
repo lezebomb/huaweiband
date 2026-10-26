@@ -1,6 +1,7 @@
 #define BANDKEY_UNIT_TEST
 #include "../../src/BandKey.CredentialProvider/Provider.cpp"
 #include "../../src/BandKey.CredentialProvider/LabCleanup.h"
+#include "DeploymentTests.h"
 #include "../../src/BandKey.CredentialProvider/OnlineCredentialPacking.h"
 #include <bcrypt.h>
 #include <fstream>
@@ -605,6 +606,7 @@ int wmain(int argc, wchar_t** argv) {
             check("unsupported scenario clears old tile", Count(provider.Get()) == 0);
         }
         check("all COM objects released", DllCanUnloadNow() == S_OK);
+        TestDeploymentLifecycle(check, std::filesystem::absolute(std::filesystem::path(argv[2]).parent_path()) / (L"deployment-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64())));
         // Also load the actual packaged DLL. No registry writes or system authentication.
         HMODULE module = LoadLibraryExW(argv[1], nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
         check("release DLL loads", module != nullptr);
