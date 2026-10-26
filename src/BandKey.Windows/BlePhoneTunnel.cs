@@ -18,6 +18,8 @@ public sealed class BlePhoneTunnel : IBlePhoneConnection
     private readonly Channel<byte[]> received=Channel.CreateBounded<byte[]>(new BoundedChannelOptions(128){SingleReader=true,SingleWriter=false,FullMode=BoundedChannelFullMode.Wait});
     private BluetoothLEDevice? device;private GattDeviceService? service;private GattCharacteristic? rx,tx;
     private GattDescriptor? healthDescriptor;
+    private BlePeerBinding? peer;
+    public BlePeerBinding? Peer=>Volatile.Read(ref disposed)!=0 || stop.IsCancellationRequested?null:Volatile.Read(ref peer);
     private GattClientCharacteristicConfigurationDescriptorValue subscription;
     public string DeliveryMode=>subscription==GattClientCharacteristicConfigurationDescriptorValue.Indicate?"indicate":subscription==GattClientCharacteristicConfigurationDescriptorValue.Notify?"notify":"none";
     internal static GattClientCharacteristicConfigurationDescriptorValue ChooseSubscription(GattCharacteristicProperties properties)=>
@@ -44,13 +46,13 @@ public sealed class BlePhoneTunnel : IBlePhoneConnection
         using var budget=CancellationTokenSource.CreateLinkedTokenSource(cancellation,stop.Token);budget.CancelAfter(TimeSpan.FromSeconds(45));var token=budget.Token;
         Stage="adapter";var adapter=await BluetoothAdapter.GetDefaultAsync().AsTask(token);
         if(adapter==null || !adapter.IsCentralRoleSupported)throw new IOException("BLE central adapter unavailable");
-        Stage="scan";var address=new TaskCompletionSource<ulong>(TaskCreationOptions.RunContinuationsAsynchronously);
+        Stage="scan";var address=new TaskCompletionSource<(ulong Address,BluetoothAddressType Type)>(TaskCreationOptions.RunContinuationsAsynchronously);
         var watcher=new BluetoothLEAdvertisementWatcher{ScanningMode=BluetoothLEScanningMode.Active};watcher.AdvertisementFilter.Advertisement.ServiceUuids.Add(ServiceId);
-        watcher.Received+=(_,e)=>{if(e.Advertisement.ServiceUuids.Contains(ServiceId))address.TrySetResult(e.BluetoothAddress);};
+        watcher.Received+=(_,e)=>{if(e.Advertisement.ServiceUuids.Contains(ServiceId))address.TrySetResult((e.BluetoothAddress,e.BluetoothAddressType));};
         watcher.Stopped+=(_,e)=>{if(e.Error!=BluetoothError.Success)address.TrySetException(new IOException("BLE scan failed"));};
-        watcher.Start();ulong found;
+        watcher.Start();(ulong Address,BluetoothAddressType Type) found;
         try{found=await address.Task.WaitAsync(TimeSpan.FromSeconds(20),token);}finally{watcher.Stop();}
-        Stage="device";device=await BluetoothLEDevice.FromBluetoothAddressAsync(found).AsTask(token)??throw new IOException("Phone unavailable");
+        Stage="device";device=await BluetoothLEDevice.FromBluetoothAddressAsync(found.Address,found.Type).AsTask(token)??throw new IOException("Phone unavailable");
         device.ConnectionStatusChanged+=OnConnection;
         Stage="service";var services=await device.GetGattServicesForUuidAsync(ServiceId,BluetoothCacheMode.Uncached).AsTask(token);
         if(services.Status!=GattCommunicationStatus.Success || services.Services.Count!=1){foreach(var item in services.Services)item.Dispose();throw new IOException("BandKey phone service unavailable");}
@@ -66,10 +68,12 @@ public sealed class BlePhoneTunnel : IBlePhoneConnection
         var descriptors=await tx.GetDescriptorsForUuidAsync(new Guid("00002902-0000-1000-8000-00805f9b34fb"),BluetoothCacheMode.Uncached).AsTask(token);
         if(descriptors.Status!=GattCommunicationStatus.Success || descriptors.Descriptors.Count!=1)throw new IOException("BLE health descriptor unavailable");
         healthDescriptor=descriptors.Descriptors[0];Interlocked.Exchange(ref lastValue,Stopwatch.GetTimestamp());
+        token.ThrowIfCancellationRequested();
+        Volatile.Write(ref peer,new BlePeerBinding(Guid.NewGuid().ToString("N"),new(found.Address.ToString("X12"),found.Type.ToString()),DateTimeOffset.UtcNow));
         Stage="connected";
     }
     private void Cancel(){try{stop.Cancel();}catch(ObjectDisposedException){}}
-    private void Fail(string code){linkFailure=code;Failure??=BleTransportFailure.From(new BleTransportException(code));received.Writer.TryComplete(new BleTransportException(code));Cancel();}
+    private void Fail(string code){Volatile.Write(ref peer,null);linkFailure=code;Failure??=BleTransportFailure.From(new BleTransportException(code));received.Writer.TryComplete(new BleTransportException(code));Cancel();}
     private void OnConnection(BluetoothLEDevice sender,object args)
     {
         try{if(Volatile.Read(ref disposed)==0 && sender.ConnectionStatus==BluetoothConnectionStatus.Disconnected)Fail("gatt-disconnected");}
@@ -157,11 +161,12 @@ public sealed class BlePhoneTunnel : IBlePhoneConnection
         }
         catch(OperationCanceledException)when(lifetime.IsCancellationRequested){if(linkFailure!=null){Stage="link-failed";throw new BleTransportException(linkFailure);}Stage="stopped";}
         catch(Exception error){Failure??=BleTransportFailure.From(error);throw;}
-        finally{lifetime.Cancel();await Task.WhenAll(watching,health);}
+        finally{Volatile.Write(ref peer,null);lifetime.Cancel();await Task.WhenAll(watching,health);}
     }
     public async ValueTask DisposeAsync()
     {
         if(Interlocked.Exchange(ref disposed,1)!=0)return;
+        Volatile.Write(ref peer,null);
         stop.Cancel();received.Writer.TryComplete();if(tx!=null)tx.ValueChanged-=OnValue;if(device!=null)device.ConnectionStatusChanged-=OnConnection;
         try{if(tx!=null){using var budget=new CancellationTokenSource(TimeSpan.FromSeconds(2));await tx.WriteClientCharacteristicConfigurationDescriptorAsync(GattClientCharacteristicConfigurationDescriptorValue.None).AsTask(budget.Token);}}catch(Exception){/* A removed radio cannot acknowledge unsubscribe. */}
         try{if(service!=null)service.Session.MaintainConnection=false;}catch(Exception){}

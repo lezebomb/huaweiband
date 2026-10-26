@@ -1,5 +1,6 @@
 using System.Net;
 using System.Threading.Channels;
+using BandKey.Core;
 using BandKey.Windows;
 using Windows.Devices.Bluetooth.GenericAttributeProfile;
 
@@ -15,11 +16,22 @@ internal static class BleRecoveryTests
         public int Streams=>1;
         public long SentBytes=>3;
         public long ReceivedBytes=>5;
+        public BlePeerBinding? Peer{get;init;}
         public Task RunAsync(IPAddress target,int port,TimeSpan duration,string? readyFile=null,string? stopFile=null,CancellationToken cancellation=default)=>run(duration,readyFile,cancellation);
         public ValueTask DisposeAsync(){dispose();return ValueTask.CompletedTask;}
     }
     internal static async Task RunAsync(Func<string,Func<Task>,Task> test,string directory)
     {
+        await test("BLE supervisor exposes only the live connection generation and clears it on stop",async()=>
+        {
+            var peer=new BlePeerBinding(new('a',32),new("AABBCCDDEEFF","Random"),DateTimeOffset.UtcNow);
+            var entered=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);int disposed=0;
+            using var cancellation=new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            var transport=new BlePhoneTransport(()=>new Connection(async(_,_,token)=>{entered.SetResult();await Task.Delay(Timeout.Infinite,token);},()=>disposed++){Peer=peer},(_,_)=>Task.CompletedTask);
+            var running=transport.RunAsync(IPAddress.Loopback,19443,TimeSpan.FromSeconds(5),cancellation:cancellation.Token);
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));Check(transport.Peer==peer);
+            cancellation.Cancel();await running;Check(transport.Peer==null && disposed==1);
+        });
         await test("BLE negotiates acknowledged indications while preserving notification-only phones",()=>
         {
             Check(BlePhoneTunnel.ChooseSubscription(GattCharacteristicProperties.Notify|GattCharacteristicProperties.Indicate)==GattClientCharacteristicConfigurationDescriptorValue.Indicate);

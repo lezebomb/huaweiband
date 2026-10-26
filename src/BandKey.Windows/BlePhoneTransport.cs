@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
+using BandKey.Core;
 
 namespace BandKey.Windows;
 
@@ -13,6 +14,7 @@ internal interface IBlePhoneConnection : IAsyncDisposable
     long SentBytes{get;}
     long ReceivedBytes{get;}
     string DeliveryMode=>"unknown";
+    BlePeerBinding? Peer=>null;
     Task RunAsync(IPAddress target,int port,TimeSpan duration,string? readyFile=null,string? stopFile=null,CancellationToken cancellation=default);
 }
 
@@ -32,6 +34,7 @@ internal sealed class BlePhoneTransport
     private string stage="not-started";
     private string deliveryMode="none";
     public string DeliveryMode=>current?.DeliveryMode??deliveryMode;
+    public BlePeerBinding? Peer=>current?.Peer;
     public string Stage=>current?.Stage??stage;
     public ushort Mtu=>current?.Mtu??mtu;
     public int Streams=>streams+(current?.Streams??0);
