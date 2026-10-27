@@ -152,6 +152,29 @@ internal static class BleBridgeIntegrationTests
             }
             finally{target.Stop();}
         });
+        await test("host TCP reset drains both EOFs without treating the aborted stream as success",async()=>{
+            var target=new TcpListener(IPAddress.Loopback,0);target.Start();using var budget=new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            try{
+                var wire=new Wire();var forwarding=BleStreamForwarder.RunAsync(new(1,23,0,[]),IPAddress.Loopback,((IPEndPoint)target.LocalEndpoint).Port,wire.PcRead,wire.PcSend,()=>160,budget.Token,drainTargetAbort:true);
+                using var server=await target.AcceptTcpClientAsync(budget.Token);var ready=await wire.PhoneRead(budget.Token);Check(ready.Kind==2 && ready.Session==23);
+                server.Client.LingerState=new(true,0);server.Client.Dispose();var eof=await wire.PhoneRead(budget.Token);Check(eof.Kind==4 && eof.Session==23 && eof.Sequence==1);
+                Check(!forwarding.IsCompleted);await wire.PhoneSend(new(4,23,1,[]),budget.Token);var stats=await forwarding;
+                Check(stats.TargetAborted && stats.SentBytes==0 && stats.ReceivedBytes==0);
+                // Reuse the same framing channel only after the previous EOF pair.
+                var next=BleStreamForwarder.RunAsync(new(1,26,0,[]),IPAddress.Loopback,((IPEndPoint)target.LocalEndpoint).Port,wire.PcRead,wire.PcSend,()=>160,budget.Token,drainTargetAbort:true);
+                using var second=await target.AcceptTcpClientAsync(budget.Token);var nextReady=await wire.PhoneRead(budget.Token);Check(nextReady.Session==26 && nextReady.Sequence==0);
+                second.Client.Shutdown(SocketShutdown.Send);var nextEof=await wire.PhoneRead(budget.Token);Check(nextEof.Session==26 && nextEof.Kind==4);
+                await wire.PhoneSend(new(4,26,1,[]),budget.Token);Check(!(await next).TargetAborted);
+            }finally{target.Stop();}
+        });
+        await test("host reset drain refuses an EOF from another stream",async()=>{
+            var target=new TcpListener(IPAddress.Loopback,0);target.Start();using var budget=new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            try{
+                var wire=new Wire();var forwarding=BleStreamForwarder.RunAsync(new(1,24,0,[]),IPAddress.Loopback,((IPEndPoint)target.LocalEndpoint).Port,wire.PcRead,wire.PcSend,()=>160,budget.Token,drainTargetAbort:true);
+                using var server=await target.AcceptTcpClientAsync(budget.Token);await wire.PhoneRead(budget.Token);server.Client.LingerState=new(true,0);server.Client.Dispose();await wire.PhoneRead(budget.Token);
+                await wire.PhoneSend(new(4,25,1,[]),budget.Token);try{await forwarding;throw new Exception("Wrong stream EOF accepted");}catch(BleTransportException error){Check(error.Code=="phone-frame-invalid");}
+            }finally{target.Stop();}
+        });
         foreach(string mode in new[]{"approve-replay","deny","wrong-pin","invalid-signature","revoked"})
         await test("BLE simulated TLS native authorization: "+mode,async()=>
         {

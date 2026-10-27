@@ -30,8 +30,11 @@ public final class VmWearSession<P> {
     private int polls,prompts,delivered,denied;private volatile long decisionQueueMilliseconds=-1,decisionCallMilliseconds=-1;
     private volatile String decisionStage="not-started";
     public VmWearSession(LongSupplier wall,LongSupplier elapsed,long duration,BooleanSupplier contextCurrent,BooleanSupplier link,Client<P> client,Wearable wearable,Executor decisions){
+        this(wall,elapsed,duration,contextCurrent,link,client,wearable,decisions,false);
+    }
+    public VmWearSession(LongSupplier wall,LongSupplier elapsed,long duration,BooleanSupplier contextCurrent,BooleanSupplier link,Client<P> client,Wearable wearable,Executor decisions,boolean resident){
         long now=elapsed.getAsLong();if(now<0 || duration<=0 || duration>MAX_DURATION || now>Long.MAX_VALUE-duration)throw new IllegalArgumentException("VM background duration");
-        this.elapsed=elapsed;deadline=now+duration;lastNow=now;this.contextCurrent=contextCurrent;this.link=link;this.client=client;this.wearable=wearable;this.decisions=decisions;gate=new PromptGate(wall,elapsed);
+        this.elapsed=elapsed;deadline=resident?Long.MAX_VALUE:now+duration;lastNow=now;this.contextCurrent=contextCurrent;this.link=link;this.client=client;this.wearable=wearable;this.decisions=decisions;gate=new PromptGate(wall,elapsed);
     }
     public boolean active(){
         synchronized(this){if(stopped)return false;}

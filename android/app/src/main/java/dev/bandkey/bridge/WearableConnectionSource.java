@@ -30,7 +30,7 @@ final class WearableConnectionSource {
         if(stopped)return;boolean returned=Boolean.TRUE.equals(value) && !Boolean.TRUE.equals(connected);pending=false;responses++;connected=value;observedElapsed=SystemClock.elapsedRealtime();observedWall=System.currentTimeMillis();
         lastQueryMs=Math.max(0,observedElapsed-queryStarted);maxQueryMs=Math.max(maxQueryMs,lastQueryMs);
         if(value==null)unknownResults++;else if(value)trueResults++;else falseResults++;
-        handler.removeCallbacks(tick);handler.postDelayed(tick,returned?1000:3000);
+        handler.removeCallbacks(tick);handler.postDelayed(tick,HostConfirmationPolicy.queryDelay(value,returned));
     }
     private synchronized void failure(){if(!stopped){errors++;result(null);}}
     private final Runnable tick=new Runnable(){@Override public void run(){

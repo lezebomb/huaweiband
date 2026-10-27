@@ -9,13 +9,7 @@
 #include <knownfolders.h>
 #include <wtsapi32.h>
 #include "AccountBinding.h"
-
-// This CLSID belongs only to the VM laboratory provider. No system provider is replaced.
-inline constexpr GUID BandKeyLabClsid = {0x76b424b6,0xa72d,0x4e98,{0x9d,0xc1,0x48,0x5e,0x37,0xa5,0x42,0x9c}};
-inline constexpr wchar_t BandKeyLabGuid[] = L"{76B424B6-A72D-4E98-9DC1-485E37A5429C}";
-inline constexpr wchar_t BandKeyLabConfig[] = L"SOFTWARE\\BandKey\\CredentialProviderLab";
-inline constexpr wchar_t BandKeyLabCom[] = L"SOFTWARE\\Classes\\CLSID\\{76B424B6-A72D-4E98-9DC1-485E37A5429C}";
-inline constexpr wchar_t BandKeyLabRegistration[] = L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Authentication\\Credential Providers\\{76B424B6-A72D-4E98-9DC1-485E37A5429C}";
+#include "NativeProfile.h"
 
 inline std::wstring ReadMachineString(const wchar_t* key, const wchar_t* name) {
     wchar_t value[1024] = {}; DWORD bytes = sizeof(value);
@@ -26,15 +20,28 @@ inline bool IsSupportedVmwareMachine(const std::wstring& manufacturer, const std
     return manufacturer == L"VMware, Inc." && model.find(L"VMware") != std::wstring::npos && build == L"26300";
 }
 inline bool IsSupportedVmwareGuest() {
+#ifdef BANDKEY_HOST_PILOT
+    const auto manufacturer=ReadMachineString(L"HARDWARE\\DESCRIPTION\\System\\BIOS",L"SystemManufacturer");
+    const auto machine=ReadMachineString(L"SOFTWARE\\Microsoft\\Cryptography",L"MachineGuid");
+    return BandKeyHostBindingMatches(manufacturer,ReadMachineString(L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion",L"CurrentBuildNumber"),BandKeyMachineFingerprint(machine));
+#else
     return IsSupportedVmwareMachine(
         ReadMachineString(L"HARDWARE\\DESCRIPTION\\System\\BIOS", L"SystemManufacturer"),
         ReadMachineString(L"HARDWARE\\DESCRIPTION\\System\\BIOS", L"SystemProductName"),
         ReadMachineString(L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", L"CurrentBuildNumber"));
+#endif
 }
 inline std::filesystem::path LabInstallDirectory() {
     PWSTR folder = nullptr;
     if (FAILED(SHGetKnownFolderPath(FOLDERID_ProgramFilesX64, 0, nullptr, &folder))) throw std::runtime_error("program-files-unavailable");
-    std::filesystem::path path(folder); CoTaskMemFree(folder); return path / L"BandKeyVmLab";
+    std::filesystem::path path(folder); CoTaskMemFree(folder); return path / BandKeyDirectoryName;
+}
+inline bool BandKeyRemovalEnvironment(){
+#ifdef BANDKEY_HOST_PILOT
+    return BandKeyHostRemovalBindingMatches(ReadMachineString(L"HARDWARE\\DESCRIPTION\\System\\BIOS",L"SystemManufacturer"),BandKeyMachineFingerprint(ReadMachineString(L"SOFTWARE\\Microsoft\\Cryptography",L"MachineGuid")));
+#else
+    return IsSupportedVmwareGuest();
+#endif
 }
 inline bool SessionIsLocked(DWORD session) {
     PWSTR buffer = nullptr; DWORD bytes = 0;
@@ -88,6 +95,10 @@ inline LabPolicy ReadLabPolicy() {
     auto protocolResult = RegGetValueW(HKEY_LOCAL_MACHINE, BandKeyLabConfig, L"ProtocolVersion", RRF_RT_REG_DWORD | RRF_SUBKEY_WOW6464KEY, nullptr, &protocol, &bytes);
     if ((protocolResult != ERROR_SUCCESS && protocolResult != ERROR_FILE_NOT_FOUND) || (protocol != 1 && protocol != 3)) return LabPolicy{};
     policy.protocolVersion = protocol;
+    if(!BandKeyProfileAllowsPolicy(mode,policy.signerKind,static_cast<DWORD>(policy.accountKind),protocol))return LabPolicy{};
+#ifdef BANDKEY_HOST_PILOT
+    if(ReadMachineString(BandKeyLabConfig,L"DeploymentProfile")!=L"host-pilot-v1" || ReadMachineString(BandKeyLabConfig,L"HostBinding")!=BandKeyHostExpectedMachine || ReadMachineString(BandKeyLabConfig,L"TargetBuild")!=BandKeyHostExpectedBuild)return LabPolicy{};
+#endif
     if (valid) { policy.enabled = true; policy.sid = sid; policy.mode = mode; }
     return policy;
 }

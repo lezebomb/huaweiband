@@ -43,6 +43,13 @@ internal static class Program
             catch(Exception){Environment.ExitCode=2;}
             return;
         }
+        if(args.Contains("--host-bridge")){
+            ApplicationConfiguration.Initialize();
+            Application.SetUnhandledExceptionMode(UnhandledExceptionMode.ThrowException);
+            using var instance=new Mutex(false,"Local\\BandKeyHostPilot-"+System.Security.Principal.WindowsIdentity.GetCurrent().User?.Value);
+            bool owned=false;try{try{owned=instance.WaitOne(0);}catch(AbandonedMutexException){owned=true;}if(owned)Application.Run(new VmBridgeForm(true,args.Contains("--resident")));}catch(Exception){if(!args.Contains("--resident"))MessageBox.Show("主机试用环境或登记不可用，未修改系统登录配置。","BandKey 主机试用");Environment.ExitCode=2;}finally{if(owned)instance.ReleaseMutex();}
+            return;
+        }
         if (args.Contains("--vm-bridge"))
         {
             ApplicationConfiguration.Initialize();

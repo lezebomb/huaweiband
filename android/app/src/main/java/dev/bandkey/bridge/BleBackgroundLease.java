@@ -44,10 +44,13 @@ final class BleBackgroundLease {
     private Transport transport;
     private Stats stats=new Stats(false,false,false,0,0,0);
 
+    private final boolean resident;
+    BleBackgroundLease(){this(false);}
+    BleBackgroundLease(boolean resident){this.resident=resident;}
     synchronized boolean start(long now,long duration,Factory factory){
         if(started)return false; // Duplicate Android start commands cannot extend the lease.
         if(now<0 || duration<=0 || duration>MAX_DURATION || now>Long.MAX_VALUE-duration || factory==null)throw new IllegalArgumentException("BLE run duration");
-        started=true;began=lastNow=now;deadline=now+duration;change(Stage.STARTING,Reason.NONE);
+        started=true;began=lastNow=now;deadline=resident?Long.MAX_VALUE:now+duration;change(Stage.STARTING,Reason.NONE);
         try{transport=factory.create();if(transport==null)throw new IllegalStateException("Missing transport");transport.start();return true;}
         catch(Exception error){stop(Reason.START_FAILED);return false;}
     }

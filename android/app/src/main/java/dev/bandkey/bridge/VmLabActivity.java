@@ -32,6 +32,7 @@ public final class VmLabActivity extends Activity {
     private final Runnable refreshBackground=new Runnable(){@Override public void run(){backgroundStatus.setText(getString(R.string.vm_background_summaries,VmBleTransportService.summary(),VmWearConfirmService.summary()));display.postDelayed(this,1000);}};
     private int bleGeneration;
     private String nativeFingerprint="";
+    private boolean hostConfiguration(){try{return HostConfirmationPolicy.isHost(new JSONObject(prefs().getString("pc","{}")).optString("protocol"));}catch(Exception error){return false;}}
     private android.content.SharedPreferences prefs(){return getSharedPreferences("bandkey-vm-phone-lab",MODE_PRIVATE);}
     @Override public void onCreate(Bundle saved){
         super.onCreate(saved);LinearLayout column=new LinearLayout(this);column.setOrientation(LinearLayout.VERTICAL);column.setPadding(28,36,28,28);ScrollView scroll=new ScrollView(this);scroll.addView(column);setContentView(scroll);
@@ -40,29 +41,29 @@ public final class VmLabActivity extends Activity {
             else view.setPadding(insets.getSystemWindowInsetLeft(),insets.getSystemWindowInsetTop(),insets.getSystemWindowInsetRight(),insets.getSystemWindowInsetBottom());
             return insets;
         });scroll.requestApplyInsets();
-        TextView intro=new TextView(this);intro.setText("VM 确认实验\n只签署隔离 VM 的一次性登录请求，不接收 Windows 密码。默认手机测试按钮，离开本页即停止本页轮询。可单独开启最多30分钟的后台手环确认；该模式下手机锁屏后仍只接受真实手环的本次点击。");column.addView(intro);
+        TextView intro=new TextView(this);intro.setText("电脑手环确认\n主机配对仅接受真实手环本次点击；启用一次后常驻，支持开机恢复。VM 配对仍限制单次30分钟。手机和手环均不接收 Windows 密码。请允许 BandKey 自启动、后台运行及电池优化例外。");column.addView(intro);
         status=new TextView(this);status.setTextIsSelectable(true);column.addView(status);
         button(column,"1. 导出手机实验公钥",()->startActivityForResult(new Intent(Intent.ACTION_CREATE_DOCUMENT).setType("application/octet-stream").putExtra(Intent.EXTRA_TITLE,"bandkey-vm-phone.bandkeypub"),1));
-        button(column,"2. 导入 VM 电脑配对资料",()->{VmWearConfirmService.stopCurrent();pollingRequested=false;stopWork();startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT).setType("application/json").addCategory(Intent.CATEGORY_OPENABLE),2);});
+        button(column,"2. 导入电脑配对资料",()->{VmWearConfirmService.stopCurrent(this);pollingRequested=false;stopWork();startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT).setType("application/json").addCategory(Intent.CATEGORY_OPENABLE),2);});
         approve=button(column,"确认本次 VM 解锁（测试按钮）",()->decide(true));deny=button(column,"拒绝本次请求",()->decide(false));approve.setEnabled(false);deny.setEnabled(false);
         wearableConfirm=new CheckBox(this);wearableConfirm.setText("使用真实手环确认（先在主界面授权并选择手环）");column.addView(wearableConfirm);
-        wearableConfirm.setChecked(VmWearConfirmService.active());
+        wearableConfirm.setChecked(VmWearConfirmService.active() || hostConfiguration());
         wearableConfirm.setOnCheckedChangeListener((button,checked)->{
-            VmWearConfirmService.stopCurrent();boolean resume=pollingRequested;stopWork();
+            VmWearConfirmService.stopCurrent(this);boolean resume=pollingRequested;stopWork();
             show(checked?"已切换为真实手环确认，手机测试按钮停用。仅手环本次有效点击才会签名。":"已切换为手机测试按钮，原手环请求已取消。");
             if(resume)startWork();
         });
         fixedPhoneMode=new CheckBox(this);fixedPhoneMode.setText("手机固定在电脑旁：用手环断连／重连判断返回（需新版 VM）");
         fixedPhoneMode.setChecked(prefs().getBoolean("fixedPhoneMode",false));column.addView(fixedPhoneMode);
-        fixedPhoneMode.setOnCheckedChangeListener((button,checked)->{VmWearConfirmService.stopCurrent();pollingRequested=false;stopWork();prefs().edit().putBoolean("fixedPhoneMode",checked).apply();show("模式已切换，旧请求已取消。请在 VM 中选择相同模式，再明确启动后台手环确认。");});
-        button(column,"停止轮询并取消待确认请求",()->{VmWearConfirmService.stopCurrent();pollingRequested=false;stopWork();show("已停止。已经交付的签名不能由此撤回；原生一次性及有效期检查仍适用。");});
+        fixedPhoneMode.setOnCheckedChangeListener((button,checked)->{VmWearConfirmService.stopCurrent(this);pollingRequested=false;stopWork();prefs().edit().putBoolean("fixedPhoneMode",checked).apply();show("模式已切换，旧请求已取消。请在 VM 中选择相同模式，再明确启动后台手环确认。");});
+        button(column,"停止轮询并取消待确认请求",()->{VmWearConfirmService.stopCurrent(this);pollingRequested=false;stopWork();show("已停止。已经交付的签名不能由此撤回；原生一次性及有效期检查仍适用。");});
         button(column,"启动轮询",this::startWork);
         bleStatus=new TextView(this);bleStatus.setText(R.string.vm_ble_idle);column.addView(bleStatus);
         button(column,"启动前台 BLE 传输（不需要同一 Wi-Fi）",this::startBle);
-        button(column,"停止全部 BLE 传输",()->{VmWearConfirmService.stopCurrent();pollingRequested=false;stopWork();closeLocalBle();VmBleTransportService.stopCurrent();bleStatus.setText(R.string.vm_ble_stopped);});
+        button(column,"停止全部 BLE 传输",()->{VmWearConfirmService.stopCurrent(this);pollingRequested=false;stopWork();closeLocalBle();VmBleTransportService.stopCurrent();bleStatus.setText(R.string.vm_ble_stopped);});
         backgroundStatus=new TextView(this);backgroundStatus.setText(VmBleTransportService.summary());column.addView(backgroundStatus);
         button(column,"启动后台 BLE 传输（最多30分钟）",this::startBackgroundBle);
-        button(column,"启动后台手环确认（最多30分钟）",this::startBackgroundWear);
+        button(column,"启用手环确认（主机常驻／VM 30分钟）",this::startBackgroundWear);
         button(column,"导出后台手环确认记录",()->{
             try{VmWearConfirmService.report();startActivityForResult(new Intent(Intent.ACTION_CREATE_DOCUMENT).setType("application/json").putExtra(Intent.EXTRA_TITLE,"bandkey-vm-wear-background.json"),4);}
             catch(RuntimeException error){show("尚无后台手环确认记录。");}
@@ -107,7 +108,9 @@ public final class VmLabActivity extends Activity {
             final String wearableUuid=getSharedPreferences(BridgeService.PREFS,MODE_PRIVATE).getString("wearableUuid","");
             if(useWearable && wearableUuid.isEmpty()){show("请先返回主界面，授权 Wear Engine 并选择手环。");return;}
             if(useWearable && getSharedPreferences(BridgeService.PREFS,MODE_PRIVATE).getBoolean("enabled",false)){show("请先停止主界面的自动桥接，再测试隔离 VM，避免两类请求混淆。");return;}
-            client=new VmRelayClient(new JSONObject(saved),identity);gate=new PromptGate(()->System.currentTimeMillis()/1000,SystemClock::elapsedRealtime);active=true;worker=Executors.newSingleThreadScheduledExecutor();
+            client=new VmRelayClient(new JSONObject(saved),identity);
+            if(client.hostPilot){pollingRequested=false;stopWork();show("主机试用仅允许后台真实手环确认。请勾选真实手环、固定手机，再启动后台手环确认；手机测试按钮不可授权主机。");return;}
+            gate=new PromptGate(()->System.currentTimeMillis()/1000,SystemClock::elapsedRealtime);active=true;worker=Executors.newSingleThreadScheduledExecutor();
             final PromptGate currentGate=gate;final VmRelayClient currentClient=client;
             final VmPollRecovery recovery=new VmPollRecovery();
             final boolean loopback="127.0.0.1".equals(new java.net.URI(currentClient.config.getString("endpoint")).getHost());
@@ -191,9 +194,10 @@ public final class VmLabActivity extends Activity {
         if(Build.VERSION.SDK_INT>=33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)!=android.content.pm.PackageManager.PERMISSION_GRANTED){requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS},31);return;}
         if(!getSystemService(NotificationManager.class).areNotificationsEnabled()){show("请先允许应用通知，以保留后台停止入口。");return;}
         if(prefs().getString("pc",null)==null || getSharedPreferences(BridgeService.PREFS,MODE_PRIVATE).getString("wearableUuid","").isEmpty()){show("请先导入 VM 配对资料并选择已授权手环。");return;}
-        AlertDialog consent=new AlertDialog.Builder(this).setTitle("启动 VM 后台手环确认")
-            .setMessage("本次最多30分钟。手机退到后台或锁屏后，仍可在真实手环明确确认此 VM 的新请求。不会自动批准，不接收 Windows 密码；可从通知栏停止。此功能尚待实机验收。")
-            .setPositiveButton("启动本次测试",(dialog,which)->{
+        boolean host=hostConfiguration();
+        AlertDialog consent=new AlertDialog.Builder(this).setTitle(host?"启用主机常驻手环确认":"启动 VM 后台手环确认")
+            .setMessage(host?"启用后持续后台运行，并在手机重启或应用更新后恢复。只有真实手环本次有效点击才提交授权。可从通知栏停止；停止后不再开机恢复。请在系统中允许自启动和后台运行。":"本次最多30分钟。手机退到后台或锁屏后，仍可在真实手环明确确认此 VM 的新请求。不会自动批准，不接收 Windows 密码；可从通知栏停止。")
+            .setPositiveButton(host?"启用常驻":"启动本次测试",(dialog,which)->{
                 pollingRequested=false;stopWork();closeLocalBle();
                 try{show(VmWearConfirmService.requestStart(this,(Dialog)dialog)?"已请求后台手环确认，请查看通知栏状态；仅在真实手环点击后提交本次决定。":"请在已解锁的前台启动，且先停止其他后台模式。");}
                 catch(RuntimeException error){show("后台启动失败："+error.getClass().getSimpleName());}

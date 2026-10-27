@@ -1,4 +1,5 @@
 using System.Net;
+using System.Security.Authentication;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using BandKey.Core;
@@ -17,7 +18,7 @@ public sealed class BridgeServer : IAsyncDisposable
 {
     private WebApplication? app;
     public async Task StartAsync(AppSettings settings, X509Certificate2 cert, AuthorizationBroker broker,
-        Action<ApprovalResult> result, CancellationToken cancellationToken = default, AuthenticationCoordinator? authentication = null, WindowsGrantRelay? windowsRelay = null, FixedPhoneChannel? fixedPhone = null)
+        Action<ApprovalResult> result, CancellationToken cancellationToken = default, AuthenticationCoordinator? authentication = null, WindowsGrantRelay? windowsRelay = null, FixedPhoneChannel? fixedPhone = null,bool tls12Compatibility=false)
     {
         var builder = WebApplication.CreateSlimBuilder();
         builder.Logging.ClearProviders();
@@ -33,7 +34,10 @@ public sealed class BridgeServer : IAsyncDisposable
             server.Limits.MaxRequestBodySize = 8192;
             server.Limits.MaxConcurrentConnections = 8;
             server.Limits.RequestHeadersTimeout = TimeSpan.FromSeconds(5);
-            server.Listen(IPAddress.Parse(settings.ListenAddress), settings.Port, listen => listen.UseHttps(cert));
+            server.Listen(IPAddress.Parse(settings.ListenAddress), settings.Port, listen => listen.UseHttps(https=>{
+                https.ServerCertificate=cert;
+                if(tls12Compatibility)https.SslProtocols=SslProtocols.Tls12;
+            }));
         });
         app = builder.Build();
         var flow = authentication ?? new AuthenticationCoordinator(broker, new UnavailableAuthenticationBackend(), () => null);

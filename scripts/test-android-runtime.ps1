@@ -30,3 +30,11 @@ if($LASTEXITCODE -ne 0){throw 'BLE subscription tests failed'}
 if($LASTEXITCODE -ne 0){throw 'TLS error classification compilation failed'}
 & $bandKeyJava -cp $bandKeyClasses dev.bandkey.bridge.TlsFailureClassifierTests 'artifacts/android-tls-error-tests.json'
 if($LASTEXITCODE -ne 0){throw 'TLS error classification tests failed'}
+& $bandKeyJavac -encoding UTF-8 -d $bandKeyClasses 'android/app/src/main/java/dev/bandkey/bridge/HostConfirmationPolicy.java' 'tests/interop/HostConfirmationPolicyTests.java'
+if($LASTEXITCODE -ne 0){throw 'Host confirmation policy compilation failed'}
+& $bandKeyJava -cp $bandKeyClasses dev.bandkey.bridge.HostConfirmationPolicyTests 'artifacts/android-host-policy-tests.json'
+if($LASTEXITCODE -ne 0){throw 'Host confirmation policy checks failed'}
+& $bandKeyJavac -encoding UTF-8 -cp $bandKeyClasses -d $bandKeyClasses 'tests/interop/HostResidentTests.java'
+if($LASTEXITCODE -ne 0){throw 'Host resident test compilation failed'}
+& $bandKeyJava -cp $bandKeyClasses dev.bandkey.bridge.HostResidentTests 'artifacts/android-host-resident-tests.json'
+if($LASTEXITCODE -ne 0){throw 'Host resident tests failed'}

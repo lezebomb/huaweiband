@@ -5,14 +5,14 @@ using BandKey.Core;
 
 namespace BandKey.Windows;
 
-public sealed record BleStreamStats(long SentBytes,long ReceivedBytes);
+public sealed record BleStreamStats(long SentBytes,long ReceivedBytes,bool TargetAborted=false);
 
 /// <summary>One bounded byte stream; the GATT and simulation transports share this exact implementation.</summary>
 public static class BleStreamForwarder
 {
     public static async Task<BleStreamStats> RunAsync(BlePipeFrame open,IPAddress target,int port,
         Func<CancellationToken,Task<BlePipeFrame>> read,Func<BlePipeFrame,CancellationToken,Task> write,
-        Func<int> payloadLimit,CancellationToken cancellation,TimeSpan? duration=null)
+        Func<int> payloadLimit,CancellationToken cancellation,TimeSpan? duration=null,bool drainTargetAbort=false)
     {
         var limit=duration??TimeSpan.FromSeconds(45);
         if(!LoopbackTcpTunnel.IsLocalTarget(target) || port is <1 or >65535 || limit<=TimeSpan.Zero || limit>TimeSpan.FromSeconds(45))throw new ArgumentException("BLE stream target/lifetime");
@@ -30,7 +30,7 @@ public static class BleStreamForwarder
         try{await write(new(BlePipeFrame.Ready,open.Session,sequence++,[]),token);}
         catch(OperationCanceledException error)when(!cancellation.IsCancellationRequested){throw new BleTransportException("stream-timeout",error);}
         catch(Exception error)when(error is not OperationCanceledException){throw new BleTransportException("ready-write",error);}
-        Exception? firstFailure=null;int phoneEnded=0,targetEnded=0;
+        Exception? firstFailure=null;int phoneEnded=0,targetEnded=0;bool targetAborted=false;
         Exception Capture(Exception error,string phase)
         {
             Exception failure=error;
@@ -74,7 +74,15 @@ public static class BleStreamForwarder
                 while(true)
                 {
                     var size=payloadLimit();if(size is <1 or >BlePipeFrame.MaxPayload)throw new BleTransportException("payload-limit");
-                    byte[] bytes=new byte[size];phase="target-read";int count=await network.ReadAsync(bytes,token);
+                    byte[] bytes=new byte[size];phase="target-read";int count;
+                    try{count=await network.ReadAsync(bytes,token);}
+                    catch(IOException error)when(drainTargetAbort && !token.IsCancellationRequested &&
+                        error.InnerException is SocketException socket && socket.SocketErrorCode is SocketError.ConnectionAborted or SocketError.ConnectionReset){
+                        // Close this opaque byte stream, not the entire GATT link. The peer
+                        // still must return its matching EOF before another OPEN is read.
+                        // Truncated TLS/HTTP is rejected by its endpoint; no request is retried.
+                        targetAborted=true;count=0;
+                    }
                     phase="phone-write";
                     if(count==0){Interlocked.Exchange(ref targetEnded,1);await write(new(BlePipeFrame.Eof,open.Session,sequence++,[]),token);return;}
                     sent+=count;if(sent>BlePipeFrame.MaxBytes)throw new BleTransportException("stream-byte-limit");
@@ -85,6 +93,6 @@ public static class BleStreamForwarder
         }
         try{await Task.WhenAll(Upload(),Download());}
         catch{if(firstFailure!=null)ExceptionDispatchInfo.Capture(firstFailure).Throw();throw;}
-        return new(sent,received);
+        return new(sent,received,targetAborted);
     }
 }

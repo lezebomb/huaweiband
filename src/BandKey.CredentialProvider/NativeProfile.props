@@ -1,0 +1,8 @@
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemDefinitionGroup Condition="'$(BandKeyHostPilot)'=='true'">
+    <ClCompile>
+      <PreprocessorDefinitions>BANDKEY_HOST_PILOT;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(BandKeyBindingDirectory);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+  </ItemDefinitionGroup>
+</Project>

@@ -24,7 +24,7 @@ using Microsoft::WRL::ComPtr;
 static LONG objectCount = 0;
 enum Field : DWORD { Logo, Label, Title, Explanation, Password, Submit, FieldCount };
 static const CREDENTIAL_PROVIDER_FIELD_TYPE fieldTypes[] = { CPFT_TILE_IMAGE, CPFT_SMALL_TEXT, CPFT_LARGE_TEXT, CPFT_SMALL_TEXT, CPFT_PASSWORD_TEXT, CPFT_SUBMIT_BUTTON };
-static const wchar_t* const fieldLabels[] = { L"BandKey", L"BandKey VM credential test", L"BandKey VM credential test", L"Manual local-account password test. Band confirmation is not connected.", L"VM account password", L"Sign in" };
+static const wchar_t* const fieldLabels[] = { L"BandKey", BandKeyProviderLabel, BandKeyProviderLabel, L"Manual local-account password test. Band confirmation is not connected.", L"Account password", L"Sign in" };
 static void GrantDiagnostic(LabStage stage, DWORD code = 0) noexcept {
     try { if (GrantIsSystem()) AppendLabDiagnostic(GrantDirectory() / L"Diagnostics" / L"provider.log", stage, code); } catch (...) {}
 }
@@ -163,7 +163,7 @@ public:
         if (!value) return E_POINTER; *value = nullptr;
         if (id >= FieldCount || id == Logo) return E_INVALIDARG;
         // Never hand the stored password back to a caller through a read method.
-        if (policy.mode == 2 && id == Explanation) return SHStrDupW(L"VM signed-confirmation lifecycle fix 2. Waiting for one-time authorization; no password input here.", value);
+        if (policy.mode == 2 && id == Explanation) return SHStrDupW(BandKeyHostPilot?L"Waiting for this request's signed band confirmation. Use Windows password or Hello if needed.":L"VM signed-confirmation lifecycle fix 2. Waiting for one-time authorization; no password input here.", value);
         return SHStrDupW(id == Password ? L"" : fieldLabels[id], value);
     }
     HRESULT STDMETHODCALLTYPE GetBitmapValue(DWORD id, HBITMAP* value) override {
@@ -272,7 +272,7 @@ class BandKeyProvider final : public ICredentialProvider, public ICredentialProv
         // This refresh creates a new random challenge. It never reads the vault or serializes credentials.
         callback->CredentialsChanged(adviseContext); return true;
     }
-    static constexpr wchar_t WindowClass[] = L"BandKey.VM.Grant.Notification.V1";
+    static constexpr const wchar_t* WindowClass = BandKeyNotificationClass;
     static LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
         if (message == WM_NCCREATE) {
             auto create = reinterpret_cast<CREATESTRUCTW*>(lParam);

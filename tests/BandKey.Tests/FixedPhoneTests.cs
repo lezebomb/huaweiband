@@ -47,6 +47,12 @@ internal static class FixedPhoneTests
     }
     public static void Run(Action<string,Action> test)
     {
+        test("host fixed-phone diagnostics distinguish received departure from lock API submission",()=>{
+            using var f=new Fixture(autoLock:true);f.DesktopNear();f.Advance(1000);
+            for(int i=0;i<4;i++){f.Channel.Observe(f.Report(false));if(i<3)f.Advance(1000);}
+            var status=f.Channel.Snapshot;Check(status.AutoLockEnabled && status.ConnectedReports==2 && status.DisconnectedReports==4 && status.UnknownReports==0 && status.LockRequests==1 && status.LastLockResult=="submitted" && f.Session.Locks==1 && !status.NativeRequestReady);
+            f.Channel.Revoke();var ended=f.Channel.Snapshot;Check(ended.Revoked && ended.LockRequests==1 && ended.DisconnectedReports==4 && !ended.DepartureArmed);
+        });
         void Check(bool value){if(!value)throw new Exception("Fixed phone invariant");}
         void Refuses(Action a){try{a();}catch(FormatException){return;}catch(UnauthorizedAccessException){return;}throw new Exception("Expected refusal");}
         test("fresh lock uses a new bound native request without a redundant renewal",()=>{

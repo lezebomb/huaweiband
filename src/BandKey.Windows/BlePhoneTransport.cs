@@ -11,6 +11,7 @@ internal interface IBlePhoneConnection : IAsyncDisposable
     BleTransportFailure? Failure{get;}
     ushort Mtu{get;}
     int Streams{get;}
+    int AbortedStreams=>0;
     TimeSpan CompletedStreamSpan=>TimeSpan.Zero;
     long SentBytes{get;}
     long ReceivedBytes{get;}
@@ -29,7 +30,7 @@ internal sealed class BlePhoneTransport
     private readonly List<BleAttemptFailure> failures=[];
     private readonly object failureLock=new();
     private IBlePhoneConnection? current;
-    private int started,streams;
+    private int started,streams,abortedStreams;
     private long sent,received;
     private ushort mtu=23;
     private string stage="not-started";
@@ -39,6 +40,7 @@ internal sealed class BlePhoneTransport
     public string Stage=>current?.Stage??stage;
     public ushort Mtu=>current?.Mtu??mtu;
     public int Streams=>streams+(current?.Streams??0);
+    public int AbortedStreams=>abortedStreams+(current?.AbortedStreams??0);
     public int CurrentAttemptStreams=>current?.Streams??0;
     public long SentBytes=>sent+(current?.SentBytes??0);
     public long ReceivedBytes=>received+(current?.ReceivedBytes??0);
@@ -52,7 +54,7 @@ internal sealed class BlePhoneTransport
     // The v1 phone can still be awaiting READY for up to eight seconds after
     // CCCD removal. Let that old worker and OS GATT references drain first.
     // The index is the current failure burst, not the lifetime attempt count.
-    public BlePhoneTransport():this(()=>new BlePhoneTunnel(),(burst,token)=>Task.Delay(TimeSpan.FromSeconds(10+(1<<(burst-1))),token)){}
+    public BlePhoneTransport(bool drainTargetAbort=false):this(()=>new BlePhoneTunnel(drainTargetAbort),(burst,token)=>Task.Delay(TimeSpan.FromSeconds(10+(1<<(burst-1))),token)){}
     internal BlePhoneTransport(Func<IBlePhoneConnection> factory,Func<int,CancellationToken,Task> delay){this.factory=factory;this.delay=delay;}
 
     private static bool Retryable(BleTransportFailure failure)=>failure.Code is
@@ -110,7 +112,7 @@ internal sealed class BlePhoneTransport
                 {
                     // Dispose every old subscription/channel/socket before another attempt.
                     var ended=current;await ended.DisposeAsync();
-                    streams+=ended.Streams;sent+=ended.SentBytes;received+=ended.ReceivedBytes;mtu=ended.Mtu;deliveryMode=ended.DeliveryMode;current=null;
+                    streams+=ended.Streams;abortedStreams+=ended.AbortedStreams;sent+=ended.SentBytes;received+=ended.ReceivedBytes;mtu=ended.Mtu;deliveryMode=ended.DeliveryMode;current=null;
                     if(readyFile!=null)File.Delete(readyFile);
                 }
                 if(retry){stage="reconnecting";await delay(ConsecutiveFailures,token);}

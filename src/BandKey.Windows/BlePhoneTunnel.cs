@@ -12,7 +12,7 @@ using Windows.Storage.Streams;
 namespace BandKey.Windows;
 
 /// <summary>Connects only to BandKey's phone service. No band protocol or pairing API.</summary>
-public sealed class BlePhoneTunnel : IBlePhoneConnection
+public sealed class BlePhoneTunnel(bool drainTargetAbort=false) : IBlePhoneConnection
 {
     private long firstCompletedStream,lastCompletedStream;
     public TimeSpan CompletedStreamSpan{
@@ -41,6 +41,7 @@ public sealed class BlePhoneTunnel : IBlePhoneConnection
     private long receivedBytes;
     private ushort lastMtu=23;
     public long SentBytes{get;private set;}public long ReceivedBytes=>Interlocked.Read(ref receivedBytes);public int Streams{get;private set;}
+    public int AbortedStreams{get;private set;}
     public ushort Mtu{get{try{lastMtu=service?.Session.MaxPduSize??lastMtu;}catch(Exception){/* The radio may disappear before final diagnostics. */}return lastMtu;}}
     public string Stage{get;private set;}="not-started";
     public BleTransportFailure? Failure{get;private set;}
@@ -151,7 +152,8 @@ public sealed class BlePhoneTunnel : IBlePhoneConnection
                 try
                 {
                     Stage="forwarding";
-                    await BleStreamForwarder.RunAsync(open,target,port,ReadAsync,WriteAsync,()=>Math.Clamp(Mtu-3-BlePipeFrame.Header,1,BlePipeFrame.MaxPayload),token);
+                    var stream=await BleStreamForwarder.RunAsync(open,target,port,ReadAsync,WriteAsync,()=>Math.Clamp(Mtu-3-BlePipeFrame.Header,1,BlePipeFrame.MaxPayload),token,drainTargetAbort:drainTargetAbort);
+                    if(stream.TargetAborted){AbortedStreams++;continue;}
                     long completed=Stopwatch.GetTimestamp();Interlocked.CompareExchange(ref firstCompletedStream,completed,0);Interlocked.Exchange(ref lastCompletedStream,completed);
                     Streams++;
                 }

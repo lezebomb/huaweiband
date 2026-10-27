@@ -517,6 +517,12 @@ int wmain(int argc, wchar_t** argv) {
         check("physical PC refused by safety guard", !IsSupportedVmwareMachine(L"ASUSTeK COMPUTER INC.", L"Desktop", L"26300"));
         check("different guest build refused", !IsSupportedVmwareMachine(L"VMware, Inc.", L"VMware20,1", L"26200"));
         check("incomplete VM identity refused", !IsSupportedVmwareMachine(L"VMware, Inc.", L"Desktop", L"26300"));
+        check("machine fingerprint is bounded and case normalized", BandKeyMachineFingerprint(L"ABC")==BandKeyMachineFingerprint(L"abc") && BandKeyMachineFingerprint(L"abc").size()==64 && BandKeyMachineFingerprint(L"").empty());
+#ifdef BANDKEY_HOST_PILOT
+        check("host profile accepts only the bound build and computer",BandKeyHostBindingMatches(L"Physical",BandKeyHostExpectedBuild,BandKeyHostExpectedMachine) && !BandKeyHostBindingMatches(L"VMware, Inc.",BandKeyHostExpectedBuild,BandKeyHostExpectedMachine) && !BandKeyHostBindingMatches(L"Physical",L"0",BandKeyHostExpectedMachine) && !BandKeyHostBindingMatches(L"Physical",BandKeyHostExpectedBuild,L""));
+        check("host profile rejects local password and simulation modes",BandKeyProfileAllowsPolicy(2,1,1,3) && !BandKeyProfileAllowsPolicy(0,1,1,3) && !BandKeyProfileAllowsPolicy(2,0,1,3) && !BandKeyProfileAllowsPolicy(2,1,0,3) && !BandKeyProfileAllowsPolicy(2,1,1,1));
+        check("host removal remains possible after an OS build update but not on another computer",BandKeyHostRemovalBindingMatches(L"Physical",BandKeyHostExpectedMachine) && !BandKeyHostRemovalBindingMatches(L"Physical",L"wrong") && !BandKeyHostBindingMatches(L"Physical",L"0",BandKeyHostExpectedMachine));
+#endif
         {
             ComPtr<IClassFactory> factory;
             check("production class factory available without registration", SUCCEEDED(DllGetClassObject(BandKeyLabClsid, IID_PPV_ARGS(&factory))));
@@ -557,7 +563,7 @@ int wmain(int argc, wchar_t** argv) {
             HBITMAP bitmap = nullptr; BITMAP bitmapInfo = {};
             check("sign-in option logo can be rendered", SUCCEEDED(credential->GetBitmapValue(Logo, &bitmap)) && bitmap && GetObjectW(bitmap, sizeof(bitmapInfo), &bitmapInfo) && bitmapInfo.bmWidth == 64 && bitmapInfo.bmHeight == 64); DeleteObject(bitmap);
             PWSTR label = nullptr; credential->GetStringValue(Label, &label);
-            check("sign-in option label identifies the VM lab", label && wcscmp(label, L"BandKey VM credential test") == 0); CoTaskMemFree(label);
+            check("sign-in option label identifies its deployment profile", label && wcscmp(label, BandKeyProviderLabel) == 0); CoTaskMemFree(label);
             BOOL automatic = TRUE; credential->SetSelected(&automatic); check("selecting tile never auto-signs in", !automatic);
             ComPtr<ICredentialProviderCredential2> v2; credential.As(&v2); PWSTR sid = nullptr; v2->GetUserSid(&sid);
             check("tile bound to configured SID", sid && wcscmp(sid, TestSid) == 0); CoTaskMemFree(sid);

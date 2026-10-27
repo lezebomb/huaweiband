@@ -84,6 +84,14 @@ internal static class Program
         });
         await Test("settings roundtrip keeps default auto-lock disabled", () =>
         { store.Write("settings.json", new AppSettings()); Assert(store.Read<AppSettings>("settings.json") is { AutoLock: false, BridgeEnabled: false }); return Task.CompletedTask; });
+        await Test("explicit TLS 1.2 compatibility still authenticates the enrolled certificate",async()=>{
+            var probe=new System.Net.Sockets.TcpListener(IPAddress.Loopback,0);probe.Start();int tlsPort=((IPEndPoint)probe.LocalEndpoint).Port;probe.Stop();
+            await using var compatible=new BridgeServer();await compatible.StartAsync(new AppSettings{Port=tlsPort},cert,broker,_=>{},tls12Compatibility:true);
+            using var socket=new System.Net.Sockets.TcpClient();await socket.ConnectAsync(IPAddress.Loopback,tlsPort);
+            using var tls=new System.Net.Security.SslStream(socket.GetStream(),false,(_,leaf,_,_)=>leaf!=null && Convert.ToHexStringLower(SHA256.HashData(leaf.GetRawCertData()))==BridgeServer.CertificatePin(cert));
+            await tls.AuthenticateAsClientAsync(new System.Net.Security.SslClientAuthenticationOptions{TargetHost="127.0.0.1",EnabledSslProtocols=System.Security.Authentication.SslProtocols.Tls12|System.Security.Authentication.SslProtocols.Tls13});
+            Assert(tls.SslProtocol==System.Security.Authentication.SslProtocols.Tls12 && tls.IsAuthenticated && tls.IsEncrypted);
+        });
         await Test("Android production Java wire code and .NET verify each other's P256 signatures", async () =>
         {
             var input = Path.Combine(dir, "interop-input.txt"); var output = Path.Combine(dir, "interop-output.txt");
