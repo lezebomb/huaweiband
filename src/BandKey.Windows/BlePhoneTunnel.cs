@@ -14,6 +14,11 @@ namespace BandKey.Windows;
 /// <summary>Connects only to BandKey's phone service. No band protocol or pairing API.</summary>
 public sealed class BlePhoneTunnel : IBlePhoneConnection
 {
+    private long firstCompletedStream,lastCompletedStream;
+    public TimeSpan CompletedStreamSpan{
+        get{long first=Interlocked.Read(ref firstCompletedStream),last=Interlocked.Read(ref lastCompletedStream);
+            return first>0 && last>=first?Stopwatch.GetElapsedTime(first,last):TimeSpan.Zero;}
+    }
     public static readonly Guid ServiceId=new("ab7c1101-5d18-4e0b-9aba-30ad640be001"),RxId=new("ab7c1102-5d18-4e0b-9aba-30ad640be001"),TxId=new("ab7c1103-5d18-4e0b-9aba-30ad640be001");
     private readonly Channel<byte[]> received=Channel.CreateBounded<byte[]>(new BoundedChannelOptions(128){SingleReader=true,SingleWriter=false,FullMode=BoundedChannelFullMode.Wait});
     private BluetoothLEDevice? device;private GattDeviceService? service;private GattCharacteristic? rx,tx;
@@ -147,6 +152,7 @@ public sealed class BlePhoneTunnel : IBlePhoneConnection
                 {
                     Stage="forwarding";
                     await BleStreamForwarder.RunAsync(open,target,port,ReadAsync,WriteAsync,()=>Math.Clamp(Mtu-3-BlePipeFrame.Header,1,BlePipeFrame.MaxPayload),token);
+                    long completed=Stopwatch.GetTimestamp();Interlocked.CompareExchange(ref firstCompletedStream,completed,0);Interlocked.Exchange(ref lastCompletedStream,completed);
                     Streams++;
                 }
                 catch(Exception error)when(error is IOException or SocketException or OperationCanceledException or ArgumentException)

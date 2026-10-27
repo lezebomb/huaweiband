@@ -11,6 +11,7 @@ internal interface IBlePhoneConnection : IAsyncDisposable
     BleTransportFailure? Failure{get;}
     ushort Mtu{get;}
     int Streams{get;}
+    TimeSpan CompletedStreamSpan=>TimeSpan.Zero;
     long SentBytes{get;}
     long ReceivedBytes{get;}
     string DeliveryMode=>"unknown";
@@ -42,11 +43,16 @@ internal sealed class BlePhoneTransport
     public long SentBytes=>sent+(current?.SentBytes??0);
     public long ReceivedBytes=>received+(current?.ReceivedBytes??0);
     public int Attempts{get;private set;}
+    public int FailureCount{get;private set;}
+    public int ConsecutiveFailures{get;private set;}
+    public int RecoveryBudgetResets{get;private set;}
+    public bool FailuresTruncated{get{lock(failureLock)return FailureCount>failures.Count;}}
     public BleAttemptFailure[] Failures{get{lock(failureLock)return failures.ToArray();}}
     public BleTransportFailure? Failure{get{lock(failureLock)return failures.LastOrDefault()?.Failure;}}
     // The v1 phone can still be awaiting READY for up to eight seconds after
     // CCCD removal. Let that old worker and OS GATT references drain first.
-    public BlePhoneTransport():this(()=>new BlePhoneTunnel(),(attempt,token)=>Task.Delay(TimeSpan.FromSeconds(10+(1<<(attempt-1))),token)){}
+    // The index is the current failure burst, not the lifetime attempt count.
+    public BlePhoneTransport():this(()=>new BlePhoneTunnel(),(burst,token)=>Task.Delay(TimeSpan.FromSeconds(10+(1<<(burst-1))),token)){}
     internal BlePhoneTransport(Func<IBlePhoneConnection> factory,Func<int,CancellationToken,Task> delay){this.factory=factory;this.delay=delay;}
 
     private static bool Retryable(BleTransportFailure failure)=>failure.Code is
@@ -86,8 +92,18 @@ internal sealed class BlePhoneTransport
                 catch(Exception error)when(error is IOException or SocketException or TimeoutException or OperationCanceledException)
                 {
                     var failure=current.Failure??BleTransportFailure.From(error,"connect-"+current.Stage);
-                    lock(failureLock)failures.Add(new(Attempts,elapsed.ElapsedMilliseconds,current.Stage,failure));
-                    stage="failed";retry=Attempts<4 && Retryable(failure);
+                    lock(failureLock){
+                        FailureCount++;failures.Add(new(Attempts,elapsed.ElapsedMilliseconds,current.Stage,failure));
+                        if(failures.Count>32)failures.RemoveAt(0);
+                    }
+                    // Mere connection, idle time or partial bytes do not replenish
+                    // retries. Require multiple completed streams spanning a minute
+                    // in this generation, while preserving the original run deadline.
+                    if(ConsecutiveFailures>0 && current.Streams>=3 && current.CompletedStreamSpan>=TimeSpan.FromSeconds(60)){
+                        ConsecutiveFailures=0;RecoveryBudgetResets++;
+                    }
+                    ConsecutiveFailures++;
+                    stage="failed";retry=ConsecutiveFailures<4 && Retryable(failure);
                     if(!retry)throw;
                 }
                 finally
@@ -97,7 +113,7 @@ internal sealed class BlePhoneTransport
                     streams+=ended.Streams;sent+=ended.SentBytes;received+=ended.ReceivedBytes;mtu=ended.Mtu;deliveryMode=ended.DeliveryMode;current=null;
                     if(readyFile!=null)File.Delete(readyFile);
                 }
-                if(retry){stage="reconnecting";await delay(Attempts,token);}
+                if(retry){stage="reconnecting";await delay(ConsecutiveFailures,token);}
             }
             stage="stopped";
         }

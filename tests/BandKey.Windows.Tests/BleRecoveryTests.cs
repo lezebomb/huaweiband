@@ -13,7 +13,8 @@ internal static class BleRecoveryTests
         public string Stage=>"forwarding";
         public BleTransportFailure? Failure=>null;
         public ushort Mtu=>23;
-        public int Streams=>1;
+        public int Streams{get;init;}=1;
+        public TimeSpan CompletedStreamSpan{get;init;}
         public long SentBytes=>3;
         public long ReceivedBytes=>5;
         public BlePeerBinding? Peer{get;init;}
@@ -102,17 +103,58 @@ internal static class BleRecoveryTests
             Check(created==2 && disposed==2 && !File.Exists(ready) && transport.Stage=="stopped");
             Check(transport.Failures.Length==1 && transport.Failure?.Code=="target-read" && transport.Streams==2 && transport.SentBytes==6 && transport.ReceivedBytes==10);
         });
-        await test("BLE availability failures stop after four attempts and retain every failure",async()=>
+        await test("BLE availability failures stop after four consecutive attempts and retain every failure",async()=>
         {
             int disposed=0;var transport=new BlePhoneTransport(()=>new Connection((_,_,_)=>throw new BleTransportException("target-connect-timeout"),()=>disposed++),(_,_)=>Task.CompletedTask);
             try{await transport.RunAsync(IPAddress.Loopback,19443,TimeSpan.FromSeconds(3));throw new Exception("Expected retry exhaustion");}
             catch(BleTransportException){Check(transport.Attempts==4 && disposed==4 && transport.Failures.Length==4 && transport.Stage=="failed");}
+        });
+        await test("BLE sustained completed traffic replenishes retries instead of exhausting a lifetime attempt counter",async()=>
+        {
+            int created=0,disposed=0;var waits=new List<int>();using var stop=new CancellationTokenSource(TimeSpan.FromSeconds(3));
+            var transport=new BlePhoneTransport(()=>{
+                int id=++created;
+                return new Connection((_,_,token)=>{
+                    if(id==5){stop.Cancel();return Task.FromCanceled(token);}
+                    throw new BleTransportException("target-read");
+                },()=>disposed++){Streams=id==3?3:1,CompletedStreamSpan=id==3?TimeSpan.FromSeconds(60):TimeSpan.Zero};
+            },(burst,_)=>{waits.Add(burst);return Task.CompletedTask;});
+            await transport.RunAsync(IPAddress.Loopback,19443,TimeSpan.FromSeconds(3),cancellation:stop.Token);
+            Check(created==5 && disposed==5 && waits.SequenceEqual(new[]{1,2,1,2}) && transport.FailureCount==4 && transport.ConsecutiveFailures==2 && transport.RecoveryBudgetResets==1);
+        });
+        await test("BLE idle or short completed traffic cannot replenish a failing connection burst",async()=>
+        {
+            foreach(var health in new[]{(streams:0,seconds:60),(streams:2,seconds:60),(streams:3,seconds:59)}){
+                int created=0;var transport=new BlePhoneTransport(()=>{created++;return new Connection((_,_,_)=>throw new BleTransportException("stream-timeout"),()=>{}){Streams=health.streams,CompletedStreamSpan=TimeSpan.FromSeconds(health.seconds)};},(_,_)=>Task.CompletedTask);
+                try{await transport.RunAsync(IPAddress.Loopback,19443,TimeSpan.FromSeconds(3));throw new Exception("Expected burst exhaustion");}
+                catch(BleTransportException){Check(created==4 && transport.ConsecutiveFailures==4 && transport.RecoveryBudgetResets==0);}
+            }
+        });
+        await test("BLE bounded history retains total failures after repeated successful recoveries",async()=>
+        {
+            int created=0,disposed=0;using var stop=new CancellationTokenSource(TimeSpan.FromSeconds(3));
+            var transport=new BlePhoneTransport(()=>{
+                int id=++created;return new Connection((_,_,token)=>{
+                    if(id==36){stop.Cancel();return Task.FromCanceled(token);}throw new BleTransportException("gatt-disconnected");
+                },()=>disposed++){Streams=3,CompletedStreamSpan=TimeSpan.FromSeconds(60)};
+            },(burst,_)=>{Check(burst==1);return Task.CompletedTask;});
+            await transport.RunAsync(IPAddress.Loopback,19443,TimeSpan.FromSeconds(3),cancellation:stop.Token);
+            Check(created==36 && disposed==36 && transport.FailureCount==35 && transport.Failures.Length==32 && transport.FailuresTruncated && transport.RecoveryBudgetResets==34 && transport.Failures[0].Attempt==4);
         });
         await test("BLE invalid frame is fatal and never automatically retried",async()=>
         {
             int disposed=0;var transport=new BlePhoneTransport(()=>new Connection((_,_,_)=>throw new BleTransportException("phone-frame-invalid"),()=>disposed++),(_,_)=>throw new Exception("Must not back off"));
             try{await transport.RunAsync(IPAddress.Loopback,19443,TimeSpan.FromSeconds(3));throw new Exception("Expected protocol refusal");}
             catch(BleTransportException){Check(transport.Attempts==1 && disposed==1 && transport.Failures.Length==1 && transport.Failure?.Code=="phone-frame-invalid");}
+        });
+        await test("BLE healthy traffic cannot make an invalid frame or permission denial retryable",async()=>
+        {
+            foreach(string fatal in new[]{"phone-frame-invalid","gatt-permission-denied"}){
+                int created=0,disposed=0;var waits=new List<int>();
+                var transport=new BlePhoneTransport(()=>{int id=++created;return new Connection((_,_,_)=>throw new BleTransportException(id==1?"target-read":fatal),()=>disposed++){Streams=3,CompletedStreamSpan=TimeSpan.FromSeconds(60)};},(burst,_)=>{waits.Add(burst);return Task.CompletedTask;});
+                try{await transport.RunAsync(IPAddress.Loopback,19443,TimeSpan.FromSeconds(3));throw new Exception("Expected fatal refusal");}
+                catch(BleTransportException){Check(created==2 && disposed==2 && waits.SequenceEqual(new[]{1}) && transport.Failure?.Code==fatal);}
+            }
         });
         await test("BLE stop file cancels retry backoff without starting another connection",async()=>
         {

@@ -43,7 +43,7 @@ public sealed class BleBridgeForm : Form
             "stopped"=>"已停止",
             _=>"正在建立 BLE 连接"
         };
-        string history=tunnel.Failure==null?"历史故障：无":$"历史故障：{tunnel.Failure.Code}（累计 {tunnel.Failures.Length} 次，原记录保留）";
+        string history=tunnel.Failure==null?"历史故障：无":$"历史故障：{tunnel.Failure.Code}（累计 {tunnel.FailureCount} 次，保留最近 {tunnel.Failures.Length} 条）";
         string delivery=tunnel.DeliveryMode switch {"indicate"=>"Indication（链路确认）","notify"=>"Notify（兼容模式）",_=>"尚未协商"};
         status.Text=$"当前：{current}\r\n阶段：{phase}；连接尝试：{tunnel.Attempts}\r\n交付：{delivery}；MTU：{tunnel.Mtu}\r\n完成流：总计 {tunnel.Streams}／本次连接 {completed}\r\n发往手机：{tunnel.SentBytes} 字节；来自手机：{tunnel.ReceivedBytes} 字节\r\n{history}";
     }
@@ -58,7 +58,7 @@ public sealed class BleBridgeForm : Form
     private async Task RunTransport(BlePhoneTransport current,IPAddress address,CancellationToken token)
     {
         string result;
-        try{await current.RunAsync(address,19443,TimeSpan.FromMinutes((int)minutes.Value),cancellation:token);result=$"通信已停止；连接尝试 {current.Attempts}，故障记录 {current.Failures.Length}；最近故障：{current.Failure?.Code??"无"}。";Log("stopped");}
+        try{await current.RunAsync(address,19443,TimeSpan.FromMinutes((int)minutes.Value),cancellation:token);result=$"通信已停止；连接尝试 {current.Attempts}，历史故障 {current.FailureCount} 次；最近历史故障：{current.Failure?.Code??"无"}。";Log("stopped");}
         catch(OperationCanceledException){result="已取消连接。";Log("cancelled");}
         catch(Exception error){var failure=current.Failure??BleTransportFailure.From(error);result="通信停止："+failure.Code+"（"+current.Stage+"）。检查手机 BLE 服务、蓝牙状态和 VM 监听，之后重新连接。";Log(failure.Code);}
         finally{foreach(var failure in current.Failures)Log($"attempt-{failure.Attempt}:{failure.Failure.Code}");tunnel=null;cancellation?.Dispose();cancellation=null;start.Enabled=target.Enabled=minutes.Enabled=true;stop.Enabled=false;}
