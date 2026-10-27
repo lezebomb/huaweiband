@@ -143,21 +143,29 @@ internal sealed class VmBridgeForm : Form
         if (server != null) { MessageBox.Show(this, "先停止当前中继。"); return; }
         using var dialog = new OpenFileDialog { Filter = "BandKey 公钥|*.bandkeypub", CheckFileExists = true };
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
-        nativePublicKey = null;
         try
         {
             if (new FileInfo(dialog.FileName).Length != 72) throw new FormatException();
-            var bytes = File.ReadAllBytes(dialog.FileName); using var key = WindowsGrantWire.ImportNativePublicKey(bytes); nativePublicKey = bytes;
+            var bytes = File.ReadAllBytes(dialog.FileName); using var key = WindowsGrantWire.ImportNativePublicKey(bytes);
+            var enrolled = VmNativePolicy.ReadEnrolledPhone();
+            if (enrolled != null && !bytes.AsSpan().SequenceEqual(enrolled))
+            {
+                nativePublicKey = enrolled;
+                status.Text = "导入文件与本VM当前账户登记不一致，已保留登记公钥。\r\nSHA-256：\r\n" + Convert.ToHexStringLower(SHA256.HashData(enrolled));
+                MessageBox.Show(this, "这份文件属于另一份手机公钥。已保留本VM当前账户登记，继续使用它即可，无需重新安装。\n若要更换手机，请先按VM安装教程变更登记。");
+                return;
+            }
+            nativePublicKey = bytes;
             status.Text = "手机实验公钥 SHA-256（与手机核对）：\r\n" + Convert.ToHexStringLower(SHA256.HashData(bytes));
         }
-        catch (Exception) { MessageBox.Show(this, "无法读取有效的 P-256 手机实验公钥。"); }
+        catch (Exception) { MessageBox.Show(this, "无法读取有效的 P-256 手机实验公钥，原来已读取的公钥保持不变。"); }
     }
     private async Task StartRelay()
     {
         if (server != null || stopping) return;
         try
         {
-            if (nativePublicKey == null || !VmNativePolicy.MatchesPhone(nativePublicKey)) throw new InvalidOperationException("先在 VM 安装器选择手机确认模式，登记相同公钥。");
+            if (nativePublicKey == null || !VmNativePolicy.MatchesPhone(nativePublicKey)) throw new InvalidOperationException("没有匹配当前VM账户的有效手机登记。请先关闭并重新打开中继，让程序自动读取登记公钥；仍不符时核对VM登录账户和手机公钥，不要直接重复安装。");
             if (fixedMode.Checked && !VmNativePolicy.SupportsRequestRenewal()) throw new InvalidOperationException("固定手机模式需要本轮协议 v3 的 VM 登录组件。请按新教程在快照保护下更新 VM；主机不要安装。");
             if (!Uri.TryCreate(endpoint.Text.Trim(), UriKind.Absolute, out var url) || url.Scheme != "https" || !IPAddress.TryParse(url.Host, out _) || url.UserInfo.Length != 0 || url.Query.Length != 0 || url.Fragment.Length != 0 || url.AbsolutePath != "/") throw new InvalidOperationException("手机地址必须为 HTTPS IPv4/IPv6 地址和端口。");
             var settings = new AppSettings { ListenAddress = bind.Text.Trim(), Port = 19443 }; settings.Validate();
