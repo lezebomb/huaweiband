@@ -57,7 +57,7 @@ internal sealed class VmBridgeForm : Form
         reportPath=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),hostPilot?"BandKeyHostBridge":"BandKeyVmBridge","reports","relay-"+DateTime.UtcNow.ToString("yyyyMMdd-HHmmss")+"-"+Guid.NewGuid().ToString("N")+".json");
         Text = hostPilot?"BandKey 主机试用":"BandKey VM 手机通信实验"; ClientSize = new(720, 610); StartPosition = FormStartPosition.CenterScreen;
         if(hostPilot){
-            start.Text="启用／恢复主机手环解锁";walkLock.Text="手环持续断连后锁定本机（默认关闭）";bind.ReadOnly=true;endpoint.ReadOnly=true;fixedMode.Checked=true;
+            start.Text="启用／恢复主机手环解锁";fixedMode.Text="手机签名状态：手环在线、通信恢复后请求确认";walkLock.Text="手环持续断连后锁定本机（默认关闭）";bind.ReadOnly=true;endpoint.ReadOnly=true;fixedMode.Checked=true;
             try{var saved=new Store(HostData).Read<HostSettings>("resident-settings.json");hostPaused=saved?.Paused??false;walkLock.Checked=saved?.AutoLock??false;tls12Compatibility=saved?.Tls12Compatibility??false;}catch(Exception error)when(error is IOException or JsonException or UnauthorizedAccessException){hostPaused=true;reportError="settings-unreadable";}
             walkLock.CheckedChanged+=(_,_)=>SaveHostSettings();
             residentIcon=new NotifyIcon{Icon=SystemIcons.Shield,Text="BandKey 主机常驻",Visible=true};
@@ -67,13 +67,13 @@ internal sealed class VmBridgeForm : Form
             menu.Items.Add("退出（下次登录自动启动）",null,(_,_)=>{exitRequested=true;Close();});residentIcon.ContextMenuStrip=menu;residentIcon.DoubleClick+=(_,_)=>{Show();Activate();};
         }
         var column = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, Padding = new Padding(20), AutoScroll = true }; Controls.Add(column);
-        column.Controls.Add(new Label { Text = hostPilot?"主机常驻：仅真实手环确认，保留系统密码／Hello。\n登录后自动连接；关闭窗口进入托盘。固定手机模式使用连接范围。":"仅供隔离 VM：手机／手环确认，Windows 原生组件独立验签。\n固定手机模式使用手环连接范围，不提供米数距离。", AutoSize = true });
+        column.Controls.Add(new Label { Text = hostPilot?"主机常驻：手动锁屏，返回后仍需手环点确认。\n手机可留在桌旁，也可随身；通信恢复后使用新请求，不提供米数距离。":"仅供隔离 VM：手机／手环确认，Windows 原生组件独立验签。\n固定手机模式使用手环连接范围，不提供米数距离。", AutoSize = true });
         var import = new Button { Text = "1. 导入手机实验公钥（.bandkeypub）", AutoSize = true }; import.Click += (_, _) => ImportPhone(); column.Controls.Add(import);
         column.Controls.Add(new Label { Text = "本机监听 IPv4（端口固定 19443）", AutoSize = true }); column.Controls.Add(bind);
         column.Controls.Add(new Label { Text = "手机访问地址（NAT 映射时填写宿主机地址）", AutoSize = true }); column.Controls.Add(endpoint);
         fixedMode.CheckedChanged += (_, _) => { walkLock.Enabled = fixedMode.Checked; if (!fixedMode.Checked) walkLock.Checked = false; };
         column.Controls.Add(fixedMode); column.Controls.Add(walkLock);
-        column.Controls.Add(new Label{Text=hostPilot?"固定手机：接近稳定等待（秒，默认1；断连5秒锁屏）":"固定手机：接近稳定等待（秒，默认1；断连15秒锁屏）",AutoSize=true});column.Controls.Add(nearDelay);
+        column.Controls.Add(new Label{Text=hostPilot?"返回稳定等待（秒，默认1）":"固定手机：接近稳定等待（秒，默认1；断连15秒锁屏）",AutoSize=true});column.Controls.Add(nearDelay);
         start.Click += async (_, _) => {hostPaused=false;SaveHostSettings();await StartRelay();}; column.Controls.Add(start);
         var retryRequest = new Button { Text = "重新请求手环确认（固定手机模式）", AutoSize = true };
         retryRequest.Click += (_, _) => fixedPhone?.RetryRequest(); column.Controls.Add(retryRequest);
@@ -211,7 +211,7 @@ internal sealed class VmBridgeForm : Form
             bool Current() => nativePublicKey != null && nativePolicy.MatchesPhone(nativePublicKey);
             using var identity = WindowsIdentity.GetCurrent();
             var raw = new WindowsGrantDirectoryExchange(nativePolicy.DirectoryPath, identity.User!.Value, (uint)Process.GetCurrentProcess().SessionId, () => Current() && WindowsSession.IsLocked() == true);
-            if (fixedMode.Checked) fixedPhone = new FixedPhoneChannel(pc, device, raw, new NativeGuardedSession(nativePolicy), Current, walkLock.Checked,options:new PresenceOptions{NearSeconds=(double)nearDelay.Value,FarSeconds=hostPilot?5:15},useFreshLockRequest:true);
+            if (fixedMode.Checked) fixedPhone = new FixedPhoneChannel(pc, device, raw, new NativeGuardedSession(nativePolicy), Current, walkLock.Checked,options:new PresenceOptions{NearSeconds=(double)nearDelay.Value,FarSeconds=hostPilot?5:15},useFreshLockRequest:true,renewOnAuthenticatedReturn:hostPilot);
             var exchange = new WindowsGrantDirectoryExchange(nativePolicy.DirectoryPath, identity.User!.Value, (uint)Process.GetCurrentProcess().SessionId, () => Current() && WindowsSession.IsLocked() == true && (fixedPhone?.CanSubmit ?? true));
             relay = new WindowsGrantRelay(pc, device, exchange, Current, proximityCurrent: () => fixedPhone?.CanSubmit ?? true);
             server = new BridgeServer(); var emptyLegacy = new AuthorizationBroker(relay.PcId, pc);
@@ -249,12 +249,14 @@ internal sealed class VmBridgeForm : Form
     }
     private async Task RunResidentTransport(CancellationToken token){
         while(!token.IsCancellationRequested){
-            var transport=new BlePhoneTransport(drainTargetAbort:true);activeResidentTransport=transport;residentStatus="正在连接手机 BLE";
+            BlePhoneTransport? transport=null;
+            transport=new BlePhoneTransport(()=>new BlePhoneTunnel(drainTargetAbort:true),(burst,stop)=>Task.Delay(TimeSpan.FromSeconds(transport?.Failure?.Code=="connect-scan"?2:10+(1<<(burst-1))),stop));
+            activeResidentTransport=transport;residentStatus="正在连接手机 BLE";
             try{await transport.RunAsync(IPAddress.Loopback,19443,TimeSpan.FromHours(2),cancellation:token);residentStatus="传输已结束，准备新连接";}
             catch(OperationCanceledException)when(token.IsCancellationRequested){return;}
             catch(Exception error){residentStatus="等待重连："+(transport.Failure?.Code??error.GetType().Name);}
             finally{lastResidentTransportReport=ResidentTransportReport();activeResidentTransport=null;}
-            if(!token.IsCancellationRequested)try{await Task.Delay(TimeSpan.FromSeconds(30),token);}catch(OperationCanceledException){return;}
+            if(!token.IsCancellationRequested)try{await Task.Delay(TimeSpan.FromSeconds(transport.Failure?.Code=="connect-scan"?2:30),token);}catch(OperationCanceledException){return;}
         }
     }
 }

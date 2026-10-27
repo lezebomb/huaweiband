@@ -25,10 +25,10 @@ internal static class FixedPhoneTests
         public readonly ECDsa Pc=ECDsa.Create(ECCurve.NamedCurves.nistP256),Phone=ECDsa.Create(ECCurve.NamedCurves.nistP256);
         public readonly Desktop Session=new();public readonly Exchange Exchange=new();public readonly PublicDevice Device;
         public readonly FixedPhoneChannel Channel;public FixedPhoneContext Context;public long Wall=1700000000000,Mono=1000,Sequence;
-        public Fixture(bool autoLock=false,bool freshLock=false){
+        public Fixture(bool autoLock=false,bool freshLock=false,bool phoneReturn=false){
             string key=Protocol.ExportPublicKey(Phone);Device=new(Protocol.Fingerprint(key),"VM test",key,ConfirmationSources.TestClient,true);
             Exchange.Wall=()=>Wall;
-            Channel=new(Pc,Device,Exchange,Session,()=>true,autoLock,()=>Wall,()=>Mono,new(){NearSeconds=1,FarSeconds=3,StaleSeconds=5,MissingSeconds=12},freshLock);
+            Channel=new(Pc,Device,Exchange,Session,()=>true,autoLock,()=>Wall,()=>Mono,new(){NearSeconds=1,FarSeconds=3,StaleSeconds=5,MissingSeconds=12},freshLock,phoneReturn);
             Context=Channel.GetContext(Poll());
         }
         public PollRequest Poll(){var p=new PollRequest(Channel.PcId,Device.DeviceId,Protocol.Nonce(),Wall/1000,"");return p with{Signature=Protocol.Sign(Phone,FixedPhoneWire.ContextPollText(p))};}
@@ -122,6 +122,27 @@ internal static class FixedPhoneTests
             f.Advance(31000);Check(!f.Channel.CanSubmit);f.Channel.Observe(f.Report(true));f.Advance(1000);
             Check(f.Channel.Observe(f.Report(true)).Renewal==null && !f.Channel.CanSubmit);
             f.Channel.RetryRequest();Check(f.Channel.Observe(f.Report(true)).Renewal!=null);
+        });
+        test("host phone return creates a fresh request without requiring band-phone disconnection",()=>{
+            using var f=new Fixture(phoneReturn:true);var old=f.Near();f.Channel.Renew(f.ApproveRenewal(old));f.Exchange.NewNative();Check(f.Channel.CanSubmit);
+            f.Advance(60000);Check(!f.Channel.CanSubmit);Check(f.Channel.Observe(f.Report(true)).Renewal==null);f.Advance(1000);
+            var next=f.Channel.Observe(f.Report(true)).Renewal;Check(next!=null && next.Body!=old.Body && f.Channel.Snapshot.PhoneChannelReturns==1 && !f.Channel.CanSubmit && f.Session.Locks==0);
+            Check(!f.Channel.Renew(f.ApproveRenewal(old)).Accepted);Check(f.Channel.Renew(f.ApproveRenewal(next!)).Accepted && !f.Channel.CanSubmit);
+            f.Advance(1);f.Exchange.NewNative();Check(f.Channel.CanSubmit); // Still only a new challenge; no WIN approval exists.
+        });
+        test("host short heartbeat gaps do not churn a still-current request",()=>{
+            using var f=new Fixture(phoneReturn:true);var old=f.Near();f.Channel.Renew(f.ApproveRenewal(old));f.Exchange.NewNative();f.Advance(6000);
+            f.Channel.Observe(f.Report(true));f.Advance(1000);Check(f.Channel.Observe(f.Report(true)).Renewal==null && f.Channel.Snapshot.PhoneChannelReturns==0 && f.Channel.CanSubmit);
+        });
+        test("host return hints require a new authenticated state report",()=>{
+            using var f=new Fixture(phoneReturn:true);f.Near();var replay=f.Report(true);f.Channel.Observe(replay);f.Advance(60000);
+            Check(!f.Channel.Observe(replay).Accepted && f.Channel.Snapshot.PhoneChannelReturns==0);
+            var fresh=f.Report(true);Check(!f.Channel.Observe(fresh with{Connected=false}).Accepted && f.Channel.Snapshot.PhoneChannelReturns==0);
+            Check(f.Channel.Observe(fresh).Accepted && f.Channel.Snapshot.PhoneChannelReturns==1);Check(!f.Channel.Observe(fresh).Accepted && f.Channel.Snapshot.PhoneChannelReturns==1);
+        });
+        test("host phone return alone cannot prompt when the selected band is disconnected",()=>{
+            using var f=new Fixture(phoneReturn:true);var old=f.Near();f.Channel.Renew(f.ApproveRenewal(old));f.Exchange.NewNative();f.Advance(60000);
+            Check(f.Channel.Observe(f.Report(false)).Renewal==null);f.Advance(3000);Check(f.Channel.Observe(f.Report(false)).Renewal==null && !f.Channel.CanSubmit && f.Channel.Snapshot.PhoneChannelReturns==1 && f.Session.Locks==0);
         });
         test("fixed controller may preserve verified near evidence on a lock boundary",()=>{
             using var f=new Fixture();var c=new AutoLockController(new(){NearSeconds=1},f.Session);c.SelectInputMode(ProximityInputMode.FixedPhoneBandConnection);

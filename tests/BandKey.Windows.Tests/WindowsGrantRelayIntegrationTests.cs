@@ -31,12 +31,12 @@ internal static class WindowsGrantRelayIntegrationTests
         internal byte[] Body = [];
         internal string RequestPath = "";
         internal string ApprovalPath => RequestPath + ".approval";
-        internal Fixture(string directory,bool fixedPhone=false,bool freshLock=false)
+        internal Fixture(string directory,bool fixedPhone=false,bool freshLock=false,bool phoneReturn=false)
         {
             Root = Path.Combine(directory, "native-exchange-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(Path.Combine(Root, "Exchange"));
             var publicKey = Protocol.ExportPublicKey(Phone); Device = new(Protocol.Fingerprint(publicKey), "VM integration test", publicKey, ConfirmationSources.TestClient, true);
             Exchange = new(Root, Sid, 5, () => Current, () => WindowsGrantRelayWire.FileTimeMilliseconds(Wall));
-            if(fixedPhone) Fixed=new(Pc,Device,Exchange,Desktop,()=>Current,false,()=>Wall,()=>Mono,useFreshLockRequest:freshLock);
+            if(fixedPhone) Fixed=new(Pc,Device,Exchange,Desktop,()=>Current,false,()=>Wall,()=>Mono,useFreshLockRequest:freshLock,renewOnAuthenticatedReturn:phoneReturn);
             Relay = new(Pc, Device, Exchange, () => Current, () => Wall, () => Mono, proximityCurrent:()=>Fixed?.CanSubmit??true);
             Certificate = new Store(Path.Combine(Root, "pc-identity")).LoadTlsCertificate();
             var listener = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0); listener.Start(); int port = ((IPEndPoint)listener.LocalEndpoint).Port; listener.Stop();
@@ -96,6 +96,14 @@ internal static class WindowsGrantRelayIntegrationTests
     }
     internal static async Task RunAsync(Func<string, Func<Task>, Task> test, string directory)
     {
+        await test("authenticated phone channel return renews an expired request while refusing the old signed approval",async()=>{
+            await using var f=new Fixture(directory,true,phoneReturn:true);await f.Start();await f.ReadyFixedNative();var old=await f.Poll();var oldDecision=f.Decision(old);
+            f.Wall+=60000;f.Mono+=60000;Check((await f.FixedState(true)).Renewal==null);f.Wall+=4000;f.Mono+=4000;
+            var returned=await f.FixedState(true);Check(returned.Renewal!=null && f.Fixed!.Snapshot.PhoneChannelReturns==1 && f.Desktop.Locks==0);
+            Check(f.Fixed!.Renew(f.RenewalProof(returned.Renewal!)).Accepted);File.Delete(Path.Combine(f.Root,"Exchange","request-renewal.bin"));f.Wall++;f.Mono++;f.NewRequest();
+            var current=await f.Poll();Check(current.Challenge!=old.Challenge);using var refused=await f.Decide(oldDecision);Check(refused.StatusCode==HttpStatusCode.Forbidden && !File.Exists(f.ApprovalPath));
+            using var approved=await f.Decide(f.Decision(current));var status=await approved.Content.ReadFromJsonAsync<WindowsGrantRelayResult>();Check(approved.IsSuccessStatusCode && status is{Submitted:true,WindowsUnlocked:false} && File.Exists(f.ApprovalPath));
+        });
         async Task Case(string name, Func<Fixture, Task> action) => await test(name, async () => { await using var f = new Fixture(directory); await f.Start(); await action(f); });
         await test("fresh lock HTTPS returns the current signed challenge without renewal or automatic approval",async()=>{
             await using var f=new Fixture(directory,true,true);f.Desktop.Locked=false;await f.Start();

@@ -9,7 +9,7 @@ public sealed record RequestRenewalPrompt(string PcId,string DeviceId,string Con
 public sealed record RequestRenewalDecision(string PcId,string DeviceId,string ContextNonce,string Body,string Signature,PollRequest? Poll=null);
 public sealed record FixedPhoneResult(bool Accepted,bool CanPoll,string Code,RequestRenewalPrompt? Renewal=null,string? NativeState=null,WindowsGrantPrompt? Prompt=null)
 { public bool WindowsUnlocked=>false; public bool TestOnly=>true; }
-public sealed record FixedPhoneSnapshot(bool? BandConnected,bool Fresh,PresenceState Presence,long Reports,long Renewals,bool NativeRequestReady,bool Revoked,string NativeState="not-requested",bool DirectRequest=false,int ReplacementRecoveries=0,long ConnectedReports=0,long DisconnectedReports=0,long UnknownReports=0,bool AutoLockEnabled=false,bool DepartureArmed=false,string PresenceReason="not-observed",long LockRequests=0,string LastLockResult="not-requested");
+public sealed record FixedPhoneSnapshot(bool? BandConnected,bool Fresh,PresenceState Presence,long Reports,long Renewals,bool NativeRequestReady,bool Revoked,string NativeState="not-requested",bool DirectRequest=false,int ReplacementRecoveries=0,long ConnectedReports=0,long DisconnectedReports=0,long UnknownReports=0,bool AutoLockEnabled=false,bool DepartureArmed=false,string PresenceReason="not-observed",long LockRequests=0,string LastLockResult="not-requested",long PhoneChannelReturns=0);
 public sealed record WindowsRequestBinding(string UserSid,uint WindowsSessionId);
 
 public interface IWindowsRequestRenewalExchange
@@ -54,16 +54,19 @@ public sealed class FixedPhoneChannel
     private int replacementRecoveries;
     private const int MaxReplacementRecoveries=2;
     private long connectedReports,disconnectedReports,unknownReports,lockRequests;
+    private readonly bool renewOnAuthenticatedReturn;
+    private long lastAcceptedReportMono,phoneChannelReturns;
     private string lastLockResult="not-requested";
     public string PcId{get;}
     public FixedPhoneChannel(ECDsa pc,PublicDevice phone,IWindowsRequestRenewalExchange exchange,IInteractiveSession session,Func<bool> current,
-        bool autoLock=false,Func<long>? wall=null,Func<long>? mono=null,PresenceOptions? options=null,bool useFreshLockRequest=false)
+        bool autoLock=false,Func<long>? wall=null,Func<long>? mono=null,PresenceOptions? options=null,bool useFreshLockRequest=false,bool renewOnAuthenticatedReturn=false)
     {
         if(!phone.TestOnly || phone.ConfirmationSource!=ConfirmationSources.TestClient || phone.DeviceId!=Protocol.Fingerprint(phone.PublicKey))throw new ArgumentException("Explicit VM phone enrollment required");
         using var key=Protocol.ReadPublicKey(phone.PublicKey);publicKey=WindowsGrantWire.ExportNativePublicKey(key);
         this.pc=pc;this.phone=phone;this.exchange=exchange;this.session=session;this.current=current;
         this.wall=wall??(()=>DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());this.mono=mono??(()=>Environment.TickCount64);
         this.useFreshLockRequest=useFreshLockRequest;
+        this.renewOnAuthenticatedReturn=renewOnAuthenticatedReturn;
         startedMono=this.mono();expiresAt=checked(this.wall()/1000+1800);PcId=Protocol.Fingerprint(Protocol.ExportPublicKey(pc));
         control=new(options??new PresenceOptions{NearSeconds=1},session){Enabled=autoLock};control.SelectInputMode(ProximityInputMode.FixedPhoneBandConnection);
         control.LockAttempted+=result=>{lockRequests++;lastLockResult=result.Code;};
@@ -121,6 +124,14 @@ public sealed class FixedPhoneChannel
                 p.ObservedAtMilliseconds<now-10000 || p.ObservedAtMilliseconds>now+3000 || p.BandHash==null || p.BandHash.Length!=64 || p.BandHash.Any(c=>!char.IsAsciiHexDigitLower(c)) ||
                 !Protocol.Verify(phone.PublicKey,FixedPhoneWire.ReportText(p),p.Signature))return new(false,false,"fixed-phone-report-invalid");
             if(bandHash!=null && bandHash!=p.BandHash){Revoke();return new(false,false,"fixed-phone-band-changed");}
+            // A recovered authenticated phone channel is a return hint, not an
+            // RSSI/range claim and never an approval. Preserve the VM default.
+            // Require a new valid state proof after at least 15 seconds without
+            // one; repeated old reports cannot manufacture a return event.
+            if(renewOnAuthenticatedReturn && sequence>0 && mono()-lastAcceptedReportMono>=15000){
+                ResetArrival();control.Reset("authenticated-phone-channel-return");phoneChannelReturns++;
+            }
+            lastAcceptedReportMono=mono();
             bool previousEvidenceFresh=Fresh && bandConnected==true;bandHash=p.BandHash;sequence=p.Sequence;reports++;bandConnected=p.Connected;
             if(p.Connected==true)connectedReports++;else if(p.Connected==false)disconnectedReports++;else unknownReports++;
             freshUntil=mono()+Math.Clamp(p.ObservedAtMilliseconds+10000-now,0,10000);
@@ -217,6 +228,6 @@ public sealed class FixedPhoneChannel
     }
     public FixedPhoneSnapshot Snapshot
     {
-        get{lock(gate){if(!Current())return new(null,false,PresenceState.Unknown,reports,renewals,false,true,"revoked",ConnectedReports:connectedReports,DisconnectedReports:disconnectedReports,UnknownReports:unknownReports,AutoLockEnabled:control.Enabled,PresenceReason:"revoked",LockRequests:lockRequests,LastLockResult:lastLockResult);Synchronize();bool ready=Ready();return new(Fresh?bandConnected:null,Fresh,control.Presence.State,reports,renewals,ready,revoked,nativeState,directRequest,replacementRecoveries,connectedReports,disconnectedReports,unknownReports,control.Enabled,control.Presence.Armed,control.Presence.Reason,lockRequests,lastLockResult);}}
+        get{lock(gate){if(!Current())return new(null,false,PresenceState.Unknown,reports,renewals,false,true,"revoked",ConnectedReports:connectedReports,DisconnectedReports:disconnectedReports,UnknownReports:unknownReports,AutoLockEnabled:control.Enabled,PresenceReason:"revoked",LockRequests:lockRequests,LastLockResult:lastLockResult,PhoneChannelReturns:phoneChannelReturns);Synchronize();bool ready=Ready();return new(Fresh?bandConnected:null,Fresh,control.Presence.State,reports,renewals,ready,revoked,nativeState,directRequest,replacementRecoveries,connectedReports,disconnectedReports,unknownReports,control.Enabled,control.Presence.Armed,control.Presence.Reason,lockRequests,lastLockResult,phoneChannelReturns);}}
     }
 }
