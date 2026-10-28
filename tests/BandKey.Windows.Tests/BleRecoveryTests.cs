@@ -109,6 +109,19 @@ internal static class BleRecoveryTests
             try{await transport.RunAsync(IPAddress.Loopback,19443,TimeSpan.FromSeconds(3));throw new Exception("Expected retry exhaustion");}
             catch(BleTransportException){Check(transport.Attempts==4 && disposed==4 && transport.Failures.Length==4 && transport.Stage=="failed");}
         });
+        await test("host fast retry disposes old state promptly and still stops on a permission fault",async()=>
+        {
+            int created=0,disposed=0;var durations=new List<TimeSpan>();var watch=System.Diagnostics.Stopwatch.StartNew();
+            var transport=new BlePhoneTransport(()=>{
+                int id=++created;Check(disposed==id-1);
+                return new Connection((duration,_,_)=>{durations.Add(duration);throw new BleTransportException(id==1?"gatt-disconnected":"gatt-permission-denied");},()=>disposed++);
+            },BlePhoneTransport.DelayHostRetry);
+            try{await transport.RunAsync(IPAddress.Loopback,19443,TimeSpan.FromSeconds(3));throw new Exception("Permission fault accepted");}
+            catch(BleTransportException error){Check(error.Code=="gatt-permission-denied");}
+            Check(created==2 && disposed==2 && durations[1]<durations[0] && watch.Elapsed<TimeSpan.FromSeconds(3));
+            Check(BlePhoneTransport.HostRestartDelay(transport.Failure)==TimeSpan.FromSeconds(30));
+            Check(BlePhoneTransport.HostRestartDelay(BleTransportFailure.From(new BleTransportException("connect-scan")))==TimeSpan.FromMilliseconds(500));
+        });
         await test("BLE sustained completed traffic replenishes retries instead of exhausting a lifetime attempt counter",async()=>
         {
             int created=0,disposed=0;var waits=new List<int>();using var stop=new CancellationTokenSource(TimeSpan.FromSeconds(3));

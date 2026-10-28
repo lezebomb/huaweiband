@@ -75,9 +75,20 @@ public final class BleSocketRelayTests {
             if(!link.sent.isEmpty())throw new AssertionError("Cancellation emitted a successful EOF");
         }
     }
+    private static void readyWaitAcceptsCurrentGeneration()throws Exception {
+        BlockingQueue<BlePipeFrame> queue=new LinkedBlockingQueue<>();
+        BlePipeFrame ready=new BlePipeFrame(BlePipeFrame.READY,SESSION,0,new byte[0]);queue.add(ready);
+        if(BleSocketRelay.awaitReady(queue,()->true,()->0,8000)!=ready)throw new AssertionError("Current READY lost");
+    }
+    private static void endedGenerationCancelsReadyWaitPromptly()throws Exception {
+        ExecutorService worker=Executors.newSingleThreadExecutor();AtomicBoolean valid=new AtomicBoolean(true);CountDownLatch entered=new CountDownLatch(1);
+        Future<?> result=worker.submit(()->{try{BleSocketRelay.awaitReady(new LinkedBlockingQueue<>(),()->{entered.countDown();return valid.get();},()->0,8000);throw new AssertionError("Ended generation accepted");}catch(IOException expected){}catch(Exception error){throw new CompletionException(error);}});
+        try{if(!entered.await(1,TimeUnit.SECONDS))throw new AssertionError("READY wait not entered");valid.set(false);result.get(1,TimeUnit.SECONDS);}
+        finally{worker.shutdownNow();if(!worker.awaitTermination(2,TimeUnit.SECONDS))throw new AssertionError("READY worker leaked");}
+    }
     public static void main(String[] args)throws Exception {
-        resetDrainsThroughEof();halfClosePreservesResponse();invalidDrainStillFails();cancelledLeaseStillFails();
-        Files.writeString(Path.of(args[0]),"{\"passed\":4,\"failed\":0,\"realLoopbackSockets\":true,\"physicalBleTested\":false}");
-        System.out.println("BLE local socket closure checks: 4 passed.");
+        resetDrainsThroughEof();halfClosePreservesResponse();invalidDrainStillFails();cancelledLeaseStillFails();readyWaitAcceptsCurrentGeneration();endedGenerationCancelsReadyWaitPromptly();
+        Files.writeString(Path.of(args[0]),"{\"passed\":6,\"failed\":0,\"realLoopbackSockets\":true,\"physicalBleTested\":false}");
+        System.out.println("BLE socket closure and READY generation checks: 6 passed.");
     }
 }

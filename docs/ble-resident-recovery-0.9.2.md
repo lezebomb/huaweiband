@@ -35,7 +35,7 @@
 
 Windows构建0错误／0警告，101项检查通过（首次运行因当前shell缺少`javac`路径有1项环境失败，补齐本地JDK路径后全数通过）。检查未注册登录组件，未调用本机锁屏或提交本机Windows登录。
 
-后续整轮受控中断已通过“锁屏→手机进程中断→旧挑战过期→通信恢复→新手环通知→确认→Windows认证成功及桌面恢复”，见[11:14实机记录](host-return-unlock-20261028.md)。实际携带手机返回、自然恢复任务调度及长期厂商后台策略仍待验证，不从受控测试继承。
+后续整轮受控中断已通过“锁屏→手机进程中断→旧挑战过期→通信恢复→新手环通知→确认→Windows认证成功及桌面恢复”，见[11:14实机记录](host-return-unlock-20261028.md)。随后另一次实际携带手机返回也已完成解锁，但用户反馈通知约20秒，尚未满足5秒目标，见[后续优化](fast-return-0.9.3.md)。自然恢复任务调度及长期厂商后台策略仍待验证，不从受控测试继承。
 
 Android恢复任务按系统调度执行，不能承诺精确15分钟或立即复活；用户强行停止、撤销权限或厂商额外限制时，仍可能需要手动重新启用。参考[后台启动前台服务的限制](https://developer.android.com/develop/background-work/services/fgs/restrictions-bg-start)、[用户停止前台应用](https://developer.android.com/develop/background-work/services/fgs/handle-user-stopping)、[JobScheduler周期与持久化](https://developer.android.com/reference/android/app/job/JobInfo.Builder)。
 

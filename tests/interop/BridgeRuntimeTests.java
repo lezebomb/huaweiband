@@ -95,6 +95,11 @@ public final class BridgeRuntimeTests {
             RetrySchedule r=new RetrySchedule();r.failed(0);r.failed(4000);r.succeeded();check(r.ready(4000));
             r.failed(4000);check(!r.ready(7999));check(r.ready(8000));
         });
+        test("host status retries stay bounded and a new link clears old backoff without reopening a consumed approval",()->{
+            RetrySchedule r=new RetrySchedule(125,2000);long now=0;
+            for(long delay:new long[]{250,500,1000,2000,2000,2000}){r.failed(now);check(!r.ready(now+delay-1));check(r.ready(now+delay));now+=delay;}
+            Fixture f=new Fixture();var ticket=f.prompt();check(f.gate.consume(ticket));r.succeeded();check(r.ready(now));check(!f.gate.consume(ticket));
+        });
         test("VM poll waits for GATT and verifies HTTPS before reporting recovery",()->{
             VmPollRecovery r=new VmPollRecovery();check(!r.ready(0,false));check(r.ready(1,true));
             r.failed(1);check(!r.ready(4000,true));check(r.ready(4001,true));check(r.succeeded());check(!r.succeeded());

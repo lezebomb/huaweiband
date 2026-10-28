@@ -250,13 +250,13 @@ internal sealed class VmBridgeForm : Form
     private async Task RunResidentTransport(CancellationToken token){
         while(!token.IsCancellationRequested){
             BlePhoneTransport? transport=null;
-            transport=new BlePhoneTransport(()=>new BlePhoneTunnel(drainTargetAbort:true),(burst,stop)=>Task.Delay(TimeSpan.FromSeconds(transport?.Failure?.Code=="connect-scan"?2:10+(1<<(burst-1))),stop));
+            transport=new BlePhoneTransport(()=>new BlePhoneTunnel(drainTargetAbort:true),BlePhoneTransport.DelayHostRetry);
             activeResidentTransport=transport;residentStatus="正在连接手机 BLE";
             try{await transport.RunAsync(IPAddress.Loopback,19443,TimeSpan.FromHours(2),cancellation:token);residentStatus="传输已结束，准备新连接";}
             catch(OperationCanceledException)when(token.IsCancellationRequested){return;}
             catch(Exception error){residentStatus="等待重连："+(transport.Failure?.Code??error.GetType().Name);}
             finally{lastResidentTransportReport=ResidentTransportReport();activeResidentTransport=null;}
-            if(!token.IsCancellationRequested)try{await Task.Delay(TimeSpan.FromSeconds(transport.Failure?.Code=="connect-scan"?2:30),token);}catch(OperationCanceledException){return;}
+            if(!token.IsCancellationRequested)try{await Task.Delay(BlePhoneTransport.HostRestartDelay(transport.Failure),token);}catch(OperationCanceledException){return;}
         }
     }
 }

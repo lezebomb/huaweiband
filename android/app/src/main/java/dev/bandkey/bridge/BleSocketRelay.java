@@ -10,6 +10,14 @@ import java.util.function.*;
 /** One opaque TLS stream. Local TCP closure must not discard the GATT framing boundary. */
 final class BleSocketRelay {
     interface Sender {void send(int kind,byte[] payload)throws Exception;}
+    static BlePipeFrame awaitReady(BlockingQueue<BlePipeFrame> incoming,BooleanSupplier valid,LongSupplier elapsed,long deadline)throws Exception{
+        while(valid.getAsBoolean() && elapsed.getAsLong()<deadline){
+            BlePipeFrame frame=incoming.poll(100,TimeUnit.MILLISECONDS);
+            if(!valid.getAsBoolean())throw new IOException("BLE ready generation ended");
+            if(frame!=null)return frame;
+        }
+        throw new IOException("BLE ready timeout or generation ended");
+    }
     static boolean run(Socket client,BlePipeFrame.Receiver receiver,BlockingQueue<BlePipeFrame> incoming,
         Sender sender,IntSupplier payloadSize,BooleanSupplier available,LongSupplier elapsed,long deadline,ExecutorService workers)throws Exception{
         AtomicReference<Exception> firstFailure=new AtomicReference<>();AtomicBoolean localAbort=new AtomicBoolean();

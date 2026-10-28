@@ -18,6 +18,9 @@ final class WearableChannel {
         prompt(targetUuid,"是否解锁电脑？",pcLabel+" · 30 秒内有效",gate,ticket,enabled,clicked,status);
     }
     void prompt(String targetUuid,String title,String text,PromptGate gate,PromptGate.Ticket ticket,BooleanSupplier enabled,Consumer<Boolean> clicked,Consumer<String> status){
+        prompt(targetUuid,title,text,gate,ticket,enabled,clicked,status,()->{});
+    }
+    void prompt(String targetUuid,String title,String text,PromptGate gate,PromptGate.Ticket ticket,BooleanSupplier enabled,Consumer<Boolean> clicked,Consumer<String> status,Runnable sdkAccepted){
         if(!enabled.getAsBoolean() || !gate.isActive(ticket))return;
         try {
         // getBondedDevices is the P2P list and can leave Notify capability unknown.
@@ -49,7 +52,7 @@ final class WearableChannel {
             final Device selected=target;
             gate.runIfActive(ticket,()->{
                 if(!enabled.getAsBoolean())return;
-                HiWear.getNotifyClient(context).notify(selected,notification).addOnSuccessListener(ignored->{if(gate.isActive(ticket))status.accept("请求已发送，等待手环点击");})
+                HiWear.getNotifyClient(context).notify(selected,notification).addOnSuccessListener(ignored->{if(gate.isActive(ticket)){sdkAccepted.run();status.accept("请求已发送，等待手环点击");}})
                     .addOnFailureListener(error->{if(gate.isActive(ticket)){gate.cancel(ticket);status.accept("Notify 调用失败："+WearErrors.describe(error));}});
             });
             }catch(RuntimeException error){fail(gate,ticket,status,error);}

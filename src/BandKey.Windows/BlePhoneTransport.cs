@@ -56,8 +56,15 @@ internal sealed class BlePhoneTransport
     // The index is the current failure burst, not the lifetime attempt count.
     public BlePhoneTransport(bool drainTargetAbort=false):this(()=>new BlePhoneTunnel(drainTargetAbort),(burst,token)=>Task.Delay(TimeSpan.FromSeconds(10+(1<<(burst-1))),token)){}
     internal BlePhoneTransport(Func<IBlePhoneConnection> factory,Func<int,CancellationToken,Task> delay){this.factory=factory;this.delay=delay;}
+    // Phone 0.9.3 cancels the obsolete READY waiter on generation changes. The
+    // host can reconnect promptly after disposal; the legacy VM default stays above.
+    internal static Task DelayHostRetry(int burst,CancellationToken token){
+        if(burst is <1 or >4)throw new ArgumentOutOfRangeException(nameof(burst));
+        return Task.Delay(TimeSpan.FromMilliseconds(Math.Min(1000,250*(1<<(burst-1)))),token);
+    }
+    internal static TimeSpan HostRestartDelay(BleTransportFailure? failure)=>TimeSpan.FromMilliseconds(failure!=null && Retryable(failure)?500:30000);
 
-    private static bool Retryable(BleTransportFailure failure)=>failure.Code is
+    internal static bool Retryable(BleTransportFailure failure)=>failure.Code is
         "gatt-disconnected" or "gatt-write-unreachable" or "gatt-write-timeout" or
         "gatt-idle-subscription-lost" or "gatt-health-timeout" or "gatt-health-unreachable" or "gatt-health-protocolerror" or "gatt-health-failed" or
         "target-connect" or "target-connect-timeout" or "target-read" or "target-write" or "target-half-close" or "stream-timeout" or

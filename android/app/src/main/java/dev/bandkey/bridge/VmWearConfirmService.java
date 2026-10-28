@@ -29,6 +29,9 @@ public final class VmWearConfirmService extends Service {
     private JSONObject lastVerifiedPrompt;
     private VmRelayClient relayClient;
     private volatile BlePhonePeripheral ble;
+    private BlePhonePeripheral observedRadio;
+    private long observedConnectionGeneration=-1;
+    private volatile long linkReadyAt=-1,requestVerifiedAt=-1,notificationDispatchAt=-1,notifyAcceptedAt=-1;
     private final BleProgressWatch progressWatch=new BleProgressWatch();
     private long reportWrittenAt=-10000;
     private String token,pcSaved,wearableUuid,noticeState="";
@@ -82,6 +85,10 @@ public final class VmWearConfirmService extends Service {
                 .put("decisionQueueMilliseconds",current==null?-1:current.decisionQueueMilliseconds()).put("decisionCallMilliseconds",current==null?-1:current.decisionCallMilliseconds())
                 .put("decisionStage",current==null?"not-started":current.decisionStage())
                 .put("fixedPhoneDiagnostic",fixedClient==null?JSONObject.NULL:fixedClient.report())
+                .put("timings",new JSONObject().put("linkToVerifiedRequestMilliseconds",requestVerifiedAt>=linkReadyAt && linkReadyAt>=0?requestVerifiedAt-linkReadyAt:-1)
+                    .put("linkToSdkAcceptedMilliseconds",notifyAcceptedAt>=linkReadyAt && linkReadyAt>=0?notifyAcceptedAt-linkReadyAt:-1)
+                    .put("notificationSdkMilliseconds",notifyAcceptedAt>=notificationDispatchAt && notificationDispatchAt>=0?notifyAcceptedAt-notificationDispatchAt:-1)
+                    .put("bandDisplayObserved",false))
                 .put("independentlyValidated",false).put("windowsUnlockObserved",false).toString(2);
             long now=SystemClock.elapsedRealtime();
             if(!"running".equals(reason) || now-reportWrittenAt>=5000){
@@ -141,6 +148,7 @@ public final class VmWearConfirmService extends Service {
                     JSONObject prompt=fixedPhoneMode?fixedClient.takePrompt():null;
                     if(prompt==null)prompt=client.poll(fixedPhoneMode?3000:0);if(prompt==null)return null;
                     lastVerifiedPrompt=prompt;WindowsGrantWire.Challenge body=WindowsGrantWire.read(android.util.Base64.decode(prompt.getString("challenge"),android.util.Base64.NO_WRAP));
+                    requestVerifiedAt=SystemClock.elapsedRealtime();
                     return new VmWearSession.Request<>(prompt,prompt.getString("challenge"),(body.expires-WindowsGrantWire.FILETIME_UNIX_MILLISECONDS)/1000);
                 }
                 @Override public VmWearSession.Result decide(JSONObject prompt,boolean approved)throws Exception{
@@ -160,15 +168,21 @@ public final class VmWearConfirmService extends Service {
                 lastNotificationLabel=label;lastNotificationDeadlineMilliseconds=deadline;
                 String cutoff=new java.text.SimpleDateFormat("HH:mm:ss",java.util.Locale.ROOT).format(new java.util.Date(deadline));
                 wearableStatus="#"+label+" · 截止 "+cutoff;
+                notificationDispatchAt=SystemClock.elapsedRealtime();final long notificationLinkAt=linkReadyAt;
                 new WearableChannel(this).prompt(wearableUuid,(resident?"电脑确认 #":"VM确认 #")+label,"本次截止 "+cutoff+"；过期请忽略",gate,ticket,allowed,clicked,message->{
                     String value="#"+label+" · 截止 "+cutoff+" · "+message;
                     wearableStatus=value.substring(0,Math.min(160,value.length()));
-                });
+                },()->{if(notificationLinkAt==linkReadyAt && label.equals(lastNotificationLabel))notifyAcceptedAt=SystemClock.elapsedRealtime();});
             },task->worker.execute(()->withWake(task)),resident);
             worker.scheduleWithFixedDelay(()->withWake(()->{
                 VmWearSession<JSONObject> current=session;
                 if(fixedPhoneMode && current!=null && current.state()==VmWearSession.State.QUEUED)return;
                 if(fixedPhoneMode && ble!=null && ble.isConnected()){
+                    BlePhonePeripheral radio=ble;long generation=radio.connectionGeneration();
+                    if(radio!=observedRadio || generation!=observedConnectionGeneration){
+                        observedRadio=radio;observedConnectionGeneration=generation;linkReadyAt=radio.connectedSinceElapsed();if(linkReadyAt<0)linkReadyAt=SystemClock.elapsedRealtime();
+                        requestVerifiedAt=notificationDispatchAt=notifyAcceptedAt=-1;fixedClient.onBleReconnected();
+                    }
                     fixedClient.pulse(bandConnection.sample(),current==null || current.needsNewRequest());
                     // A brief HTTP interruption blocks submission through the link predicate but
                     // must not consume the still-current notification. A refreshed native request
@@ -179,7 +193,7 @@ public final class VmWearConfirmService extends Service {
                 }
                 else if(fixedPhoneMode && fixedClient!=null)fixedClient.onBleDisconnected();
                 if(current!=null){if(fixedPhoneMode)current.pollIfNewRequestNeeded();else current.poll();}
-            }),0,fixedPhoneMode?500:2000,TimeUnit.MILLISECONDS);
+            }),0,fixedPhoneMode?(resident?200:500):2000,TimeUnit.MILLISECONDS);
             handler.post(timer);
         }catch(Exception error){finish("startup-"+error.getClass().getSimpleName());}
         return resident?START_STICKY:START_NOT_STICKY;
