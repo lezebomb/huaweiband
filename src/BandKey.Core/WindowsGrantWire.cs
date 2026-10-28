@@ -13,6 +13,9 @@ public sealed record WindowsGrantChallenge(uint WindowsSessionId, ulong IssuedFi
 public static class WindowsGrantWire
 {
     public const int ChallengeSize = 436, ApprovalSize = 500;
+    public const ulong HostLifetimeMilliseconds = 120000;
+    private static bool ValidLifetime(WindowsGrantChallenge value) => value.ExpiresFileTimeMilliseconds > value.IssuedFileTimeMilliseconds &&
+        (value.ExpiresFileTimeMilliseconds - value.IssuedFileTimeMilliseconds is 30000 or HostLifetimeMilliseconds);
     private static ReadOnlySpan<byte> Domain => "BANDKEY-WIN-V1\0\0"u8;
     private static readonly Regex LocalSid = new(@"\AS-1-5-21-[0-9]+-[0-9]+-[0-9]+-[0-9]+\z", RegexOptions.CultureInvariant);
 
@@ -38,7 +41,7 @@ public static class WindowsGrantWire
         Encoding.Unicode.GetBytes(value.UserSid).CopyTo(bytes, 68); return bytes;
     }
     public static bool IsCurrent(WindowsGrantChallenge value, ulong now) =>
-        value.ExpiresFileTimeMilliseconds > value.IssuedFileTimeMilliseconds && value.ExpiresFileTimeMilliseconds - value.IssuedFileTimeMilliseconds == 30000 && now >= value.IssuedFileTimeMilliseconds && now < value.ExpiresFileTimeMilliseconds;
+        ValidLifetime(value) && now >= value.IssuedFileTimeMilliseconds && now < value.ExpiresFileTimeMilliseconds;
 
     public static byte[] Sign(WindowsGrantChallenge value, ECDsa key)
     {
@@ -75,7 +78,7 @@ public static class WindowsGrantWire
         ArgumentNullException.ThrowIfNull(value);
         if (value.WindowsSessionId != 0 && value.UserSid != null && value.UserSid.Length < 184 && LocalSid.IsMatch(value.UserSid) &&
             value.UserSid.Split('-').Skip(4).All(x => uint.TryParse(x, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out _)) && Protocol.ValidNonce(value.NonceBase64) &&
-            value.ExpiresFileTimeMilliseconds > value.IssuedFileTimeMilliseconds && value.ExpiresFileTimeMilliseconds - value.IssuedFileTimeMilliseconds == 30000) return;
+            ValidLifetime(value)) return;
         throw new FormatException("Windows grant account, session, nonce or lifetime");
     }
 }

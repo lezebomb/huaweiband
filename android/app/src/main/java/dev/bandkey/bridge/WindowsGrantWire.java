@@ -25,7 +25,7 @@ public final class WindowsGrantWire {
         if(body==null || body.length!=CHALLENGE_SIZE || !Arrays.equals(Arrays.copyOf(body,16),DOMAIN))throw new IllegalArgumentException("Native grant domain/length");
         ByteBuffer buffer=ByteBuffer.wrap(body).order(ByteOrder.LITTLE_ENDIAN);
         long session=Integer.toUnsignedLong(buffer.getInt(16)),issued=buffer.getLong(20),expires=buffer.getLong(28);
-        if(session==0 || issued<0 || issued>Long.MAX_VALUE-30000 || expires-issued!=30000)throw new IllegalArgumentException("Native grant context");
+        if(session==0 || issued<0 || expires<=issued || (expires-issued!=30000 && expires-issued!=120000))throw new IllegalArgumentException("Native grant context");
         int end=-1;for(int i=68;i<body.length;i+=2)if(body[i]==0 && body[i+1]==0){end=i;break;}
         if(end<=68)throw new IllegalArgumentException("Native SID terminator");
         for(int i=end;i<body.length;i++)if(body[i]!=0)throw new IllegalArgumentException("Native SID padding");

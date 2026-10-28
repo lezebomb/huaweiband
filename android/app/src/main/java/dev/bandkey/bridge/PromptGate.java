@@ -17,9 +17,10 @@ public final class PromptGate {
     public PromptGate(LongSupplier wallSeconds,LongSupplier elapsedMillis){
         this.wallSeconds=wallSeconds;this.elapsedMillis=elapsedMillis;
     }
-    public synchronized Ticket begin(String nonce,long expiresAt){
+    public synchronized Ticket begin(String nonce,long expiresAt){return begin(nonce,expiresAt,30);}
+    public synchronized Ticket begin(String nonce,long expiresAt,long maximumSeconds){
         long remaining=expiresAt-wallSeconds.getAsLong();
-        if(stopped || nonce==null || nonce.isEmpty() || nonce.equals(lastNonce) || remaining<=0 || remaining>30)return null;
+        if((maximumSeconds!=30 && maximumSeconds!=120) || stopped || nonce==null || nonce.isEmpty() || nonce.equals(lastNonce) || remaining<=0 || remaining>maximumSeconds)return null;
         lastNonce=nonce;
         active=new Ticket(expiresAt,elapsedMillis.getAsLong()+remaining*1000);
         return active;

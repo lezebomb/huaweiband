@@ -1,6 +1,7 @@
 #define BANDKEY_UNIT_TEST
 #include "../../src/BandKey.CredentialProvider/Provider.cpp"
 #include "../../src/BandKey.CredentialProvider/LabCleanup.h"
+#include "../../src/BandKey.CredentialProvider/PayloadUpdate.h"
 #include "DeploymentTests.h"
 #include "../../src/BandKey.CredentialProvider/OnlineCredentialPacking.h"
 #include <bcrypt.h>
@@ -171,7 +172,7 @@ static void TestNativeRenewals(std::vector<std::pair<const char*, bool>>& tests,
     provider->SetUsageScenario(CPUS_UNLOCK_WORKSTATION,0);provider->SetUserArray(users.Get());
     DWORD count=0,selected=0;BOOL automatic=TRUE;provider->GetCredentialCount(&count,&selected,&automatic);
     auto before=readRequest();ComPtr<ICredentialProviderCredential> stale;provider->GetCredentialAt(0,&stale);
-    runtime.wall+=31000;runtime.monotonic+=31000;provider->GetCredentialCount(&count,&selected,&automatic);
+    runtime.wall+=WindowsGrantLifetimeMilliseconds+1000;runtime.monotonic+=WindowsGrantLifetimeMilliseconds+1000;provider->GetCredentialCount(&count,&selected,&automatic);
     check("expired original lock request does not automatically refresh",!automatic && runtime.vaultReads==reads);
     ComPtr<SyntheticProviderEvents> events;events.Attach(new SyntheticProviderEvents());
     events->changed=[&](){provider->GetCredentialCount(&count,&selected,&automatic);};
@@ -304,8 +305,8 @@ int wmain(int argc, wchar_t** argv) {
                 value->Ready();
                 if (action != 0) writeApproval(action == 1);
                 value->SetDeselected(); value->UnAdvise();
-                if (action == 2) runtime.wall = 130000;
-                if (action == 3) runtime.monotonic = 31000;
+                if (action == 2) runtime.wall = 100000 + WindowsGrantLifetimeMilliseconds;
+                if (action == 3) runtime.monotonic = 1000 + WindowsGrantLifetimeMilliseconds;
                 if (action == 4) runtime.policy.enabled = false;
                 if (action == 5) runtime.locked = false;
                 if (action == 6) runtime.policy.signerKind = 1;
@@ -427,6 +428,15 @@ int wmain(int argc, wchar_t** argv) {
             LabCleanupResult invalidDirectory;
             check("cleanup refuses wrong path types", RemoveOrdinaryLabFile(root) != ERROR_SUCCESS && (GetFileAttributesW(root.c_str()) & FILE_ATTRIBUTE_DIRECTORY) && !CheckCleanupDirectory(unknown, invalidDirectory) && !invalidDirectory.complete);
             NativeRequire(RemoveOrdinaryLabFile(unknown) == ERROR_SUCCESS, "fixture-file-cleanup-failed");
+            auto target = root / L"provider.dll", staged = root / L"update.tmp", backup = root / L"previous.dll";
+            const BYTE update[] = {4, 5, 6}; WriteNewFile(target, sample, sizeof(sample)); WriteNewFile(staged, update, sizeof(update));
+            NativeHandle inUse; inUse.value = CreateFileW(target.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+            NativeRequire(inUse.value != INVALID_HANDLE_VALUE, "update-fixture-hold");
+            check("in-use payload update preserves original and reports sharing failure", ReplaceBandKeyPayload(target, staged, backup) == ERROR_SHARING_VIOLATION && ReadBoundedFile(target, 3)[0] == 1 && GetFileAttributesW(backup.c_str()) == INVALID_FILE_ATTRIBUTES);
+            CloseHandle(inUse.value); inUse.value = INVALID_HANDLE_VALUE;
+            check("payload update keeps an exact previous file", ReplaceBandKeyPayload(target, staged, backup) == ERROR_SUCCESS && ReadBoundedFile(target, 3)[0] == 4 && ReadBoundedFile(backup, 3)[0] == 1);
+            check("payload rollback restores original without credential access", ReplaceBandKeyPayload(target, backup, staged) == ERROR_SUCCESS && ReadBoundedFile(target, 3)[0] == 1);
+            NativeRequire(RemoveOrdinaryLabFile(target) == ERROR_SUCCESS && RemoveOrdinaryLabFile(staged) == ERROR_SUCCESS, "update-fixture-cleanup");
             LabCleanupResult empty; empty.Directory(root);
             check("empty fixture directory removed", empty.complete && GetFileAttributesW(root.c_str()) == INVALID_FILE_ATTRIBUTES);
         }
@@ -439,7 +449,8 @@ int wmain(int argc, wchar_t** argv) {
             check("Windows challenge context accepted", ChallengeContextValid(challenge, TestSid, 5, 100001));
             check("wrong Windows session rejected", !ChallengeContextValid(challenge, TestSid, 6, 100001));
             check("wrong Windows SID rejected", !ChallengeContextValid(challenge, L"S-1-5-21-100-200-300-1002", 5, 100001));
-            check("challenge expiry boundary rejected", !ChallengeContextValid(challenge, TestSid, 5, 130000));
+            check("challenge expiry boundary rejected", !ChallengeContextValid(challenge, TestSid, 5, challenge.expiresMs));
+            check("new request uses the selected profile lifetime", challenge.expiresMs - challenge.issuedMs == WindowsGrantLifetimeMilliseconds);
             check("wall clock before issuance rejected", !ChallengeContextValid(challenge, TestSid, 5, 99999));
             auto otherChallenge = NewWindowsChallenge(TestSid, 5, 100000);
             check("Windows nonces are unpredictable across requests", memcmp(challenge.nonce, otherChallenge.nonce, sizeof(challenge.nonce)) != 0);
@@ -457,7 +468,13 @@ int wmain(int argc, wchar_t** argv) {
             check("signed grant cannot extend lifetime", !grant.Verify(changed, publicKey, 100001, 1001));
             SigningKey rotated; rotated.Generate(); auto rotatedPublic = rotated.Export(false);
             check("wrong or rotated key rejected", !grant.Verify(signedRequest, rotatedPublic, 100001, 1001));
-            check("monotonic expiry rejects frozen wall clock", !grant.Verify(signedRequest, publicKey, 100001, 31000));
+            check("monotonic expiry rejects frozen wall clock", !grant.Verify(signedRequest, publicKey, 100001, 1000 + WindowsGrantLifetimeMilliseconds));
+            auto twoMinute = challenge; twoMinute.expiresMs = twoMinute.issuedMs + 120000;
+            auto twoMinuteApproval = SignWindowsChallenge(twoMinute, key); OneTimeWindowsGrant delayed(twoMinute, 1000);
+            check("two minute proof accepts explicit confirmation after ninety seconds", delayed.Verify(twoMinuteApproval, publicKey, 190000, 91000));
+            check("two minute proof rejects exact wall deadline", !delayed.Verify(twoMinuteApproval, publicKey, 220000, 91000));
+            check("two minute proof rejects monotonic deadline with frozen wall", !delayed.Verify(twoMinuteApproval, publicKey, 190000, 121000));
+            check("two minute proof is still one time", delayed.Consume(twoMinuteApproval, publicKey, 190000, 91000) && !delayed.Consume(twoMinuteApproval, publicKey, 190000, 91000));
             check("monotonic rollback rejected", !grant.Verify(signedRequest, publicKey, 100001, 999));
             check("grant consumed once", grant.Consume(signedRequest, publicKey, 100001, 1001));
             check("consumed grant rejects replay", !grant.Consume(signedRequest, publicKey, 100001, 1001));

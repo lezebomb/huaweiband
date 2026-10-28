@@ -20,11 +20,11 @@ internal static class WindowsGrantRelayTests
         public Exchange Exchange = new();
         public PublicDevice Device;
         public WindowsGrantRelay Relay;
-        public Fixture()
+        public Fixture(ulong lifetime = 30000)
         {
             var pub = Protocol.ExportPublicKey(Phone); Device = new(Protocol.Fingerprint(pub), "VM test", pub, ConfirmationSources.TestClient, true);
             ulong now = WindowsGrantRelayWire.FileTimeMilliseconds(Wall);
-            Exchange.Current = WindowsGrantWire.WriteChallenge(new(5, now, now + 30000, "S-1-5-21-1-2-3-1001", Protocol.Nonce()));
+            Exchange.Current = WindowsGrantWire.WriteChallenge(new(5, now, now + lifetime, "S-1-5-21-1-2-3-1001", Protocol.Nonce()));
             Relay = new(Pc, Device, Exchange, () => Context, () => Wall, () => Mono);
         }
         public PollRequest Poll() { var p = new PollRequest(Relay.PcId, Device.DeviceId, Protocol.Nonce(), Wall / 1000, ""); return p with { Signature = Protocol.Sign(Phone, WindowsGrantRelayWire.PollText(p)) }; }
@@ -42,6 +42,15 @@ internal static class WindowsGrantRelayTests
     {
         void Check(bool value) { if (!value) throw new Exception("Relay invariant"); }
         void Refuses(Action action) { try { action(); } catch (Exception) { return; } throw new Exception("Expected refusal"); }
+        test("two minute relay accepts delayed explicit confirmation only once", () => {
+            using var f = new Fixture(120000); var d = f.Decision(); f.Wall += 90000; f.Mono += 90000;
+            Check(f.Relay.Decide(d).Submitted && !f.Relay.Decide(d).Submitted && f.Exchange.Submissions == 1);
+        });
+        foreach (bool freezeWall in new[] { false, true }) test("two minute relay expires on " + (freezeWall ? "monotonic" : "wall clock") + " boundary", () => {
+            using var f = new Fixture(120000); var d = f.Decision(); if (!freezeWall) f.Wall += 120000; f.Mono += 120000;
+            Check(!f.Relay.Decide(d).Submitted && f.Exchange.Submissions == 0);
+        });
+        test("unsupported grant lifetimes are refused", () => { Refuses(() => { using var f = new Fixture(121000); }); Refuses(() => { using var f = new Fixture(60000); }); });
         test("native relay signed poll returns a PC-signed native prompt", () => { using var f = new Fixture(); var p = f.Prompt(); Check(Protocol.Verify(Protocol.ExportPublicKey(f.Pc), WindowsGrantRelayWire.PromptText(p), p.Signature)); });
         test("native relay submits exact phone P1363 proof without unlock claim", () => { using var f = new Fixture(); var d = f.Decision(); f.Prompt(); var r = f.Relay.Decide(d); Check(r is { Authorized: true, Submitted: true, WindowsUnlocked: false, TestOnly: true } && f.Exchange.Submissions == 1 && f.Relay.Activity is { Prompts: 1, Decisions: 1, ApprovalFilesSubmitted: 1, SignedDenials: 0, Rejections: 0 }); });
         test("native relay rejects poll replay", () => { using var f = new Fixture(); var p = f.Poll(); f.Relay.Poll(p); Refuses(() => f.Relay.Poll(p)); });

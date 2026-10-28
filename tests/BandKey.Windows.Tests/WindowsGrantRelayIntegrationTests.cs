@@ -46,10 +46,10 @@ internal static class WindowsGrantRelayIntegrationTests
         }
         private int Port { get; }
         internal Task Start() => Server.StartAsync(new AppSettings { Port = Port }, Certificate, new AuthorizationBroker(Relay.PcId, Pc), _ => { }, windowsRelay: Relay,fixedPhone:Fixed);
-        internal void NewRequest(string sid = Sid, uint session = 5)
+        internal void NewRequest(string sid = Sid, uint session = 5, ulong lifetime = 30000)
         {
             ulong now = WindowsGrantRelayWire.FileTimeMilliseconds(Wall);
-            Body = WindowsGrantWire.WriteChallenge(new(session, now, now + 30000, sid, Protocol.Nonce()));
+            Body = WindowsGrantWire.WriteChallenge(new(session, now, now + lifetime, sid, Protocol.Nonce()));
             RequestPath = Path.Combine(Root, "Exchange", Convert.ToHexStringLower(Body.AsSpan(36, 32)) + ".request"); File.WriteAllBytes(RequestPath, Body);
         }
         private FixedPhoneContext? fixedContext;private long fixedSequence;
@@ -154,6 +154,17 @@ internal static class WindowsGrantRelayIntegrationTests
         { var p = await f.Poll(); File.Delete(f.RequestPath); f.Wall++; f.NewRequest(); using var r = await f.Decide(f.Decision(p)); Check(r.StatusCode == HttpStatusCode.Forbidden && !File.Exists(f.ApprovalPath)); });
         await Case("VM relay expiry rejects phone decision", async f =>
         { var p = await f.Poll(); f.Wall += 30000; f.Mono += 30000; using var r = await f.Decide(f.Decision(p)); Check(r.StatusCode == HttpStatusCode.Forbidden && !File.Exists(f.ApprovalPath)); });
+        await Case("two minute HTTPS native exchange accepts confirmation after ninety seconds", async f =>
+        {
+            File.Delete(f.RequestPath); f.NewRequest(lifetime:120000); var p = await f.Poll(); f.Wall += 90000; f.Mono += 90000;
+            using var r = await f.Decide(f.Decision(p)); Check(r.IsSuccessStatusCode && File.Exists(f.ApprovalPath));
+            using var replay = await f.Decide(f.Decision(p)); Check(replay.StatusCode == HttpStatusCode.Forbidden);
+        });
+        await Case("two minute HTTPS native exchange refuses exact deadline", async f =>
+        {
+            File.Delete(f.RequestPath); f.NewRequest(lifetime:120000); var p = await f.Poll(); f.Wall += 120000; f.Mono += 120000;
+            using var r = await f.Decide(f.Decision(p)); Check(r.StatusCode == HttpStatusCode.Forbidden && !File.Exists(f.ApprovalPath));
+        });
         await Case("VM relay revocation rejects previously issued prompt", async f =>
         { var p = await f.Poll(); f.Relay.Revoke(); using var r = await f.Decide(f.Decision(p)); Check(r.StatusCode == HttpStatusCode.Forbidden && !File.Exists(f.ApprovalPath)); });
         await Case("VM relay changed native policy rejects and remains revoked", async f =>

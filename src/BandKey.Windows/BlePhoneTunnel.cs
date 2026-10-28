@@ -22,8 +22,6 @@ public sealed class BlePhoneTunnel(bool drainTargetAbort=false) : IBlePhoneConne
     public static readonly Guid ServiceId=new("ab7c1101-5d18-4e0b-9aba-30ad640be001"),RxId=new("ab7c1102-5d18-4e0b-9aba-30ad640be001"),TxId=new("ab7c1103-5d18-4e0b-9aba-30ad640be001");
     private readonly Channel<byte[]> received=Channel.CreateBounded<byte[]>(new BoundedChannelOptions(128){SingleReader=true,SingleWriter=false,FullMode=BoundedChannelFullMode.Wait});
     private BluetoothLEDevice? device;private GattDeviceService? service;private GattCharacteristic? rx,tx;
-    private GattDeviceService[] discoveredServices=[];
-    private GattSession? session;
     private GattDescriptor? healthDescriptor;
     private BlePeerBinding? peer;
     public BlePeerBinding? Peer=>Volatile.Read(ref disposed)!=0 || stop.IsCancellationRequested?null:Volatile.Read(ref peer);
@@ -44,7 +42,7 @@ public sealed class BlePhoneTunnel(bool drainTargetAbort=false) : IBlePhoneConne
     private ushort lastMtu=23;
     public long SentBytes{get;private set;}public long ReceivedBytes=>Interlocked.Read(ref receivedBytes);public int Streams{get;private set;}
     public int AbortedStreams{get;private set;}
-    public ushort Mtu{get{try{lastMtu=session?.MaxPduSize??lastMtu;}catch(Exception){/* The radio may disappear before final diagnostics. */}return lastMtu;}}
+    public ushort Mtu{get{try{lastMtu=service?.Session.MaxPduSize??lastMtu;}catch(Exception){/* The radio may disappear before final diagnostics. */}return lastMtu;}}
     public string Stage{get;private set;}="not-started";
     public BleTransportFailure? Failure{get;private set;}
     public async Task ConnectAsync(CancellationToken cancellation)
@@ -65,12 +63,10 @@ public sealed class BlePhoneTunnel(bool drainTargetAbort=false) : IBlePhoneConne
         // The Android process can recreate its GATT database with different ATT
         // handles. Refresh the primary-service view before selecting our UUID.
         Stage="service";var services=await device.GetGattServicesAsync(BluetoothCacheMode.Uncached).AsTask(token).WaitAsync(token);
-        // Keep the enumerated wrappers alive until this generation ends. Only
-        // our service is inspected; cleanup must not invalidate an active session.
-        discoveredServices=services.Services.ToArray();
-        var matches=discoveredServices.Where(item=>item.Uuid==ServiceId).ToArray();
-        if(services.Status!=GattCommunicationStatus.Success || matches.Length!=1)throw new IOException("BandKey phone service unavailable");
-        service=matches[0];session=service.Session;session.SessionStatusChanged+=OnSession;session.MaintainConnection=true;
+        var matches=services.Services.Where(item=>item.Uuid==ServiceId).ToArray();
+        foreach(var item in services.Services.Where(item=>item.Uuid!=ServiceId))item.Dispose();
+        if(services.Status!=GattCommunicationStatus.Success || matches.Length!=1){foreach(var item in matches)item.Dispose();throw new IOException("BandKey phone service unavailable");}
+        service=matches[0];service.Session.MaintainConnection=true;
         var chars=await service.GetCharacteristicsAsync(BluetoothCacheMode.Uncached).AsTask(token).WaitAsync(token);
         if(chars.Status!=GattCommunicationStatus.Success)throw new IOException("Phone characteristics unavailable");
         rx=chars.Characteristics.Single(c=>c.Uuid==RxId);tx=chars.Characteristics.Single(c=>c.Uuid==TxId);
@@ -83,7 +79,6 @@ public sealed class BlePhoneTunnel(bool drainTargetAbort=false) : IBlePhoneConne
         if(descriptors.Status!=GattCommunicationStatus.Success || descriptors.Descriptors.Count!=1)throw new IOException("BLE health descriptor unavailable");
         healthDescriptor=descriptors.Descriptors[0];Interlocked.Exchange(ref lastValue,Stopwatch.GetTimestamp());
         token.ThrowIfCancellationRequested();
-        if(session.SessionStatus==GattSessionStatus.Closed)throw new BleTransportException("gatt-session-closed");
         Volatile.Write(ref peer,new BlePeerBinding(Guid.NewGuid().ToString("N"),new(found.Address.ToString("X12"),found.Type.ToString()),DateTimeOffset.UtcNow));
         Stage="connected";
     }
@@ -93,11 +88,6 @@ public sealed class BlePhoneTunnel(bool drainTargetAbort=false) : IBlePhoneConne
     {
         try{if(Volatile.Read(ref disposed)==0 && sender.ConnectionStatus==BluetoothConnectionStatus.Disconnected)Fail("gatt-disconnected");}
         catch(Exception){Fail("connection-callback");}
-    }
-    private void OnSession(GattSession sender,GattSessionStatusChangedEventArgs args)
-    {
-        if(Volatile.Read(ref disposed)!=0)return;
-        if(args.Status==GattSessionStatus.Closed)Fail("gatt-session-closed");
     }
     private void OnValue(GattCharacteristic sender,GattValueChangedEventArgs args)
     {
@@ -129,10 +119,12 @@ public sealed class BlePhoneTunnel(bool drainTargetAbort=false) : IBlePhoneConne
     }
     private async Task WriteAsync(BlePipeFrame frame,CancellationToken token)
     {
-        byte[] bytes=frame.Encode();
+        byte[] bytes=frame.Encode();using var budget=CancellationTokenSource.CreateLinkedTokenSource(token);budget.CancelAfter(TimeSpan.FromSeconds(5));
+        GattCommunicationStatus result;
         // Native cancellation can finish late. Bound our wait independently so
         // the supervisor can dispose this generation and reconnect on schedule.
-        var result=await BleGattOperation.WriteAsync(stop=>rx!.WriteValueAsync(bytes.AsBuffer(),GattWriteOption.WriteWithResponse).AsTask(stop),token);
+        try{result=await rx!.WriteValueAsync(bytes.AsBuffer(),GattWriteOption.WriteWithResponse).AsTask(budget.Token).WaitAsync(budget.Token);}
+        catch(OperationCanceledException)when(!token.IsCancellationRequested){throw new BleTransportException("gatt-write-timeout");}
         if(result!=GattCommunicationStatus.Success)throw new BleTransportException("gatt-write-"+result.ToString().ToLowerInvariant());
         SentBytes+=frame.Payload.Length;
     }
@@ -192,16 +184,10 @@ public sealed class BlePhoneTunnel(bool drainTargetAbort=false) : IBlePhoneConne
     {
         if(Interlocked.Exchange(ref disposed,1)!=0)return;
         Volatile.Write(ref peer,null);
-        stop.Cancel();received.Writer.TryComplete();
-        try{if(tx!=null)tx.ValueChanged-=OnValue;}catch(Exception){/* Already-closed WinRT object. */}
-        try{if(device!=null)device.ConnectionStatusChanged-=OnConnection;}catch(Exception){}
-        try{if(session!=null)session.SessionStatusChanged-=OnSession;}catch(Exception){}
+        stop.Cancel();received.Writer.TryComplete();if(tx!=null)tx.ValueChanged-=OnValue;if(device!=null)device.ConnectionStatusChanged-=OnConnection;
         try{if(tx!=null){using var budget=new CancellationTokenSource(TimeSpan.FromSeconds(2));await tx.WriteClientCharacteristicConfigurationDescriptorAsync(GattClientCharacteristicConfigurationDescriptorValue.None).AsTask(budget.Token).WaitAsync(budget.Token);}}catch(Exception){/* A removed radio cannot acknowledge unsubscribe. */}
-        try{if(session!=null)session.MaintainConnection=false;}catch(Exception){}
-        foreach(var item in discoveredServices)try{item.Dispose();}catch(Exception){}
-        discoveredServices=[];service=null;rx=null;tx=null;healthDescriptor=null;
-        try{session?.Dispose();}catch(Exception){}session=null;
-        try{device?.Dispose();}catch(Exception){}device=null;
+        try{if(service!=null)service.Session.MaintainConnection=false;}catch(Exception){}
+        try{service?.Dispose();}catch(Exception){}try{device?.Dispose();}catch(Exception){}
         stop.Dispose();
     }
 }

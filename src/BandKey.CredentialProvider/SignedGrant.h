@@ -2,6 +2,15 @@
 #include "NativeSecurity.h"
 #include <atomic>
 
+#ifdef BANDKEY_HOST_PILOT
+inline constexpr ULONGLONG WindowsGrantLifetimeMilliseconds = 120000;
+#else
+inline constexpr ULONGLONG WindowsGrantLifetimeMilliseconds = 30000;
+#endif
+inline bool WindowsGrantLifetimeValid(ULONGLONG issued, ULONGLONG expires) {
+    return expires > issued && (expires - issued == 30000 || expires - issued == 120000);
+}
+
 #pragma pack(push, 1)
 struct WindowsChallenge {
     BYTE domain[16] = {'B','A','N','D','K','E','Y','-','W','I','N','-','V','1',0,0};
@@ -44,8 +53,8 @@ inline std::array<BYTE, 32> ChallengeHash(const WindowsChallenge& challenge) {
 }
 inline WindowsChallenge NewWindowsChallenge(const std::wstring& sid, DWORD session, ULONGLONG now) {
     WindowsChallenge challenge;
-    NativeRequire(session && !sid.empty() && sid.size() < ARRAYSIZE(challenge.sid) && now <= MAXULONGLONG - 30000, "challenge-context-invalid");
-    challenge.session = session; challenge.issuedMs = now; challenge.expiresMs = now + 30000;
+    NativeRequire(session && !sid.empty() && sid.size() < ARRAYSIZE(challenge.sid) && now <= MAXULONGLONG - WindowsGrantLifetimeMilliseconds, "challenge-context-invalid");
+    challenge.session = session; challenge.issuedMs = now; challenge.expiresMs = now + WindowsGrantLifetimeMilliseconds;
     CopyMemory(challenge.sid, sid.c_str(), (sid.size() + 1) * sizeof(wchar_t));
     NativeRequire(BCryptGenRandom(nullptr, challenge.nonce, sizeof(challenge.nonce), BCRYPT_USE_SYSTEM_PREFERRED_RNG) >= 0, "nonce-unavailable"); return challenge;
 }
@@ -53,7 +62,7 @@ inline bool ChallengeContextValid(const WindowsChallenge& challenge, const std::
     WindowsChallenge format;
     return memcmp(challenge.domain, format.domain, sizeof(format.domain)) == 0 && challenge.session == session && session &&
         wcsnlen_s(challenge.sid, ARRAYSIZE(challenge.sid)) < ARRAYSIZE(challenge.sid) && wcsnlen_s(challenge.sid, ARRAYSIZE(challenge.sid)) == sid.size() && sid == challenge.sid &&
-        challenge.expiresMs > challenge.issuedMs && challenge.expiresMs - challenge.issuedMs == 30000 && now >= challenge.issuedMs && now < challenge.expiresMs;
+        WindowsGrantLifetimeValid(challenge.issuedMs, challenge.expiresMs) && now >= challenge.issuedMs && now < challenge.expiresMs;
 }
 inline WindowsApproval SignWindowsChallenge(const WindowsChallenge& challenge, SigningKey& key) {
     WindowsApproval approval; approval.challenge = challenge; auto hash = ChallengeHash(challenge); DWORD size = 0;
@@ -66,7 +75,8 @@ class OneTimeWindowsGrant {
 public:
     OneTimeWindowsGrant(const WindowsChallenge& challenge, ULONGLONG monotonic) : expected(challenge), started(monotonic) {}
     bool Verify(const WindowsApproval& approval, const std::vector<BYTE>& publicKey, ULONGLONG now, ULONGLONG monotonic) const {
-        if (consumed.load() || wcsnlen_s(expected.sid, ARRAYSIZE(expected.sid)) >= ARRAYSIZE(expected.sid) || monotonic < started || monotonic - started >= 30000 || memcmp(&expected, &approval.challenge, sizeof(expected)) ||
+        if (consumed.load() || wcsnlen_s(expected.sid, ARRAYSIZE(expected.sid)) >= ARRAYSIZE(expected.sid) || monotonic < started ||
+            !WindowsGrantLifetimeValid(expected.issuedMs, expected.expiresMs) || monotonic - started >= expected.expiresMs - expected.issuedMs || memcmp(&expected, &approval.challenge, sizeof(expected)) ||
             !ChallengeContextValid(expected, expected.sid, expected.session, now)) return false;
         try { SigningKey key; key.Import(publicKey.data(), static_cast<DWORD>(publicKey.size()), false); auto hash = ChallengeHash(approval.challenge);
             return BCryptVerifySignature(key.key, nullptr, hash.data(), static_cast<ULONG>(hash.size()), const_cast<BYTE*>(approval.signature), sizeof(approval.signature), 0) >= 0;

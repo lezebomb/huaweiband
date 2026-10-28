@@ -36,7 +36,7 @@ var changed = native.ToArray(); changed[^1] ^= 1;
 Check("CSharp refuses tampered native signature", !WindowsGrantWire.Verify(challenge, changed, publicKey, 100001));
 Check("CSharp refuses wrong Windows session", !WindowsGrantWire.Verify(challenge with { WindowsSessionId = 6 }, native, publicKey, 100001));
 Check("CSharp refuses wrong target SID", !WindowsGrantWire.Verify(challenge with { UserSid = "S-1-5-21-100-200-300-1002" }, native, publicKey, 100001));
-Check("CSharp refuses expired signature", !WindowsGrantWire.Verify(challenge, native, publicKey, 130000));
+Check("CSharp refuses expired signature", !WindowsGrantWire.Verify(challenge, native, publicKey, challenge.ExpiresFileTimeMilliseconds));
 Check("CSharp refuses future-issued challenge", !WindowsGrantWire.Verify(challenge, native, publicKey, 99999));
 bool Refuses(byte[] value) { try { WindowsGrantWire.ReadChallenge(value); return false; } catch (FormatException) { return true; } }
 Check("CSharp refuses truncated wire", Refuses(body[..^1]));

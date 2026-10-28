@@ -64,7 +64,7 @@ public final class VmWearSession<P> {
             boolean available=link.getAsBoolean();if(!recovery.ready(elapsed.getAsLong(),available)){if(!available)state(State.WAIT_LINK);return;}
             Request<P> request=client.poll();if(!active())return;recovery.succeeded();synchronized(this){polls++;}
             if(request==null){if(!gate.isActive(pending))state(State.WAIT_REQUEST);return;}
-            PromptGate.Ticket ticket=gate.begin(request.nonce,request.expiresAt);if(ticket==null){if(state==State.WAIT_CLICK && !gate.isActive(pending))state(State.WAIT_REQUEST);return;}
+            PromptGate.Ticket ticket=gate.begin(request.nonce,request.expiresAt,120);if(ticket==null){if(state==State.WAIT_CLICK && !gate.isActive(pending))state(State.WAIT_REQUEST);return;}
             pending=ticket;synchronized(this){prompts++;}state(State.WAIT_CLICK);AtomicBoolean claimed=new AtomicBoolean();
             wearable.prompt(gate,ticket,this::active,approved->{
                 if(!active() || !gate.canSubmit(ticket) || !claimed.compareAndSet(false,true))return;

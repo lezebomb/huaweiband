@@ -20,7 +20,7 @@ public final class WindowsGrantInterop {
         bad=body.clone();bad[0]^=1;check(refuses(bad),"wrong domain");bad=body.clone();bad[435]=1;check(refuses(bad),"SID padding");
         bad=body.clone();bad[16]=0;bad[17]=0;bad[18]=0;bad[19]=0;check(refuses(bad),"zero session");
         check(WindowsGrantWire.current(body,100001-WindowsGrantWire.FILETIME_UNIX_MILLISECONDS),"current request");
-        check(!WindowsGrantWire.current(body,130000-WindowsGrantWire.FILETIME_UNIX_MILLISECONDS),"expired request");
+        check(!WindowsGrantWire.current(body,WindowsGrantWire.read(body).expires-WindowsGrantWire.FILETIME_UNIX_MILLISECONDS),"expired request");
         check(!WindowsGrantWire.current(body,99999-WindowsGrantWire.FILETIME_UNIX_MILLISECONDS),"future request");
         byte[] csharp=Files.readAllBytes(dir.resolve("csharp-approval.bin"));PublicKey csharpKey=WindowsGrantWire.importNative(Files.readAllBytes(dir.resolve("csharp-public.bin")));
         check(WindowsGrantWire.verify(body,Arrays.copyOfRange(csharp,436,500),csharpKey),"CSharp signature in Java");

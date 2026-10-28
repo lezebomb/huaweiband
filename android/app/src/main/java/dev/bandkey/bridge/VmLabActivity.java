@@ -135,13 +135,14 @@ public final class VmLabActivity extends Activity {
                     });
                     if(prompt==null)return;
                     WindowsGrantWire.Challenge challenge=WindowsGrantWire.read(android.util.Base64.decode(prompt.getString("challenge"),android.util.Base64.NO_WRAP));
-                    PromptGate.Ticket next=currentGate.begin(prompt.getString("challenge"),(challenge.expires-WindowsGrantWire.FILETIME_UNIX_MILLISECONDS)/1000);if(next==null)return;
+                    PromptGate.Ticket next=currentGate.begin(prompt.getString("challenge"),(challenge.expires-WindowsGrantWire.FILETIME_UNIX_MILLISECONDS)/1000,120);if(next==null)return;
                     runOnUiThread(()->{
                         if(!active || gate!=currentGate || !currentGate.isActive(next))return;
                         pending=prompt;ticket=next;approve.setEnabled(!useWearable);deny.setEnabled(!useWearable);
-                        if(!useWearable){show("VM 已锁定，收到经过核验的一次性请求。\n请在 30 秒内明确确认或拒绝；未确认不会签名。");return;}
+                        if(!useWearable){show("收到经过核验的一次性请求。\n请在本次截止时间前明确确认或拒绝；未确认不会签名。");return;}
                         show("VM 请求已核验，正在请求真实手环确认。手机测试按钮已停用。");
-                        new WearableChannel(this).prompt(wearableUuid,"隔离 VM "+currentClient.config.optString("pcId").substring(0,8),currentGate,next,()->active && gate==currentGate,
+                        String cutoff=new java.text.SimpleDateFormat("HH:mm:ss",java.util.Locale.ROOT).format(new java.util.Date(challenge.expires-WindowsGrantWire.FILETIME_UNIX_MILLISECONDS));
+                        new WearableChannel(this).prompt(wearableUuid,"解锁确认","本次截止 "+cutoff+"；过期请忽略",currentGate,next,()->active && gate==currentGate,
                             yes->runOnUiThread(()->submitDecision(currentGate,next,prompt,currentClient,yes)),
                             message->showCurrent(currentGate,message));
                     });

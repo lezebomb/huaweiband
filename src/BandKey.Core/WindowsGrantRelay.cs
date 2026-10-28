@@ -73,8 +73,10 @@ public sealed class WindowsGrantRelay
     private void TrackWall(long wall) { if (wall > latestWall) latestWall = wall; }
     private bool PendingCurrent(long wall, long monotonic)
     {
-        if (pending == null || monotonic < pendingStarted || monotonic - pendingStarted >= 30000) return false;
-        return WindowsGrantWire.IsCurrent(WindowsGrantWire.ReadChallenge(pending), WindowsGrantRelayWire.FileTimeMilliseconds(wall));
+        if (pending == null || monotonic < pendingStarted) return false;
+        var challenge = WindowsGrantWire.ReadChallenge(pending);
+        return (ulong)(monotonic - pendingStarted) < challenge.ExpiresFileTimeMilliseconds - challenge.IssuedFileTimeMilliseconds &&
+            WindowsGrantWire.IsCurrent(challenge, WindowsGrantRelayWire.FileTimeMilliseconds(wall));
     }
     public WindowsGrantPrompt? Poll(PollRequest poll)
     {

@@ -21,6 +21,7 @@
 #include "DeploymentLifecycle.h"
 #include "LabPolicy.h"
 #include "ProviderHash.h"
+#include "PayloadUpdate.h"
 #pragma comment(linker, "/manifestdependency:\"type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='amd64' publicKeyToken='6595b64144ccf1df' language='*'\"")
 
 struct SetupFailure { std::wstring text; DWORD code; };
@@ -338,12 +339,43 @@ static LabCleanupResult Remove() {
     if (!CheckCleanupDirectory(directory, result, &directoryGuard)) return result;
     try { WriteDeploymentProgress(directory, DeploymentPhase::Removing); } catch (...) {}
     RemoveExperimentFiles(directory, result);
+    result.File(directory / L"provider-update.tmp");
+    result.File(directory / L"provider-previous.dll");
     result.File(directory / BandKeyProviderFile);
     if (result.complete) { result.File(directory / DeploymentTempName); result.File(directory / DeploymentStateName); }
     CloseHandle(directoryGuard.value); directoryGuard.value = INVALID_HANDLE_VALUE;
     if (result.complete) result.Directory(directory);
     if (!result.complete) RecordRecoveryRequired(directory, result.issues.front().error);
     return result;
+}
+// Atomic, account-preserving payload update. Never re-enrolls or reads the vault.
+static void UpdateHostProvider(bool rollback) {
+    Require(BandKeyHostPilot && IsSupportedVmwareGuest(), L"This update requires the original supported host");
+    const auto policy = ReadLabPolicy();
+    Require(policy.enabled && policy.mode == 2 && policy.signerKind == 1 && policy.sid == CurrentVmSid(), L"The active host enrollment must belong to this Windows user");
+    const auto directory = InstallDirectory(), destination = directory / BandKeyProviderFile;
+    CheckNoReparseDirectory(directory); CheckOrdinaryDirectory(directory);
+    Require(ReadMachineString((std::wstring(BandKeyLabCom) + L"\\InprocServer32").c_str(), nullptr) == destination.wstring(), L"Unexpected host COM path; no update performed");
+    const auto previous = directory / L"provider-previous.dll", staged = directory / L"provider-update.tmp";
+    if (rollback) {
+        const auto code = ReplaceBandKeyPayload(destination, previous, staged);
+        Require(code == ERROR_SUCCESS, L"Cannot restore previous provider; retry after a normal restart", code);
+        RemoveOrdinaryLabFile(staged);
+        return;
+    }
+    const auto source = ExecutablePath().parent_path() / BandKeyProviderFile;
+    Require(FileHash(source) == BandKeyExpectedProviderHash, L"Update payload hash mismatch");
+    if (FileHash(destination) == BandKeyExpectedProviderHash) return;
+    Require(GetFileAttributesW(previous.c_str()) == INVALID_FILE_ATTRIBUTES && GetFileAttributesW(staged.c_str()) == INVALID_FILE_ATTRIBUTES, L"A previous update already exists; resolve or roll it back first");
+    const BOOL copied = CopyFileW(source.c_str(), staged.c_str(), TRUE);
+    Require(copied != FALSE, L"Cannot stage provider update", copied ? ERROR_SUCCESS : GetLastError());
+    try {
+        Require(PrepareCopiedLabFile(staged) == ERROR_SUCCESS && FileHash(staged) == BandKeyExpectedProviderHash, L"Staged provider verification failed");
+        PrepareHostRecovery();
+        const auto code = ReplaceBandKeyPayload(destination, staged, previous);
+        Require(code == ERROR_SUCCESS, L"Provider is in use or cannot be replaced. No sign-out or reboot was performed; retry after a normal restart.", code);
+    } catch (...) { RemoveOrdinaryLabFile(staged); throw; }
+    Require(FileHash(destination) == BandKeyExpectedProviderHash, L"Updated provider readback failed; use --rollback-update");
 }
 static std::wstring RemovalMessage(const LabCleanupResult& result) {
     if (result.complete) return L"Lab registration and files removed. System providers were preserved.";
@@ -411,7 +443,7 @@ int WINAPI wWinMain(_In_ HINSTANCE, _In_opt_ HINSTANCE, _In_ PWSTR, _In_ int) {
     try {
         Require(BandKeyRemovalEnvironment() && !GetSystemMetrics(SM_REMOTESESSION), BandKeyHostPilot?L"This host-pilot build is bound to its original local computer. No changes were made.":L"This laboratory setup only supports the local VMware Windows 11 build 26300 guest. No changes were made.");
         std::wstring operation;
-        if (argc == 2 && (arguments[1] == L"--install" || arguments[1] == L"--install-phone" || arguments[1] == L"--install-phone-msa" || arguments[1] == L"--remove")) operation = arguments[1];
+        if (argc == 2 && (arguments[1] == L"--install" || arguments[1] == L"--install-phone" || arguments[1] == L"--install-phone-msa" || arguments[1] == L"--remove" || arguments[1] == L"--update" || arguments[1] == L"--rollback-update")) operation = arguments[1];
         else {
             Require(argc == 1, L"Unsupported setup arguments");
 #ifdef BANDKEY_HOST_PILOT
@@ -436,9 +468,13 @@ int WINAPI wWinMain(_In_ HINSTANCE, _In_opt_ HINSTANCE, _In_ PWSTR, _In_ int) {
         }
         Require(IsAdmin(), L"Administrator approval is required for this action");
 #ifdef BANDKEY_HOST_PILOT
-        Require(operation==L"--install-phone-msa" || operation==L"--remove",L"Unsupported host-pilot operation");
+        Require(operation==L"--install-phone-msa" || operation==L"--remove" || operation==L"--update" || operation==L"--rollback-update",L"Unsupported host-pilot operation");
 #endif
         SetupOperationLock operationLock(BandKeySetupMutex);
+        if (operation == L"--update" || operation == L"--rollback-update") {
+            UpdateHostProvider(operation == L"--rollback-update");
+            return 0;
+        }
         if (operation == L"--install" || operation == L"--install-phone" || operation == L"--install-phone-msa") { bool phone = operation != L"--install"; Install(phone, operation == L"--install-phone-msa"); MessageBoxW(nullptr, BandKeyHostPilot?L"BandKey host pilot installed. Start BandKey.exe --host-bridge, pair this computer with the phone and use real-band confirmation. Original Windows password and Hello providers were preserved.\n\nRecovery installer: C:\\ProgramData\\BandKeyHostPilotRecovery\\BandKey.HostSetup.exe (choose Remove). No automatic lock, sign-out or reboot was performed.":phone ? L"Phone-confirmation VM experiment installed. Start BandKey.exe --vm-bridge from the lab disc and import the same phone public key. No local simulation signer exists; the enrolled phone must sign each new request after explicit confirmation.\n\nAccount compatibility and desktop unlock must be checked in this VM. Keep its working system sign-in option and baseline snapshot." : L"Signed-confirmation VM experiment installed. Start BandKey.VmConfirmation.exe from the lab disc. Arm one confirmation, then manually lock the VM within 10 seconds.\n\nKeep the system password sign-in option. To roll back, run this setup and choose Remove.", BandKeyProviderLabel, MB_OK | MB_ICONINFORMATION); }
         else { auto result = Remove(); auto text = RemovalMessage(result); MessageBoxW(nullptr, text.c_str(), BandKeyProviderLabel, MB_OK | (result.complete ? MB_ICONINFORMATION : MB_ICONWARNING)); if (!result.complete) return 1; }
         return 0;

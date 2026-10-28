@@ -8,7 +8,9 @@ public final class HostConfirmationPolicy {
     }
     public static boolean mayDecide(boolean host,boolean realWearableClient){return !host || realWearableClient;}
     public static long queryDelay(Boolean connected,boolean returned){
-        return Boolean.FALSE.equals(connected) || returned?1000:3000;
+        // Some SDK queries temporarily omit an out-of-range band. Recheck unknown
+        // promptly without converting it into evidence of departure or approval.
+        return !Boolean.TRUE.equals(connected) || returned?1000:3000;
     }
     private HostConfirmationPolicy(){}
 }

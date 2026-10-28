@@ -79,6 +79,15 @@ public final class BridgeRuntimeTests {
             Fixture f=new Fixture();var old=f.prompt();f.wall=1031;f.elapsed=36000;var current=f.gate.begin("fresh",1061);
             check(!f.gate.consume(old));check(f.gate.consume(current));
         });
+        test("host confirmation stays valid after thirty seconds and expires at two minutes",()->{
+            Fixture f=new Fixture();var t=f.gate.begin("host",1120,120);check(t!=null);
+            f.wall=1090;f.elapsed=95000;check(f.gate.consume(t));check(f.gate.canSubmit(t));
+            check(!f.gate.consume(t));f.wall=1120;f.elapsed=125000;check(!f.gate.canSubmit(t));
+        });
+        test("two minute host deadline cannot be extended by a frozen wall clock",()->{
+            Fixture f=new Fixture();var t=f.gate.begin("host",1120,120);f.elapsed=125000;check(!f.gate.consume(t));
+            check(f.gate.begin("overlong-host",1121,120)==null);
+        });
         test("cancelled old query cannot cancel the replacement",()->{
             Fixture f=new Fixture();var old=f.prompt();var current=f.gate.begin("fresh",1030);f.gate.cancel(old);check(f.gate.consume(current));
         });

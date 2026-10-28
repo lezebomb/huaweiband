@@ -65,7 +65,7 @@ internal sealed class BlePhoneTransport
     internal static TimeSpan HostRestartDelay(BleTransportFailure? failure)=>TimeSpan.FromMilliseconds(failure!=null && Retryable(failure)?500:30000);
 
     internal static bool Retryable(BleTransportFailure failure)=>failure.Code is
-        "gatt-disconnected" or "gatt-session-closed" or "gatt-write-unreachable" or "gatt-write-timeout" or
+        "gatt-disconnected" or "gatt-write-unreachable" or "gatt-write-timeout" or
         "gatt-idle-subscription-lost" or "gatt-health-timeout" or "gatt-health-unreachable" or "gatt-health-protocolerror" or "gatt-health-failed" or
         "target-connect" or "target-connect-timeout" or "target-read" or "target-write" or "target-half-close" or "stream-timeout" or
         "connect-scan" or "connect-device" or "connect-service" or "connect-subscribe" or "connect-health-descriptor";
