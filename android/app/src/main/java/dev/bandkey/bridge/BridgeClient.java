@@ -21,6 +21,7 @@ final class BridgeClient {
     private volatile long failedRequests,rateLimitedResponses,unavailableResponses;
     private volatile int lastStatusCode;
     private volatile String lastFailureKind="none";
+    long completedResponses(){return completed;}
     JSONObject metrics()throws org.json.JSONException{return new JSONObject().put("reuseEnabled",reuseConnection).put("requests",requests).put("completed",completed)
         .put("lastRequestMilliseconds",lastRequestMilliseconds).put("maxRequestMilliseconds",maxRequestMilliseconds).put("retirements",retirements)
         .put("failedRequests",failedRequests).put("lastStatusCode",lastStatusCode).put("rateLimitedResponses",rateLimitedResponses)

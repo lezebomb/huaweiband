@@ -50,7 +50,7 @@ public sealed class BlePhoneTunnel(bool drainTargetAbort=false) : IBlePhoneConne
         ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed)!=0,this);
         if(Interlocked.Exchange(ref started,1)!=0)throw new InvalidOperationException("Create a new BLE tunnel before reconnecting");
         using var budget=CancellationTokenSource.CreateLinkedTokenSource(cancellation,stop.Token);budget.CancelAfter(TimeSpan.FromSeconds(45));var token=budget.Token;
-        Stage="adapter";var adapter=await BluetoothAdapter.GetDefaultAsync().AsTask(token);
+        Stage="adapter";var adapter=await BluetoothAdapter.GetDefaultAsync().AsTask(token).WaitAsync(token);
         if(adapter==null || !adapter.IsCentralRoleSupported)throw new IOException("BLE central adapter unavailable");
         Stage="scan";var address=new TaskCompletionSource<(ulong Address,BluetoothAddressType Type)>(TaskCreationOptions.RunContinuationsAsynchronously);
         var watcher=new BluetoothLEAdvertisementWatcher{ScanningMode=BluetoothLEScanningMode.Active};watcher.AdvertisementFilter.Advertisement.ServiceUuids.Add(ServiceId);
@@ -58,20 +58,24 @@ public sealed class BlePhoneTunnel(bool drainTargetAbort=false) : IBlePhoneConne
         watcher.Stopped+=(_,e)=>{if(e.Error!=BluetoothError.Success)address.TrySetException(new IOException("BLE scan failed"));};
         watcher.Start();(ulong Address,BluetoothAddressType Type) found;
         try{found=await address.Task.WaitAsync(TimeSpan.FromSeconds(20),token);}finally{watcher.Stop();}
-        Stage="device";device=await BluetoothLEDevice.FromBluetoothAddressAsync(found.Address,found.Type).AsTask(token)??throw new IOException("Phone unavailable");
+        Stage="device";device=await BluetoothLEDevice.FromBluetoothAddressAsync(found.Address,found.Type).AsTask(token).WaitAsync(token)??throw new IOException("Phone unavailable");
         device.ConnectionStatusChanged+=OnConnection;
-        Stage="service";var services=await device.GetGattServicesForUuidAsync(ServiceId,BluetoothCacheMode.Uncached).AsTask(token);
-        if(services.Status!=GattCommunicationStatus.Success || services.Services.Count!=1){foreach(var item in services.Services)item.Dispose();throw new IOException("BandKey phone service unavailable");}
-        service=services.Services[0];service.Session.MaintainConnection=true;
-        var chars=await service.GetCharacteristicsAsync(BluetoothCacheMode.Uncached).AsTask(token);
+        // The Android process can recreate its GATT database with different ATT
+        // handles. Refresh the primary-service view before selecting our UUID.
+        Stage="service";var services=await device.GetGattServicesAsync(BluetoothCacheMode.Uncached).AsTask(token).WaitAsync(token);
+        var matches=services.Services.Where(item=>item.Uuid==ServiceId).ToArray();
+        foreach(var item in services.Services.Where(item=>item.Uuid!=ServiceId))item.Dispose();
+        if(services.Status!=GattCommunicationStatus.Success || matches.Length!=1){foreach(var item in matches)item.Dispose();throw new IOException("BandKey phone service unavailable");}
+        service=matches[0];service.Session.MaintainConnection=true;
+        var chars=await service.GetCharacteristicsAsync(BluetoothCacheMode.Uncached).AsTask(token).WaitAsync(token);
         if(chars.Status!=GattCommunicationStatus.Success)throw new IOException("Phone characteristics unavailable");
         rx=chars.Characteristics.Single(c=>c.Uuid==RxId);tx=chars.Characteristics.Single(c=>c.Uuid==TxId);
         if(!rx.CharacteristicProperties.HasFlag(GattCharacteristicProperties.Write))throw new IOException("Phone characteristic properties");
         subscription=ChooseSubscription(tx.CharacteristicProperties);
         tx.ValueChanged+=OnValue;Stage="subscribe";
-        if(await tx.WriteClientCharacteristicConfigurationDescriptorAsync(subscription).AsTask(token)!=GattCommunicationStatus.Success)throw new IOException("BLE subscription refused");
+        if(await tx.WriteClientCharacteristicConfigurationDescriptorAsync(subscription).AsTask(token).WaitAsync(token)!=GattCommunicationStatus.Success)throw new IOException("BLE subscription refused");
         Stage="health-descriptor";
-        var descriptors=await tx.GetDescriptorsForUuidAsync(new Guid("00002902-0000-1000-8000-00805f9b34fb"),BluetoothCacheMode.Uncached).AsTask(token);
+        var descriptors=await tx.GetDescriptorsForUuidAsync(new Guid("00002902-0000-1000-8000-00805f9b34fb"),BluetoothCacheMode.Uncached).AsTask(token).WaitAsync(token);
         if(descriptors.Status!=GattCommunicationStatus.Success || descriptors.Descriptors.Count!=1)throw new IOException("BLE health descriptor unavailable");
         healthDescriptor=descriptors.Descriptors[0];Interlocked.Exchange(ref lastValue,Stopwatch.GetTimestamp());
         token.ThrowIfCancellationRequested();
@@ -107,7 +111,7 @@ public sealed class BlePhoneTunnel(bool drainTargetAbort=false) : IBlePhoneConne
     private async Task ProbeIdleAsync(CancellationToken token)
     {
         // An uncached descriptor read checks the phone, not Windows' remembered subscription.
-        var result=await healthDescriptor!.ReadValueAsync(BluetoothCacheMode.Uncached).AsTask(token);
+        var result=await healthDescriptor!.ReadValueAsync(BluetoothCacheMode.Uncached).AsTask(token).WaitAsync(token);
         if(result.Status==GattCommunicationStatus.AccessDenied)throw new BleTransportException("gatt-permission-denied");
         if(result.Status!=GattCommunicationStatus.Success)throw new BleTransportException("gatt-health-"+result.Status.ToString().ToLowerInvariant());
         var bytes=result.Value.ToArray();
@@ -117,7 +121,9 @@ public sealed class BlePhoneTunnel(bool drainTargetAbort=false) : IBlePhoneConne
     {
         byte[] bytes=frame.Encode();using var budget=CancellationTokenSource.CreateLinkedTokenSource(token);budget.CancelAfter(TimeSpan.FromSeconds(5));
         GattCommunicationStatus result;
-        try{result=await rx!.WriteValueAsync(bytes.AsBuffer(),GattWriteOption.WriteWithResponse).AsTask(budget.Token);}
+        // Native cancellation can finish late. Bound our wait independently so
+        // the supervisor can dispose this generation and reconnect on schedule.
+        try{result=await rx!.WriteValueAsync(bytes.AsBuffer(),GattWriteOption.WriteWithResponse).AsTask(budget.Token).WaitAsync(budget.Token);}
         catch(OperationCanceledException)when(!token.IsCancellationRequested){throw new BleTransportException("gatt-write-timeout");}
         if(result!=GattCommunicationStatus.Success)throw new BleTransportException("gatt-write-"+result.ToString().ToLowerInvariant());
         SentBytes+=frame.Payload.Length;
@@ -139,7 +145,10 @@ public sealed class BlePhoneTunnel(bool drainTargetAbort=false) : IBlePhoneConne
         var watching=WatchStop();
         async Task WatchHealth()
         {
-            try{await BleIdleWatchdog.RunAsync(()=>Stage=="waiting-stream" && Stopwatch.GetElapsedTime(Interlocked.Read(ref lastValue))>=TimeSpan.FromSeconds(10),ProbeIdleAsync,token);}
+            // A phone process may disappear without a Windows disconnect event
+            // while an opaque stream is still open. Probe a silent active stream
+            // too, rather than waiting for its full 45-second lifetime to expire.
+            try{await BleIdleWatchdog.RunAsync(()=>(Stage is "waiting-stream" or "forwarding") && Stopwatch.GetElapsedTime(Interlocked.Read(ref lastValue))>=TimeSpan.FromSeconds(10),ProbeIdleAsync,token);}
             catch(OperationCanceledException)when(token.IsCancellationRequested){}
             catch(BleTransportException error){Fail(error.Code);}
         }
@@ -176,7 +185,7 @@ public sealed class BlePhoneTunnel(bool drainTargetAbort=false) : IBlePhoneConne
         if(Interlocked.Exchange(ref disposed,1)!=0)return;
         Volatile.Write(ref peer,null);
         stop.Cancel();received.Writer.TryComplete();if(tx!=null)tx.ValueChanged-=OnValue;if(device!=null)device.ConnectionStatusChanged-=OnConnection;
-        try{if(tx!=null){using var budget=new CancellationTokenSource(TimeSpan.FromSeconds(2));await tx.WriteClientCharacteristicConfigurationDescriptorAsync(GattClientCharacteristicConfigurationDescriptorValue.None).AsTask(budget.Token);}}catch(Exception){/* A removed radio cannot acknowledge unsubscribe. */}
+        try{if(tx!=null){using var budget=new CancellationTokenSource(TimeSpan.FromSeconds(2));await tx.WriteClientCharacteristicConfigurationDescriptorAsync(GattClientCharacteristicConfigurationDescriptorValue.None).AsTask(budget.Token).WaitAsync(budget.Token);}}catch(Exception){/* A removed radio cannot acknowledge unsubscribe. */}
         try{if(service!=null)service.Session.MaintainConnection=false;}catch(Exception){}
         try{service?.Dispose();}catch(Exception){}try{device?.Dispose();}catch(Exception){}
         stop.Dispose();

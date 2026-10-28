@@ -9,7 +9,12 @@ public final class HostResidentTests {
         host.stop(BleBackgroundLease.Reason.USER);check(!host.allows(3600000));
         long[] t={0};VmWearSession<Object> old=session(t,false),current=session(t,true);t[0]=3600000;check(!old.active() && current.active());current.stop();check(!current.active());
         BleBackgroundLease rolled=new BleBackgroundLease(true);rolled.start(100,1000,radio());rolled.tick(99,true);check(!rolled.allows(100));
-        if(args.length==1)java.nio.file.Files.writeString(java.nio.file.Path.of(args[0]),"{\"total\":5,\"passed\":5,\"failed\":0,\"hardwareTested\":false}");
-        System.out.println("Host resident lifetime, stop and clock rollback: 5/5 passed.");
+        check(ResidentResumePolicy.allowed(true,100,false,200));
+        check(!ResidentResumePolicy.allowed(true,100,true,200));
+        check(!ResidentResumePolicy.allowed(false,300,false,200));
+        check(ResidentResumePolicy.allowed(true,300,true,200));
+        check(!ResidentResumePolicy.allowed(true,200,true,200));
+        if(args.length==1)java.nio.file.Files.writeString(java.nio.file.Path.of(args[0]),"{\"total\":10,\"passed\":10,\"failed\":0,\"hardwareTested\":false}");
+        System.out.println("Host resident lifetime, user-stop and recovery policy: 10/10 passed.");
     }
 }

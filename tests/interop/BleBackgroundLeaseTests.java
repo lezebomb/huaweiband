@@ -32,6 +32,38 @@ public final class BleBackgroundLeaseTests {
         BleBackgroundLease.Snapshot s(){return lease.snapshot();}
     }
     public static void main(String[] args)throws Exception{
+        test("transport restart closes old radio before opening the replacement and keeps aggregate counters",()->{
+            Radio first=new Radio(),second=new Radio();int[] generation={0};BleBackgroundLease lease=new BleBackgroundLease();
+            check(lease.start(1000,30000,()->{if(generation[0]++==0)return first;check(first.closes==1);return second;}));first.state(true,true,10,20,1);lease.tick(2000,true);
+            check(lease.restart(3000));second.state(true,true,4,8,1);lease.tick(4000,true);check(lease.snapshot().sent==14 && lease.snapshot().received==28 && lease.snapshot().streams==2 && lease.snapshot().restarts==1);
+            lease.tick(31000,true);check(lease.snapshot().reason==BleBackgroundLease.Reason.DEADLINE && second.closes==1);
+        });
+        test("restart cannot revive a stopped or expired run",()->{
+            Fixture f=new Fixture();f.start();f.lease.stop(BleBackgroundLease.Reason.USER);check(!f.lease.restart(2000) && f.radio.starts==1);
+            Fixture expired=new Fixture();expired.start();check(!expired.lease.restart(31000) && expired.radio.closes==1 && expired.s().reason==BleBackgroundLease.Reason.DEADLINE);
+        });
+        test("failed replacement is closed without leaving the old radio active",()->{
+            Radio first=new Radio(),second=new Radio();second.failStart=true;int[] n={0};BleBackgroundLease lease=new BleBackgroundLease();
+            lease.start(1000,30000,()->n[0]++==0?first:second);check(!lease.restart(2000));check(first.closes==1 && second.closes==1 && !lease.allows(2001));
+        });
+        test("replacement advertising has its own bounded startup grace",()->{
+            Radio first=new Radio(),second=new Radio();second.stats=new BleBackgroundLease.Stats(false,false,false,0,0,0);int[] n={0};BleBackgroundLease lease=new BleBackgroundLease();
+            lease.start(1000,60000,()->n[0]++==0?first:second);check(lease.restart(20000));lease.tick(25000,true);check(lease.snapshot().stage==BleBackgroundLease.Stage.STARTING);
+            lease.tick(30000,true);check(lease.snapshot().reason==BleBackgroundLease.Reason.ADVERTISING_TIMEOUT && second.closes==1);
+        });
+        test("restart rejects monotonic rollback",()->{Fixture f=new Fixture();f.start();f.tick(2000);check(!f.lease.restart(1999) && f.s().reason==BleBackgroundLease.Reason.CLOCK_ROLLBACK);});
+        test("resident transport replacement preserves explicit stop",()->{
+            Radio first=new Radio(),second=new Radio();int[] n={0};BleBackgroundLease lease=new BleBackgroundLease(true);lease.start(0,1000,()->n[0]++==0?first:second);
+            check(lease.restart(3600000) && lease.allows(3600001));lease.stop(BleBackgroundLease.Reason.USER);check(!lease.restart(3600002) && second.closes==1);
+        });
+        test("no-response watchdog is bounded and successful responses postpone it",()->{
+            BleProgressWatch watch=new BleProgressWatch();check(!watch.restartDue(0,0) && !watch.restartDue(44999,0) && watch.restartDue(45000,0) && !watch.restartDue(45001,0));
+            check(watch.restartDue(90000,0) && !watch.restartDue(90001,1) && !watch.restartDue(135000,1) && watch.restartDue(135001,1));
+        });
+        test("watchdog refuses time or response counter rollback",()->{
+            BleProgressWatch time=new BleProgressWatch();time.restartDue(100,1);boolean refused=false;try{time.restartDue(99,1);}catch(IllegalArgumentException expected){refused=true;}check(refused);
+            BleProgressWatch counts=new BleProgressWatch();counts.restartDue(100,2);refused=false;try{counts.restartDue(101,1);}catch(IllegalArgumentException expected){refused=true;}check(refused);
+        });
         test("new process has no active lease or persisted restart",()->{Fixture f=new Fixture();check(!f.lease.allows(0));f.tick(1000);check(f.s().stage==BleBackgroundLease.Stage.IDLE && f.radio.starts==0);});
         test("explicit run advertises then observes connected stream",()->{Fixture f=new Fixture();f.start();f.tick(1100);check(f.s().stage==BleBackgroundLease.Stage.ADVERTISING);f.radio.state(true,true,25,50,1);f.tick(1200);check(f.s().stage==BleBackgroundLease.Stage.STREAMING && f.s().sent==25 && f.s().received==50);});
         test("duplicate start cannot replace resource or renew deadline",()->{Fixture f=new Fixture();f.start();check(!f.lease.start(20000,30000,()->{throw new AssertionError("Duplicate allocation");}));f.tick(31000);check(f.s().reason==BleBackgroundLease.Reason.DEADLINE && f.radio.starts==1 && f.radio.closes==1);});

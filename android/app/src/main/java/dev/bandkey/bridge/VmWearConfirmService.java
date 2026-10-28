@@ -28,7 +28,9 @@ public final class VmWearConfirmService extends Service {
     private volatile VmWearSession<JSONObject> session;
     private JSONObject lastVerifiedPrompt;
     private VmRelayClient relayClient;
-    private BlePhonePeripheral ble;
+    private volatile BlePhonePeripheral ble;
+    private final BleProgressWatch progressWatch=new BleProgressWatch();
+    private long reportWrittenAt=-10000;
     private String token,pcSaved,wearableUuid,noticeState="";
     private volatile String wearableStatus="";
     private boolean finishing;
@@ -44,11 +46,16 @@ public final class VmWearConfirmService extends Service {
         boolean focused=activity.hasWindowFocus() || (consent!=null && consent.getOwnerActivity()==activity && consent.isShowing() && consent.getWindow()!=null && consent.getWindow().getDecorView().hasWindowFocus());
         if(active() || VmBleTransportService.active() || activity.isFinishing() || !focused ||
             !activity.getSystemService(PowerManager.class).isInteractive() || activity.getSystemService(KeyguardManager.class).isKeyguardLocked())return false;
+        try{
+            String saved=activity.getSharedPreferences("bandkey-vm-phone-lab",MODE_PRIVATE).getString("pc",null);
+            if(saved!=null && HostConfirmationPolicy.isHost(new JSONObject(saved).optString("protocol")))ResidentRecoveryJob.explicitStart(activity);
+        }catch(JSONException error){return false;}
         activity.startForegroundService(new Intent(activity,VmWearConfirmService.class).setAction(START).putExtra("run",UUID.randomUUID().toString()));return true;
     }
-    static void stopCurrent(Context context){context.getSharedPreferences(RESIDENT_PREFS,MODE_PRIVATE).edit().putBoolean("enabled",false).apply();VmWearConfirmService s=running;if(s!=null)s.finish("user");}
+    static void stopCurrent(Context context){ResidentRecoveryJob.stop(context);VmWearConfirmService s=running;if(s!=null)s.finish("user");}
     static boolean resumeResident(Context context){
-        if(!context.getSharedPreferences(RESIDENT_PREFS,MODE_PRIVATE).getBoolean("enabled",false))return false;
+        if(active())return true;
+        if(!ResidentRecoveryJob.permitted(context))return false;
         try{
             String saved=context.getSharedPreferences("bandkey-vm-phone-lab",MODE_PRIVATE).getString("pc",null);
             if(saved==null || !HostConfirmationPolicy.isHost(new JSONObject(saved).optString("protocol")) ||
@@ -63,7 +70,9 @@ public final class VmWearConfirmService extends Service {
         try{
             VmWearSession<JSONObject> current=session;BleBackgroundLease.Snapshot stats=lease.snapshot();
             lastReport=new JSONObject().put("schema","bandkey.vm-wear-background.v1").put("state",current==null?"STOPPED":current.state().name()).put("reason",reason)
-                .put("resident",resident).put("remainingMilliseconds",stats.remaining).put("streams",stats.streams).put("disconnects",stats.disconnects)
+                .put("resident",resident).put("remainingMilliseconds",stats.remaining).put("streams",stats.streams).put("disconnects",stats.disconnects).put("transportRestarts",stats.restarts)
+                .put("bleAdvertising",ble!=null && ble.isAdvertising()).put("bleConnected",ble!=null && ble.isConnected()).put("bleFailure",ble==null?"not-started":ble.failure())
+                .put("localSocketAborts",ble==null?0:ble.localSocketAborts)
                 .put("pollResponsesObserved",current==null?0:current.polls()).put("promptAttempts",current==null?0:current.prompts())
                 .put("authorizationResponsesObserved",current==null?0:current.delivered()).put("denialResponsesObserved",current==null?0:current.denied())
                 .put("lastNotificationLabel",lastNotificationLabel).put("lastNotificationDeadlineMilliseconds",lastNotificationDeadlineMilliseconds)
@@ -74,6 +83,12 @@ public final class VmWearConfirmService extends Service {
                 .put("decisionStage",current==null?"not-started":current.decisionStage())
                 .put("fixedPhoneDiagnostic",fixedClient==null?JSONObject.NULL:fixedClient.report())
                 .put("independentlyValidated",false).put("windowsUnlockObserved",false).toString(2);
+            long now=SystemClock.elapsedRealtime();
+            if(!"running".equals(reason) || now-reportWrittenAt>=5000){
+                android.util.AtomicFile file=new android.util.AtomicFile(new java.io.File(getFilesDir(),"wear-runtime.json"));java.io.FileOutputStream output=null;
+                try{output=file.startWrite();output.write(lastReport.getBytes(java.nio.charset.StandardCharsets.UTF_8));file.finishWrite(output);reportWrittenAt=now;}
+                catch(java.io.IOException error){if(output!=null)file.failWrite(output);}
+            }
         }catch(JSONException ignored){}
     }
     private boolean bluetoothAllowed(){
@@ -95,7 +110,7 @@ public final class VmWearConfirmService extends Service {
             if(token!=null && token.equals(intent.getStringExtra("run")))finish("user");else if(token==null)stopSelf();return START_NOT_STICKY;
         }
         if(token!=null)return resident?START_STICKY:START_NOT_STICKY;
-        if(intent==null && getSharedPreferences(RESIDENT_PREFS,MODE_PRIVATE).getBoolean("enabled",false))intent=new Intent(this,VmWearConfirmService.class).setAction(START).putExtra("run",UUID.randomUUID().toString());
+        if(intent==null && ResidentRecoveryJob.permitted(this))intent=new Intent(this,VmWearConfirmService.class).setAction(START).putExtra("run",UUID.randomUUID().toString());
         String requested=intent==null?null:intent.getStringExtra("run");
         if(intent==null || !START.equals(intent.getAction()) || requested==null || !requested.matches("[a-f0-9-]{36}")){stopSelf();return START_NOT_STICKY;}
         token=requested;
@@ -114,7 +129,7 @@ public final class VmWearConfirmService extends Service {
             fixedPhoneMode=getSharedPreferences("bandkey-vm-phone-lab",MODE_PRIVATE).getBoolean("fixedPhoneMode",false);
             final VmRelayClient client=new VmRelayClient(config,new Identity("bandkey-vm-lab-identity-v1"),fixedPhoneMode,true);relayClient=client;
             if(client.hostPilot && !fixedPhoneMode)throw new SecurityException("Host pilot requires fixed-phone mode");
-            if(resident)getSharedPreferences(RESIDENT_PREFS,MODE_PRIVATE).edit().putBoolean("enabled",true).apply();
+            if(resident){getSharedPreferences(RESIDENT_PREFS,MODE_PRIVATE).edit().putBoolean("enabled",true).apply();ResidentRecoveryJob.schedule(this);}
             if(fixedPhoneMode){bandConnection=new WearableConnectionSource(this,wearableUuid);fixedClient=new VmFixedPhoneClient(client,wearableUuid);bandConnection.start();}
             if(!lease.start(SystemClock.elapsedRealtime(),BleBackgroundLease.MAX_DURATION,()->new BleBackgroundLease.Transport(){
                 @Override public void start()throws Exception{ble=new BlePhonePeripheral(VmWearConfirmService.this,19443,ignored->{},()->lease.allows(SystemClock.elapsedRealtime()));ble.start();}
@@ -177,6 +192,12 @@ public final class VmWearConfirmService extends Service {
         if(finishing)return;lease.tick(SystemClock.elapsedRealtime(),bluetoothAllowed());
         if(lease.snapshot().stage==BleBackgroundLease.Stage.STOPPED){finish(lease.snapshot().reason.name());return;}
         VmWearSession<JSONObject> current=session;if(current!=null && !current.active()){finish("session-ended");return;}
+        if(resident && relayClient!=null && progressWatch.restartDue(SystemClock.elapsedRealtime(),relayClient.transport.completedResponses())){
+            if(current!=null)current.invalidatePending();
+            if(fixedClient!=null)fixedClient.onBleDisconnected();relayClient.transport.retireForReconnect();
+            if(!lease.restart(SystemClock.elapsedRealtime())){finish("transport-restart-failed");return;}
+            wearableStatus="通信暂时无进展，已自动重建本应用蓝牙传输，旧请求已取消";noticeState="";
+        }
         BleBackgroundLease.Snapshot stats=lease.snapshot();String state=current==null?"启动中":label(current.state());if(fixedPhoneMode && current!=null && current.state()==VmWearSession.State.WAIT_LINK && ble!=null && ble.isConnected())state="BLE已连接，等待有效请求";
         lastSummary=(resident?"主机常驻手环确认：":"VM 后台手环确认：")+state+"\n"+(resident?"常驻运行":"剩余 "+((stats.remaining+999)/1000)+" 秒")+"；完整流 "+stats.streams+"。\n仅真实手环本次点击可确认；交付签名不代表 Windows 已解锁。";
         if(!wearableStatus.isEmpty())lastSummary+="\n最近手环状态："+wearableStatus;
@@ -199,7 +220,7 @@ public final class VmWearConfirmService extends Service {
             .addAction(new Notification.Action.Builder(null,"停止确认及传输",cancel).build()).build();
     }
     private void finish(String reason){
-        if("user".equals(reason))getSharedPreferences(RESIDENT_PREFS,MODE_PRIVATE).edit().putBoolean("enabled",false).apply();
+        if("user".equals(reason))ResidentRecoveryJob.stop(this);
         if(finishing)return;finishing=true;handler.removeCallbacks(timer);VmWearSession<JSONObject> current=session;if(current!=null)current.stop();
         if(fixedClient!=null)fixedClient.stop();if(relayClient!=null)relayClient.transport.close();if(bandConnection!=null)bandConnection.stop();
         worker.shutdownNow();lease.stop(BleBackgroundLease.Reason.USER);lastSummary="VM 后台手环确认已停止："+reason+"。已交付的签名无法撤回，原生有效期与一次性检查仍适用。";
