@@ -122,6 +122,33 @@ internal static class BleRecoveryTests
             Check(BlePhoneTransport.HostRestartDelay(transport.Failure)==TimeSpan.FromSeconds(30));
             Check(BlePhoneTransport.HostRestartDelay(BleTransportFailure.From(new BleTransportException("connect-scan")))==TimeSpan.FromMilliseconds(500));
         });
+        await test("closed production GATT write abandons its generation and reaches a fresh connection",async()=>
+        {
+            int created=0,disposed=0;using var stop=new CancellationTokenSource(TimeSpan.FromSeconds(3));
+            var transport=new BlePhoneTransport(()=>{
+                int id=++created;Check(disposed==id-1);
+                return new Connection(async(_,_,token)=>{
+                    if(id==1){await BleGattOperation.WriteAsync<int>(_=>throw new ObjectDisposedException("private-object-text"),token);return;}
+                    stop.Cancel();token.ThrowIfCancellationRequested();
+                },()=>disposed++);
+            },BlePhoneTransport.DelayHostRetry);
+            await transport.RunAsync(IPAddress.Loopback,19443,TimeSpan.FromSeconds(3),cancellation:stop.Token);
+            Check(created==2 && disposed==2 && transport.Failure?.Code=="gatt-session-closed");
+            Check(!System.Text.Json.JsonSerializer.Serialize(transport.Failures).Contains("private-object-text"));
+        });
+        await test("GATT write deadline bounds a native task that ignores cancellation",async()=>
+        {
+            var pending=new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+            try{await BleGattOperation.WriteAsync(_=>pending.Task,CancellationToken.None,TimeSpan.FromMilliseconds(30));throw new Exception("Stalled GATT write accepted");}
+            catch(BleTransportException error){Check(error.Code=="gatt-write-timeout");}
+            finally{pending.TrySetResult(1);}
+        });
+        await test("explicit GATT cancellation stays a stop and does not submit a new operation",async()=>
+        {
+            int calls=0;using var stop=new CancellationTokenSource();stop.Cancel();
+            try{await BleGattOperation.WriteAsync(_=>{calls++;return Task.FromResult(1);},stop.Token);throw new Exception("Cancelled GATT write accepted");}
+            catch(OperationCanceledException){Check(calls==0);}
+        });
         await test("BLE sustained completed traffic replenishes retries instead of exhausting a lifetime attempt counter",async()=>
         {
             int created=0,disposed=0;var waits=new List<int>();using var stop=new CancellationTokenSource(TimeSpan.FromSeconds(3));
