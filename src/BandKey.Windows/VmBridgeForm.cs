@@ -217,7 +217,7 @@ internal sealed class VmBridgeForm : Form
             server = new BridgeServer(); var emptyLegacy = new AuthorizationBroker(relay.PcId, pc);
             await server.StartAsync(settings, certificate, emptyLegacy, _ => { }, windowsRelay: relay, fixedPhone: fixedPhone,tls12Compatibility:hostPilot && tls12Compatibility);
             pairing = System.Text.Json.JsonSerializer.Serialize(new { endpoint = url.GetLeftPart(UriPartial.Authority), pcId = relay.PcId, pcPublicKey = Protocol.ExportPublicKey(pc), certificateSha256 = BridgeServer.CertificatePin(certificate), protocol = hostPilot?"bandkey-host-pilot-v1":"bandkey-vm-phone-v1", testOnly = true, realWearableOnly=hostPilot }, Store.Json);
-            if(hostPilot){Directory.CreateDirectory(HostData);File.WriteAllText(Path.Combine(HostData,"public-pairing.json"),pairing);hostStarted=Environment.TickCount64;residentStop=new();residentTransport=RunResidentTransport(residentStop.Token);}
+            if(hostPilot){Directory.CreateDirectory(HostData);File.WriteAllText(Path.Combine(HostData,"public-pairing.json"),pairing);hostStarted=Environment.TickCount64;residentStop=new();var transportToken=residentStop.Token;residentTransport=Task.Run(()=>RunResidentTransport(transportToken));}
             bind.Enabled = endpoint.Enabled = fixedMode.Enabled = walkLock.Enabled = nearDelay.Enabled = false; start.Enabled = false;
             status.AppendText("\r\n中继已启动（0.9 新锁屏请求直达，重建恢复）。电脑 ID：\r\n" + relay.PcId + "\r\nTLS：\r\n" + BridgeServer.CertificatePin(certificate) + "\r\n手机访问：" + url.GetLeftPart(UriPartial.Authority) + "\r\n导出配对资料，在手机实验页导入并核对指纹。");
         }
@@ -234,7 +234,9 @@ internal sealed class VmBridgeForm : Form
         if (stopping) return;
         stopping = true;
         relay?.Revoke();fixedPhone?.Revoke();
-        residentStop?.Cancel();if(residentTransport!=null){try{await residentTransport;}catch(OperationCanceledException){}residentTransport=null;}residentStop?.Dispose();residentStop=null;
+        residentStop?.Cancel();if(residentTransport!=null){try{await residentTransport.WaitAsync(TimeSpan.FromSeconds(15));}catch(OperationCanceledException){}
+            catch(TimeoutException){residentStatus="resident-stop-timeout";SaveReport();Environment.Exit(2);return;}
+            residentTransport=null;}residentStop?.Dispose();residentStop=null;
         relay?.Revoke(); lastActivity = relay?.Activity ?? lastActivity; relay = null; var active = server; server = null;
         fixedPhone?.Revoke(); lastFixedPhone = fixedPhone?.Snapshot ?? lastFixedPhone; fixedPhone = null;
         try { if (active != null) await active.DisposeAsync(); }

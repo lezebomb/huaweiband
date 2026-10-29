@@ -13,7 +13,7 @@ if($LASTEXITCODE){throw 'Host agent publish failed'}
 New-Item -ItemType Directory -Path (Join-Path $bandKeyPackage 'Native')|Out-Null
 foreach($bandKeyFile in @('BandKey.HostProvider.dll','BandKey.HostSetup.exe')){Copy-Item -LiteralPath (Join-Path $bandKeyNative $bandKeyFile) -Destination (Join-Path $bandKeyPackage 'Native')}
 if($PhonePublicKeyPath){if((Get-Item -LiteralPath $PhonePublicKeyPath).Length -ne 72){throw 'A native P256 public blob is required'};Copy-Item -LiteralPath $PhonePublicKeyPath -Destination (Join-Path $bandKeyPackage 'Native/Phone-public.bandkeypub')}
-foreach($bandKeyScript in @('install-host-agent.ps1','uninstall-host-agent.ps1')){Copy-Item -LiteralPath (Join-Path $PSScriptRoot $bandKeyScript) -Destination $bandKeyPackage}
+foreach($bandKeyScript in @('install-host-agent.ps1','uninstall-host-agent.ps1','host-resident-watchdog.ps1')){Copy-Item -LiteralPath (Join-Path $PSScriptRoot $bandKeyScript) -Destination $bandKeyPackage}
 Copy-Item -LiteralPath (Join-Path $bandKeyRoot 'docs/host-resident-pilot.md') -Destination (Join-Path $bandKeyPackage 'README.md')
 Copy-Item -LiteralPath (Join-Path $bandKeyRoot 'THIRD_PARTY_NOTICES.md') -Destination $bandKeyPackage
 $bandKeyNuget=Join-Path $bandKeyRoot '.tooling/nuget'

@@ -39,10 +39,11 @@ public sealed class BlePhoneTunnel(bool drainTargetAbort=false) : IBlePhoneConne
     private int started;
     private string? linkFailure;
     private long receivedBytes;
-    private ushort lastMtu=23;
+    private volatile ushort lastMtu=23;
     public long SentBytes{get;private set;}public long ReceivedBytes=>Interlocked.Read(ref receivedBytes);public int Streams{get;private set;}
     public int AbortedStreams{get;private set;}
-    public ushort Mtu{get{try{lastMtu=service?.Session.MaxPduSize??lastMtu;}catch(Exception){/* The radio may disappear before final diagnostics. */}return lastMtu;}}
+    // UI/report snapshots must never make a synchronous call into a stalled radio.
+    public ushort Mtu=>lastMtu;
     public string Stage{get;private set;}="not-started";
     public BleTransportFailure? Failure{get;private set;}
     public async Task ConnectAsync(CancellationToken cancellation)
@@ -78,6 +79,7 @@ public sealed class BlePhoneTunnel(bool drainTargetAbort=false) : IBlePhoneConne
         var descriptors=await tx.GetDescriptorsForUuidAsync(new Guid("00002902-0000-1000-8000-00805f9b34fb"),BluetoothCacheMode.Uncached).AsTask(token).WaitAsync(token);
         if(descriptors.Status!=GattCommunicationStatus.Success || descriptors.Descriptors.Count!=1)throw new IOException("BLE health descriptor unavailable");
         healthDescriptor=descriptors.Descriptors[0];Interlocked.Exchange(ref lastValue,Stopwatch.GetTimestamp());
+        try{lastMtu=service.Session.MaxPduSize;}catch(Exception){/* Keep conservative framing if the radio vanished. */}
         token.ThrowIfCancellationRequested();
         Volatile.Write(ref peer,new BlePeerBinding(Guid.NewGuid().ToString("N"),new(found.Address.ToString("X12"),found.Type.ToString()),DateTimeOffset.UtcNow));
         Stage="connected";

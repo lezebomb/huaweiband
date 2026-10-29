@@ -16,7 +16,12 @@ $bandKeyTask=Get-ScheduledTask -TaskName $bandKeyTaskName -ErrorAction SilentlyC
 if($bandKeyTask){
     $bandKeyTaskOwner=$bandKeyTask.Principal.UserId
     if($bandKeyTaskOwner -ne $bandKeySid){$bandKeyTaskOwner=([Security.Principal.NTAccount]::new($bandKeyTaskOwner)).Translate([Security.Principal.SecurityIdentifier]).Value}
-    if($bandKeyTaskOwner -ne $bandKeySid -or @($bandKeyTask.Actions).Count -ne 1 -or [IO.Path]::GetFullPath($bandKeyTask.Actions.Execute) -ne [IO.Path]::GetFullPath($bandKeyExecutable) -or $bandKeyTask.Actions.Arguments -ne '--host-bridge --resident'){throw 'Unexpected startup task ownership'}
+    $bandKeyWatchShell=Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $bandKeyWatchArguments='-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "'+(Join-Path $bandKeyDestination 'host-resident-watchdog.ps1')+'"'
+    $bandKeyOwnedAction=@($bandKeyTask.Actions).Count -eq 1 -and (
+        ([IO.Path]::GetFullPath($bandKeyTask.Actions.Execute) -eq [IO.Path]::GetFullPath($bandKeyExecutable) -and $bandKeyTask.Actions.Arguments -eq '--host-bridge --resident') -or
+        ([IO.Path]::GetFullPath($bandKeyTask.Actions.Execute) -eq [IO.Path]::GetFullPath($bandKeyWatchShell) -and $bandKeyTask.Actions.Arguments -eq $bandKeyWatchArguments))
+    if($bandKeyTaskOwner -ne $bandKeySid -or !$bandKeyOwnedAction){throw 'Unexpected startup task ownership'}
     Disable-ScheduledTask -TaskName $bandKeyTaskName|Out-Null
 }
 $bandKeyData=Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'BandKeyHostBridge'

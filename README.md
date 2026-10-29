@@ -6,6 +6,8 @@ Huawei Band 11 Pro → Android Wear Engine桥接 → BLE → Windows 11。
 
 用户已反馈连续两天实际返回通知及确认解锁正常。本轮最终修改为**新主机请求两分钟有效**，通知显示截止时间；过期及重复确认仍拒绝。投递时间计入期限，未确认不会自动解锁。见[收尾说明](docs/final-maintenance.md)。
 
+2026-10-29常驻修复：发现进程仍在但状态停更近9小时，已将蓝牙操作移到后台、状态读取改为缓存，并增加90秒停更恢复的独立监护。实际进程中断后约6.7秒自动重启并恢复手机通信；不等于长期后台或完整解锁验收。见[证据与边界](docs/resident-recovery-20261029.md)。
+
 ## 使用与恢复
 
 电脑程序位于`%LOCALAPPDATA%\Programs\BandKeyHostPilot`，开始菜单“BandKey”可查看状态。关闭窗口进入托盘；暂停会停止本次通信与授权。手机保留BandKey桥接、运动健康和HMS，允许BandKey自启动与后台运行。

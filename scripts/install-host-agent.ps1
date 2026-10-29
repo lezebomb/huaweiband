@@ -33,13 +33,21 @@ foreach($bandKeyFile in $bandKeyManifest.files|Where-Object{$_.path.StartsWith('
     if((Get-FileHash -LiteralPath $bandKeyTarget).Hash.ToLowerInvariant() -ne $bandKeyFile.sha256){throw 'Installed file readback mismatch'}
 }
 Copy-Item -LiteralPath (Join-Path $bandKeyPackage 'uninstall-host-agent.ps1') -Destination $bandKeyDestination -Force
+Copy-Item -LiteralPath (Join-Path $bandKeyPackage 'host-resident-watchdog.ps1') -Destination $bandKeyDestination -Force
 $bandKeyTaskName='BandKeyHostPilot-'+$bandKeySid
 $bandKeyExecutable=Join-Path $bandKeyDestination 'BandKey.exe'
+$bandKeyWatchShell=Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+$bandKeyWatchArguments='-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "'+(Join-Path $bandKeyDestination 'host-resident-watchdog.ps1')+'"'
 $bandKeyExisting=Get-ScheduledTask -TaskName $bandKeyTaskName -ErrorAction SilentlyContinue
 $bandKeyTaskOwner=if($bandKeyExisting){$bandKeyExisting.Principal.UserId}else{$bandKeySid}
 if($bandKeyTaskOwner -ne $bandKeySid){$bandKeyTaskOwner=([Security.Principal.NTAccount]::new($bandKeyTaskOwner)).Translate([Security.Principal.SecurityIdentifier]).Value}
-if($bandKeyExisting -and ($bandKeyTaskOwner -ne $bandKeySid -or @($bandKeyExisting.Actions).Count -ne 1 -or [IO.Path]::GetFullPath($bandKeyExisting.Actions.Execute) -ne [IO.Path]::GetFullPath($bandKeyExecutable) -or $bandKeyExisting.Actions.Arguments -ne '--host-bridge --resident')){throw 'An unrelated startup task occupies this name'}
-$bandKeyAction=New-ScheduledTaskAction -Execute $bandKeyExecutable -Argument '--host-bridge --resident' -WorkingDirectory $bandKeyDestination
+$bandKeyOwnedAction=$false
+if($bandKeyExisting -and @($bandKeyExisting.Actions).Count -eq 1){
+    $bandKeyOwnedAction=([IO.Path]::GetFullPath($bandKeyExisting.Actions.Execute) -eq [IO.Path]::GetFullPath($bandKeyExecutable) -and $bandKeyExisting.Actions.Arguments -eq '--host-bridge --resident') -or
+        ([IO.Path]::GetFullPath($bandKeyExisting.Actions.Execute) -eq [IO.Path]::GetFullPath($bandKeyWatchShell) -and $bandKeyExisting.Actions.Arguments -eq $bandKeyWatchArguments)
+}
+if($bandKeyExisting -and ($bandKeyTaskOwner -ne $bandKeySid -or !$bandKeyOwnedAction)){throw 'An unrelated startup task occupies this name'}
+$bandKeyAction=New-ScheduledTaskAction -Execute $bandKeyWatchShell -Argument $bandKeyWatchArguments -WorkingDirectory $bandKeyDestination
 $bandKeyPrincipal=New-ScheduledTaskPrincipal -UserId $bandKeySid -LogonType Interactive -RunLevel Limited
 $bandKeyTrigger=New-ScheduledTaskTrigger -AtLogOn -User $bandKeySid
 $bandKeySettings=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew
@@ -49,6 +57,6 @@ New-Item -ItemType Directory -Force -Path $bandKeyMenu|Out-Null
 $bandKeyShell=New-Object -ComObject WScript.Shell
 $bandKeyStatusLink=$bandKeyShell.CreateShortcut((Join-Path $bandKeyMenu 'BandKey.lnk'));$bandKeyStatusLink.TargetPath=$bandKeyExecutable;$bandKeyStatusLink.Arguments='--host-bridge --resident';$bandKeyStatusLink.WorkingDirectory=$bandKeyDestination;$bandKeyStatusLink.Save()
 $bandKeyRemoveLink=$bandKeyShell.CreateShortcut((Join-Path $bandKeyMenu 'Uninstall BandKey.lnk'));$bandKeyRemoveLink.TargetPath=Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe';$bandKeyRemoveLink.Arguments='-NoProfile -ExecutionPolicy Bypass -File "'+(Join-Path $bandKeyDestination 'uninstall-host-agent.ps1')+'"';$bandKeyRemoveLink.Save()
-[ordered]@{schema='bandkey.host-agent-install.v1';version=$bandKeyManifest.version;task=$bandKeyTaskName;sessionZero=$false;files=@($bandKeyManifest.files|Where-Object{$_.path.StartsWith('Agent/')}|ForEach-Object{$_.path.Substring(6)})}|ConvertTo-Json -Depth 4|Set-Content -LiteralPath (Join-Path $bandKeyDestination 'installation.json') -Encoding utf8
+[ordered]@{schema='bandkey.host-agent-install.v1';version=$bandKeyManifest.version;task=$bandKeyTaskName;sessionZero=$false;files=@($bandKeyManifest.files|Where-Object{$_.path.StartsWith('Agent/')}|ForEach-Object{$_.path.Substring(6)})+@('host-resident-watchdog.ps1')}|ConvertTo-Json -Depth 4|Set-Content -LiteralPath (Join-Path $bandKeyDestination 'installation.json') -Encoding utf8
 if(!$NoStart){Start-ScheduledTask -TaskName $bandKeyTaskName}
 Write-Output 'BandKey current-user residency installed; no system sign-in providers were changed by this script.'
