@@ -96,6 +96,42 @@ internal static class WindowsGrantRelayIntegrationTests
     }
     internal static async Task RunAsync(Func<string, Func<Task>, Task> test, string directory)
     {
+        await test("renewal file retry is idempotent and preserves a different live proof",async()=>{
+            await using var f=new Fixture(directory);var first=WindowsRequestRenewalWire.Sign(WindowsRequestRenewalWire.Read(f.Exchange.CreateRequestRenewal()),f.Phone);
+            Check(f.Exchange.SubmitRequestRenewal(first) && f.Exchange.SubmitRequestRenewal(first));f.Wall++;f.Mono++;
+            var other=WindowsRequestRenewalWire.Sign(WindowsRequestRenewalWire.Read(f.Exchange.CreateRequestRenewal()),f.Phone);
+            Check(!f.Exchange.SubmitRequestRenewal(other) && File.ReadAllBytes(Path.Combine(f.Root,"Exchange","request-renewal.bin")).SequenceEqual(first) && !File.Exists(Path.Combine(f.Root,"Exchange","request-renewal.tmp")));
+        });
+        await test("renewal file atomically replaces only an expired bound refresh",async()=>{
+            await using var f=new Fixture(directory);var old=WindowsRequestRenewalWire.Sign(WindowsRequestRenewalWire.Read(f.Exchange.CreateRequestRenewal()),f.Phone);Check(f.Exchange.SubmitRequestRenewal(old));
+            f.Wall+=11000;f.Mono+=11000;var next=WindowsRequestRenewalWire.Sign(WindowsRequestRenewalWire.Read(f.Exchange.CreateRequestRenewal()),f.Phone);
+            Check(f.Exchange.SubmitRequestRenewal(next) && !f.Exchange.SubmitRequestRenewal(old) && File.ReadAllBytes(Path.Combine(f.Root,"Exchange","request-renewal.bin")).SequenceEqual(next) && !File.Exists(f.ApprovalPath));
+        });
+        await test("renewal recovery preserves malformed and foreign account or session files",async()=>{
+            for(int variant=0;variant<3;variant++){
+                await using var f=new Fixture(directory);var old=WindowsRequestRenewalWire.Read(f.Exchange.CreateRequestRenewal());
+                byte[] sentinel=variant==0?[1,2,3]:WindowsRequestRenewalWire.Sign(old with{UserSid=variant==1?"S-1-5-21-111-222-333-1002":Sid,WindowsSessionId=variant==2?6u:5u},f.Phone);
+                var path=Path.Combine(f.Root,"Exchange","request-renewal.bin");File.WriteAllBytes(path,sentinel);f.Wall+=11000;f.Mono+=11000;
+                var next=WindowsRequestRenewalWire.Sign(WindowsRequestRenewalWire.Read(f.Exchange.CreateRequestRenewal()),f.Phone);
+                try{Check(!f.Exchange.SubmitRequestRenewal(next));}catch(IOException){}catch(FormatException){}
+                Check(File.ReadAllBytes(path).SequenceEqual(sentinel) && !File.Exists(Path.Combine(f.Root,"Exchange","request-renewal.tmp")));
+            }
+        });
+        await test("two-minute HTTPS return recovers missed native refresh and rejects old confirmation",async()=>{
+            await using var f=new Fixture(directory,true,true,true);await f.Start();f.Desktop.Locked=false;await f.FixedState(true);f.Wall+=4000;f.Mono+=4000;await f.FixedState(true);
+            f.Desktop.Locked=true;f.Wall++;f.Mono++;f.NewRequest(lifetime:120000);var original=(await f.FixedState(true,f.PollRequest())).Prompt??throw new Exception("Initial lock prompt missing");var oldDecision=f.Decision(original);
+            f.Wall+=130000;f.Mono+=130000;Check((await f.FixedState(true)).Renewal==null);f.Wall+=1000;f.Mono+=1000;
+            var lost=(await f.FixedState(true)).Renewal??throw new Exception("Return refresh missing");
+            using(var first=await f.Client.PostAsJsonAsync("/v2/windows/fixed/renew",f.RenewalProof(lost))){first.EnsureSuccessStatusCode();}
+            // SYSTEM has not consumed this file before its 10s deadline.
+            RequestRenewalPrompt? recovered=null;for(int i=0;i<4;i++){f.Wall+=3000;f.Mono+=3000;recovered=(await f.FixedState(true)).Renewal;}
+            Check(recovered!=null && recovered.Body!=lost.Body && !File.Exists(f.ApprovalPath));
+            using(var retry=await f.Client.PostAsJsonAsync("/v2/windows/fixed/renew",f.RenewalProof(recovered!))){retry.EnsureSuccessStatusCode();}
+            using(var stale=await f.Client.PostAsJsonAsync("/v2/windows/fixed/renew",f.RenewalProof(lost))){Check(stale.StatusCode==HttpStatusCode.Forbidden);}
+            File.Delete(Path.Combine(f.Root,"Exchange","request-renewal.bin"));f.Wall++;f.Mono++;f.NewRequest(lifetime:120000);
+            var current=(await f.FixedState(true,f.PollRequest())).Prompt??throw new Exception("Recovered prompt missing");Check(current.Challenge!=original.Challenge);
+            using var denied=await f.Decide(oldDecision);Check(denied.StatusCode==HttpStatusCode.Forbidden && !File.Exists(f.ApprovalPath) && f.Desktop.Locks==0);
+        });
         await test("authenticated phone channel return renews an expired request while refusing the old signed approval",async()=>{
             await using var f=new Fixture(directory,true,phoneReturn:true);await f.Start();await f.ReadyFixedNative();var old=await f.Poll();var oldDecision=f.Decision(old);
             f.Wall+=60000;f.Mono+=60000;Check((await f.FixedState(true)).Renewal==null);f.Wall+=4000;f.Mono+=4000;

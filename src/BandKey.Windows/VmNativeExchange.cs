@@ -129,10 +129,34 @@ public sealed class WindowsGrantDirectoryExchange : IWindowsGrantExchange, IWind
         var request=WindowsRequestRenewalWire.Read(proof[..WindowsRequestRenewalWire.Size]);
         if(request.UserSid!=sid || request.WindowsSessionId!=session || !WindowsRequestRenewalWire.IsCurrent(request,now()))return false;
         CheckDirectory();string temporary=Path.Combine(root,"Exchange","request-renewal.tmp"),destination=Path.Combine(root,"Exchange","request-renewal.bin");bool created=false;
+        byte[]? Existing()
+        {
+            try{
+                if((File.GetAttributes(destination)&(FileAttributes.ReparsePoint|FileAttributes.Directory))!=0)throw new IOException("Unexpected renewal entry");
+                using var input=new FileStream(destination,FileMode.Open,FileAccess.Read,FileShare.Read|FileShare.Delete);
+                if(input.Length!=WindowsRequestRenewalWire.ProofSize)throw new IOException("Renewal proof size");
+                var bytes=new byte[WindowsRequestRenewalWire.ProofSize];input.ReadExactly(bytes);return bytes;
+            }catch(FileNotFoundException){return null;}
+        }
+        bool ExpiredForThisSession(byte[] bytes)
+        {
+            var old=WindowsRequestRenewalWire.Read(bytes.AsSpan(0,WindowsRequestRenewalWire.Size));
+            return old.UserSid==sid && old.WindowsSessionId==session && old.ExpiresFileTimeMilliseconds<=now();
+        }
+        var existing=Existing();
+        if(existing!=null){
+            if(existing.AsSpan().SequenceEqual(proof))return current() && WindowsRequestRenewalWire.IsCurrent(request,now());
+            if(!ExpiredForThisSession(existing))return false;
+        }
         try{
             using(var stream=new FileStream(temporary,FileMode.CreateNew,FileAccess.Write,FileShare.None)){created=true;stream.Write(proof);stream.Flush(true);}
             if(!current() || !WindowsRequestRenewalWire.IsCurrent(request,now()))return false;
-            File.Move(temporary,destination,false);created=false;return true;
+            // Recheck just before the atomic replace. Never overwrite another live
+            // proof, malformed entry, or different account/session. Native still
+            // independently verifies the new signature and its ten-second expiry.
+            var latest=Existing();
+            if(latest!=null && (existing==null || !latest.AsSpan().SequenceEqual(existing) || !ExpiredForThisSession(latest)))return false;
+            File.Move(temporary,destination,latest!=null);created=false;return true;
         }finally{if(created)File.Delete(temporary);}
     }
 }

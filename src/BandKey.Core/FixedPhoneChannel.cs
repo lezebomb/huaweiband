@@ -9,7 +9,7 @@ public sealed record RequestRenewalPrompt(string PcId,string DeviceId,string Con
 public sealed record RequestRenewalDecision(string PcId,string DeviceId,string ContextNonce,string Body,string Signature,PollRequest? Poll=null);
 public sealed record FixedPhoneResult(bool Accepted,bool CanPoll,string Code,RequestRenewalPrompt? Renewal=null,string? NativeState=null,WindowsGrantPrompt? Prompt=null)
 { public bool WindowsUnlocked=>false; public bool TestOnly=>true; }
-public sealed record FixedPhoneSnapshot(bool? BandConnected,bool Fresh,PresenceState Presence,long Reports,long Renewals,bool NativeRequestReady,bool Revoked,string NativeState="not-requested",bool DirectRequest=false,int ReplacementRecoveries=0,long ConnectedReports=0,long DisconnectedReports=0,long UnknownReports=0,bool AutoLockEnabled=false,bool DepartureArmed=false,string PresenceReason="not-observed",long LockRequests=0,string LastLockResult="not-requested",long PhoneChannelReturns=0);
+public sealed record FixedPhoneSnapshot(bool? BandConnected,bool Fresh,PresenceState Presence,long Reports,long Renewals,bool NativeRequestReady,bool Revoked,string NativeState="not-requested",bool DirectRequest=false,int ReplacementRecoveries=0,long ConnectedReports=0,long DisconnectedReports=0,long UnknownReports=0,bool AutoLockEnabled=false,bool DepartureArmed=false,string PresenceReason="not-observed",long LockRequests=0,string LastLockResult="not-requested",long PhoneChannelReturns=0,int RenewalRecoveries=0);
 public sealed record WindowsRequestBinding(string UserSid,uint WindowsSessionId);
 
 public interface IWindowsRequestRenewalExchange
@@ -53,6 +53,8 @@ public sealed class FixedPhoneChannel
     private bool freshLockEligible,directRequest,replacementPending;
     private int replacementRecoveries;
     private const int MaxReplacementRecoveries=2;
+    private int renewalRecoveries;
+    private const int MaxRenewalRecoveries=3;
     private long connectedReports,disconnectedReports,unknownReports,lockRequests;
     private readonly bool renewOnAuthenticatedReturn;
     private long lastAcceptedReportMono,phoneChannelReturns;
@@ -74,7 +76,7 @@ public sealed class FixedPhoneChannel
     public void Revoke(){lock(gate){revoked=true;ResetArrival();control.Reset("fixed-phone-revoked");}}
     public void RetryRequest(){lock(gate){ResetArrival();}}
     private void ClearRequest(){arrivalHandled=submitted=directRequest=replacementPending=false;renewalBody=previousNative=readyNative=null;}
-    private void ResetArrival(){ClearRequest();freshLockEligible=false;fastWaitUntil=0;replacementRecoveries=0;}
+    private void ResetArrival(){ClearRequest();freshLockEligible=false;fastWaitUntil=0;replacementRecoveries=renewalRecoveries=0;}
     private void ObserveSession(bool? locked,bool previousEvidenceFresh)
     {
         // Check the old evidence before a new report or lock edge can inherit it.
@@ -140,6 +142,7 @@ public sealed class FixedPhoneChannel
             if(control.Presence.State==PresenceState.Far)ResetArrival();
             if(arrivalHandled)Ready();
             RecoverReplacement();
+            RecoverMissedRenewal();
             if(control.CanRequestConfirmation && !arrivalHandled){
                 bool wait=false;
                 if(!TryFreshLockRequest(out wait) && !wait){
@@ -181,6 +184,18 @@ public sealed class FixedPhoneChannel
         replacementRecoveries++;ClearRequest();freshLockEligible=false;
         // A replacement requires a new NEW proof and a new native WIN challenge.
         // The phone invalidates its old notification on the accepted renewal count.
+    }
+    private void RecoverMissedRenewal()
+    {
+        // A return after WIN expiry needs a separate ten-second NEW proof. Losing
+        // that exchange must not latch this arrival forever. Reissue only NEW;
+        // an observed WIN (including a denied/expired notification) is never renewed here.
+        if(!renewOnAuthenticatedReturn || !arrivalHandled || directRequest || readyNative!=null || renewalBody==null ||
+            !Fresh || !control.CanRequestConfirmation || renewalRecoveries>=MaxRenewalRecoveries ||
+            nativeState is not ("renewal-not-submitted" or "native-challenge-unavailable" or "native-unchanged" or "native-before-renewal"))return;
+        var request=WindowsRequestRenewalWire.Read(renewalBody);
+        if(WindowsGrantRelayWire.FileTimeMilliseconds(wall())<request.ExpiresFileTimeMilliseconds)return;
+        renewalRecoveries++;ClearRequest();freshLockEligible=false;
     }
     private bool Ready()
     {
@@ -228,6 +243,6 @@ public sealed class FixedPhoneChannel
     }
     public FixedPhoneSnapshot Snapshot
     {
-        get{lock(gate){if(!Current())return new(null,false,PresenceState.Unknown,reports,renewals,false,true,"revoked",ConnectedReports:connectedReports,DisconnectedReports:disconnectedReports,UnknownReports:unknownReports,AutoLockEnabled:control.Enabled,PresenceReason:"revoked",LockRequests:lockRequests,LastLockResult:lastLockResult,PhoneChannelReturns:phoneChannelReturns);Synchronize();bool ready=Ready();return new(Fresh?bandConnected:null,Fresh,control.Presence.State,reports,renewals,ready,revoked,nativeState,directRequest,replacementRecoveries,connectedReports,disconnectedReports,unknownReports,control.Enabled,control.Presence.Armed,control.Presence.Reason,lockRequests,lastLockResult,phoneChannelReturns);}}
+        get{lock(gate){if(!Current())return new(null,false,PresenceState.Unknown,reports,renewals,false,true,"revoked",ConnectedReports:connectedReports,DisconnectedReports:disconnectedReports,UnknownReports:unknownReports,AutoLockEnabled:control.Enabled,PresenceReason:"revoked",LockRequests:lockRequests,LastLockResult:lastLockResult,PhoneChannelReturns:phoneChannelReturns,RenewalRecoveries:renewalRecoveries);Synchronize();bool ready=Ready();return new(Fresh?bandConnected:null,Fresh,control.Presence.State,reports,renewals,ready,revoked,nativeState,directRequest,replacementRecoveries,connectedReports,disconnectedReports,unknownReports,control.Enabled,control.Presence.Armed,control.Presence.Reason,lockRequests,lastLockResult,phoneChannelReturns,renewalRecoveries);}}
     }
 }

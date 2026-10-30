@@ -10,6 +10,8 @@ Huawei Band 11 Pro → Android Wear Engine桥接 → BLE → Windows 11。
 
 2026-10-30手机0.9.5：修复旧的两分钟通知遮住新锁屏请求，以及设备查询无回调后不再恢复的问题；增加系统蓝牙连接事件触发的常驻恢复。系统清理仍可能发生，真实手环结果与软件检查分开记录。见[本轮修复与验证](docs/notification-recovery-20261030.md)。
 
+电脑返回刷新补丁：修复两分钟挑战到期后，十秒刷新响应丢失或过期文件残留导致后续不再请求的问题。仅对未完成的刷新作有限恢复，不延长已有通知期限，不自动批准。见[期限、验证与回滚](docs/expired-return-refresh.md)。
+
 ## 使用与恢复
 
 电脑程序位于`%LOCALAPPDATA%\Programs\BandKeyHostPilot`，开始菜单“BandKey”可查看状态。关闭窗口进入托盘；暂停会停止本次通信与授权。手机保留BandKey桥接、运动健康和HMS，允许BandKey自启动与后台运行。

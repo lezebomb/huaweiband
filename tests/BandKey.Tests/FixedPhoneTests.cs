@@ -18,7 +18,7 @@ internal static class FixedPhoneTests
         public byte[] CreateRequestRenewal(){ulong now=WindowsGrantRelayWire.FileTimeMilliseconds(Wall());return WindowsRequestRenewalWire.Write(new(5,now,now+10000,Sid,Protocol.Nonce()));}
         public bool SubmitRequestRenewal(ReadOnlySpan<byte> proof){Proof=proof.ToArray();Submissions++;return true;}
         public byte[]? ReadCurrentChallenge()=>Native?.ToArray();
-        public void NewNative(){ulong now=WindowsGrantRelayWire.FileTimeMilliseconds(Wall());Native=WindowsGrantWire.WriteChallenge(new(5,now,now+30000,Sid,Protocol.Nonce()));}
+        public void NewNative(ulong lifetime=30000){ulong now=WindowsGrantRelayWire.FileTimeMilliseconds(Wall());Native=WindowsGrantWire.WriteChallenge(new(5,now,now+lifetime,Sid,Protocol.Nonce()));}
     }
     private sealed class Fixture:IDisposable
     {
@@ -133,6 +133,35 @@ internal static class FixedPhoneTests
         test("host short heartbeat gaps do not churn a still-current request",()=>{
             using var f=new Fixture(phoneReturn:true);var old=f.Near();f.Channel.Renew(f.ApproveRenewal(old));f.Exchange.NewNative();f.Advance(6000);
             f.Channel.Observe(f.Report(true));f.Advance(1000);Check(f.Channel.Observe(f.Report(true)).Renewal==null && f.Channel.Snapshot.PhoneChannelReturns==0 && f.Channel.CanSubmit);
+        });
+        test("host return after two minutes recovers a lost ten-second refresh response",()=>{
+            using var f=new Fixture(freshLock:true,phoneReturn:true);f.DesktopNear();f.Session.Locked=true;f.Advance(1);f.Exchange.NewNative(120000);
+            Check(f.Channel.Observe(f.Report(true)).CanPoll);var original=f.Exchange.Native!.ToArray();
+            f.Advance(130000);f.Exchange.Native=null;Check(f.Channel.Observe(f.Report(true)).Renewal==null);f.Advance(1000);
+            var lost=f.Channel.Observe(f.Report(true)).Renewal??throw new Exception("Expected return refresh");
+            RequestRenewalPrompt? recovered=null;for(int i=0;i<4;i++){f.Advance(3000);recovered=f.Channel.Observe(f.Report(true)).Renewal;}
+            Check(recovered!=null && recovered.Body!=lost.Body && !f.Channel.CanSubmit && !f.Channel.Renew(f.ApproveRenewal(lost)).Accepted);
+            Check(f.Channel.Renew(f.ApproveRenewal(recovered!)).Accepted);f.Advance(1);f.Exchange.NewNative(120000);
+            Check(f.Channel.CanSubmit && !f.Exchange.Native!.AsSpan().SequenceEqual(original) && f.Session.Locks==0);
+        });
+        test("host refresh accepted without a new native challenge is retried with a new nonce",()=>{
+            using var f=new Fixture(phoneReturn:true);var lost=f.Near();Check(f.Channel.Renew(f.ApproveRenewal(lost)).Accepted);
+            RequestRenewalPrompt? next=null;for(int i=0;i<4;i++){f.Advance(3000);next=f.Channel.Observe(f.Report(true)).Renewal;}
+            Check(next!=null && next.Body!=lost.Body && !f.Channel.CanSubmit && !f.Channel.Renew(f.ApproveRenewal(lost)).Accepted);
+        });
+        test("host missing native refresh retries are bounded for one arrival",()=>{
+            using var f=new Fixture(phoneReturn:true);f.Near();var bodies=new HashSet<string>();
+            for(int i=0;i<30;i++){f.Advance(3000);var next=f.Channel.Observe(f.Report(true)).Renewal;if(next!=null)bodies.Add(next.Body);}
+            Check(bodies.Count>1 && bodies.Count<=4 && f.Channel.Observe(f.Report(true)).Renewal==null && !f.Channel.CanSubmit && f.Exchange.Submissions==0);
+        });
+        test("host recovery never reissues an already observed native challenge after expiry",()=>{
+            using var f=new Fixture(phoneReturn:true);var first=f.Near();f.Channel.Renew(f.ApproveRenewal(first));f.Advance(1);f.Exchange.NewNative(120000);Check(f.Channel.CanSubmit);
+            for(int i=0;i<41;i++){f.Advance(3000);Check(f.Channel.Observe(f.Report(true)).Renewal==null);}
+            Check(!f.Channel.CanSubmit && f.Exchange.Submissions==1);
+        });
+        test("expired host refresh cannot recover on unknown or unlocked context",()=>{
+            using var f=new Fixture(phoneReturn:true);f.Near();f.Advance(11000);Check(f.Channel.Observe(f.Report(null)).Renewal==null && !f.Channel.CanSubmit);
+            f.Session.Locked=false;Check(f.Channel.Observe(f.Report(true)).Renewal==null);f.Advance(1000);Check(f.Channel.Observe(f.Report(true)).Renewal==null && f.Session.Locks==0);
         });
         test("host return hints require a new authenticated state report",()=>{
             using var f=new Fixture(phoneReturn:true);f.Near();var replay=f.Report(true);f.Channel.Observe(replay);f.Advance(60000);
