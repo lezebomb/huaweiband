@@ -8,12 +8,14 @@ import java.util.function.*;
 public final class VmWearSessionTests {
     static final class Fixture {
         long wall=1000,time=100;boolean current=true,link=true;int pollCalls,submitCalls,promptCalls;
-        String next="request";boolean throwSubmit,throwPoll,rejectQueue;long pollAdvance;VmWearSession.Result result=VmWearSession.Result.DELIVERED;
+        String next="request";boolean throwSubmit,throwPoll,rejectQueue;long pollAdvance,expirySeconds=30;VmWearSession.Result result=VmWearSession.Result.DELIVERED;
         final List<Runnable> queued=new ArrayList<>();PromptGate gate;PromptGate.Ticket ticket;Consumer<Boolean> click;
-        final VmWearSession<String> session=new VmWearSession<>(()->wall,()->time,60000,()->current,()->link,new VmWearSession.Client<String>(){
-            public VmWearSession.Request<String> poll()throws Exception{pollCalls++;time+=pollAdvance;if(throwPoll)throw new java.io.IOException();return next==null?null:new VmWearSession.Request<>(next,next,wall+30);}
+        final VmWearSession<String> session;
+        Fixture(){this(60000);}
+        Fixture(long duration){session=new VmWearSession<>(()->wall,()->time,duration,()->current,()->link,new VmWearSession.Client<String>(){
+            public VmWearSession.Request<String> poll()throws Exception{pollCalls++;time+=pollAdvance;if(throwPoll)throw new java.io.IOException();return next==null?null:new VmWearSession.Request<>(next,next,wall+expirySeconds);}
             public VmWearSession.Result decide(String body,boolean approved)throws Exception{submitCalls++;if(throwSubmit)throw new java.io.IOException();return result;}
-        },(g,t,active,clicked)->{promptCalls++;gate=g;ticket=t;click=clicked;},task->{if(rejectQueue)throw new RejectedExecutionException();queued.add(task);});
+        },(g,t,active,clicked)->{promptCalls++;gate=g;ticket=t;click=clicked;},task->{if(rejectQueue)throw new RejectedExecutionException();queued.add(task);});}
         void click(boolean yes){if(gate.consume(ticket))click.accept(yes);}
         void run(){for(Runnable task:new ArrayList<>(queued))task.run();queued.clear();}
     }
@@ -45,6 +47,10 @@ public final class VmWearSessionTests {
         test("new native request can prompt after arrival cancels old notification",()->{Fixture f=new Fixture();f.session.poll();Consumer<Boolean> old=f.click;f.session.invalidatePending();f.next="fresh-return";f.session.poll();old.accept(true);f.run();check(f.promptCalls==2 && f.submitCalls==0);f.click(true);f.run();check(f.submitCalls==1);});
         test("brief link outage preserves unconsumed current request",()->{Fixture f=new Fixture();f.session.poll();f.link=false;f.session.poll();f.link=true;f.session.poll();f.click(true);f.run();check(f.promptCalls==1 && f.submitCalls==1);});
         test("fixed path does not refetch a current pending request",()->{Fixture f=new Fixture();f.session.pollIfNewRequestNeeded();f.session.pollIfNewRequestNeeded();check(f.pollCalls==1 && f.promptCalls==1);});
+        test("inline NEW lock replaces a still-valid two-minute notification",()->{Fixture f=new Fixture();f.expirySeconds=120;f.session.pollIfNewRequestNeeded();PromptGate.Ticket previous=f.ticket;Consumer<Boolean> old=f.click;f.time+=1000;f.wall++;f.next="new-lock";f.session.pollIfNewRequestNeeded(true);check(f.promptCalls==2 && !f.gate.consume(previous));old.accept(true);f.run();check(f.submitCalls==0);f.click(true);f.run();check(f.submitCalls==1);});
+        test("repeated inline heartbeat keeps one notification and original deadline",()->{Fixture f=new Fixture(180000);f.expirySeconds=120;f.session.pollIfNewRequestNeeded();for(int i=0;i<6;i++){f.time+=3000;f.wall+=3;f.session.pollIfNewRequestNeeded(true);}check(f.promptCalls==1);f.time+=102000;f.wall+=102;f.click(true);f.run();check(f.submitCalls==0);});
+        test("inline refresh cannot overtake a queued confirmation",()->{Fixture f=new Fixture();f.session.pollIfNewRequestNeeded();f.click(true);f.next="replacement";f.session.pollIfNewRequestNeeded(true);check(f.pollCalls==1 && f.promptCalls==1);f.run();check(f.submitCalls==1);});
+        test("two-minute confirmation remains usable after sixty seconds",()->{Fixture f=new Fixture(180000);f.expirySeconds=120;f.session.pollIfNewRequestNeeded();f.time+=60000;f.wall+=60;f.click(true);f.run();check(f.submitCalls==1);});
         test("queued click runs without an intervening fixed-path poll",()->{Fixture f=new Fixture();f.session.pollIfNewRequestNeeded();f.click(true);f.session.pollIfNewRequestNeeded();f.time+=250;f.run();check(f.pollCalls==1 && f.submitCalls==1 && f.session.decisionQueueMilliseconds()==250 && f.session.decisionCallMilliseconds()==0);});
         test("explicit native refresh cancels old ticket and permits a fresh poll",()->{Fixture f=new Fixture();f.session.pollIfNewRequestNeeded();f.session.invalidatePending();f.next="new-native";f.session.pollIfNewRequestNeeded();check(f.pollCalls==2 && f.promptCalls==2);});
         test("fixed path checks expiry before fetching another native request",()->{Fixture f=new Fixture();f.session.pollIfNewRequestNeeded();PromptGate.Ticket old=f.ticket;f.wall+=30;f.time+=30000;f.next="after-expiry";f.session.pollIfNewRequestNeeded();check(f.pollCalls==2 && f.promptCalls==2 && !f.gate.consume(old) && f.submitCalls==0);});

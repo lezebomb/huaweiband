@@ -22,5 +22,6 @@
     <service android:name=".VmWearConfirmService" android:exported="false" android:stopWithTask="false" android:foregroundServiceType="connectedDevice" />
     <service android:name=".ResidentRecoveryJob" android:exported="true" android:permission="android.permission.BIND_JOB_SERVICE" />
     <receiver android:name=".BootReceiver" android:exported="true"><intent-filter><action android:name="android.intent.action.BOOT_COMPLETED" /><action android:name="android.intent.action.MY_PACKAGE_REPLACED" /></intent-filter></receiver>
+    <receiver android:name=".ResidentReconnectReceiver" android:exported="true"><intent-filter><action android:name="android.bluetooth.device.action.ACL_CONNECTED" /></intent-filter></receiver>
   </application>
 </manifest>

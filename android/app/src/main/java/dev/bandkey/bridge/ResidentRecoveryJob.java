@@ -45,10 +45,16 @@ public final class ResidentRecoveryJob extends JobService {
                 .setPeriodic(15*60*1000L).setPersisted(true).build());
         }catch(RuntimeException ignored){}
     }
+    static boolean recover(Context context,String source){
+        if(VmWearConfirmService.active())return true;
+        if(!permitted(context) || !context.getSystemService(PowerManager.class).isIgnoringBatteryOptimizations(context.getPackageName()))return false;
+        boolean requested=VmWearConfirmService.resumeResident(context);
+        context.getSharedPreferences(PREFS,MODE_PRIVATE).edit().putString("lastRecoverySource",source)
+            .putLong("lastRecoveryAt",System.currentTimeMillis()).putBoolean("lastRecoveryRequested",requested).apply();
+        return requested;
+    }
     @Override public boolean onStartJob(JobParameters parameters){
-        if(VmWearConfirmService.active())return false;
-        if(permitted(this) && getSystemService(PowerManager.class).isIgnoringBatteryOptimizations(getPackageName()))
-            VmWearConfirmService.resumeResident(this);
+        recover(this,"system-job");
         return false;
     }
     @Override public boolean onStopJob(JobParameters parameters){return false;}

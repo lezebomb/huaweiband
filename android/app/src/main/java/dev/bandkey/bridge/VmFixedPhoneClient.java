@@ -7,6 +7,9 @@ import java.security.MessageDigest;
 
 /** Only creates request-renewal signatures. Unlock approval remains in VmWearSession's real button callback. */
 final class VmFixedPhoneClient {
+    // A fresh TLS stream and draining the previous GATT stream may exceed 3s.
+    // This is an I/O ceiling, never a deliberate notification delay.
+    static final int IO_TIMEOUT_MS=8000;
     private static final long CONNECTED_INTERVAL_MS=3000,OTHER_INTERVAL_MS=3000;
     private final RetrySchedule retries;
     private boolean linkUnavailable;
@@ -39,6 +42,7 @@ final class VmFixedPhoneClient {
         JSONObject value=offeredPrompt;offeredPrompt=null;if(stopped || !ready() || value==null)return null;
         relay.validate(value);return value;
     }
+    boolean hasPrompt(){return offeredPrompt!=null;}
     private void acceptPrompt(JSONObject response)throws Exception{
         Object value=response.opt("prompt");if(value instanceof JSONObject){
             JSONObject prompt=(JSONObject)value;relay.validate(prompt);offeredPrompt=prompt;inlinePrompts++;
@@ -49,7 +53,7 @@ final class VmFixedPhoneClient {
     private JSONObject context()throws Exception{
         JSONObject poll=new JSONObject().put("pcId",pc()).put("deviceId",device()).put("nonce",Identity.nonce()).put("timestamp",System.currentTimeMillis()/1000);
         poll.put("signature",relay.identity.sign(Identity.join("bandkey.fixed-phone.context-poll.v1",pc(),device(),poll.getString("nonce"),Long.toString(poll.getLong("timestamp")))));
-        JSONObject c=relay.transport.post("/v2/windows/fixed/context",poll,3000);
+        JSONObject c=relay.transport.post("/v2/windows/fixed/context",poll,IO_TIMEOUT_MS);
         long now=System.currentTimeMillis()/1000;
         if(c==null || !pc().equals(c.getString("pcId")) || !device().equals(c.getString("deviceId")) || c.getLong("expiresAt")<=now || c.getLong("expiresAt")>now+1800 ||
             c.getLong("nextSequence")<1 || c.getLong("nextSequence")>9007199254740991L ||
@@ -75,7 +79,7 @@ final class VmFixedPhoneClient {
                 .put("observedAtMilliseconds",sample.observedAt).put("bandHash",bandHash).put("connected",sample.connected==null?JSONObject.NULL:sample.connected);
             p.put("signature",relay.identity.sign(Identity.join("bandkey.fixed-phone.state.v1",pc(),device(),context.getString("contextNonce"),Long.toString(sequence),Long.toString(sample.observedAt),bandHash,sample.connected==null?"unknown":sample.connected?"true":"false")));
             if(wantPrompt)p.put("poll",relay.signedPoll());
-            JSONObject result=relay.transport.post("/v2/windows/fixed/state",p,3000);
+            JSONObject result=relay.transport.post("/v2/windows/fixed/state",p,IO_TIMEOUT_MS);
             if(stopped)return;
             if(result==null || !result.optBoolean("accepted") || result.optBoolean("windowsUnlocked"))throw new SecurityException("Fixed phone state response");
             acceptPrompt(result);reports++;if(sample.connected==null)unknownReports++;else if(sample.connected)connectedReports++;else disconnectedReports++;
@@ -93,7 +97,7 @@ final class VmFixedPhoneClient {
                 if(stopped)return;
                 JSONObject proof=new JSONObject().put("pcId",pc()).put("deviceId",device()).put("contextNonce",context.getString("contextNonce")).put("body",renewal.getString("body")).put("signature",Identity.b64(signature));
                 proof.put("poll",relay.signedPoll());
-                result=relay.transport.post("/v2/windows/fixed/renew",proof,3000);
+                result=relay.transport.post("/v2/windows/fixed/renew",proof,IO_TIMEOUT_MS);
                 if(stopped)return;
                 if(result==null || !result.optBoolean("accepted") || result.optBoolean("windowsUnlocked"))throw new SecurityException("Request renewal response");
                 acceptPrompt(result);if(!renewal.getString("body").equals(lastRenewalBody)){renewals++;lastRenewalBody=renewal.getString("body");}nativeState=result.optString("nativeState","not-observed");ready=result.optBoolean("canPoll");

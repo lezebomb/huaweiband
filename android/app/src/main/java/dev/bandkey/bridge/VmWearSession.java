@@ -55,7 +55,12 @@ public final class VmWearSession<P> {
      * fetch the same signed body repeatedly while its single ticket waits for a click. */
     public boolean needsNewRequest(){return active() && state!=State.QUEUED && !gate.isActive(pending);}
     public void pollIfNewRequestNeeded(){
-        if(!needsNewRequest())return;
+        pollIfNewRequestNeeded(false);
+    }
+    /** A verified inline response may replace an unexpired notification after a
+     * Windows session boundary. Queued decisions remain serialized first. */
+    public void pollIfNewRequestNeeded(boolean offered){
+        if(!active() || state==State.QUEUED || !offered && !needsNewRequest())return;
         poll();
     }
     public void poll(){

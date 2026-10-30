@@ -79,6 +79,7 @@ public final class VmWearConfirmService extends Service {
                 .put("pollResponsesObserved",current==null?0:current.polls()).put("promptAttempts",current==null?0:current.prompts())
                 .put("authorizationResponsesObserved",current==null?0:current.delivered()).put("denialResponsesObserved",current==null?0:current.denied())
                 .put("lastNotificationLabel",lastNotificationLabel).put("lastNotificationDeadlineMilliseconds",lastNotificationDeadlineMilliseconds)
+                .put("wearableStatus",wearableStatus)
                 .put("fixedPhoneMode",fixedPhoneMode).put("fixedStateResponses",fixedClient==null?0:fixedClient.reports()).put("requestRenewalResponses",fixedClient==null?0:fixedClient.renewals())
                 .put("connectionSource",bandConnection==null?JSONObject.NULL:bandConnection.report())
                 .put("http",relayClient==null?JSONObject.NULL:relayClient.transport.metrics())
@@ -146,13 +147,13 @@ public final class VmWearConfirmService extends Service {
             session=new VmWearSession<>(()->System.currentTimeMillis()/1000,SystemClock::elapsedRealtime,BleBackgroundLease.MAX_DURATION,this::configurationCurrent,()->ble!=null && ble.isConnected() && (!fixedPhoneMode || fixedClient.ready() && bandConnection.connected()),new VmWearSession.Client<JSONObject>(){
                 @Override public VmWearSession.Request<JSONObject> poll()throws Exception{
                     JSONObject prompt=fixedPhoneMode?fixedClient.takePrompt():null;
-                    if(prompt==null)prompt=client.poll(fixedPhoneMode?3000:0);if(prompt==null)return null;
+                    if(prompt==null)prompt=client.poll(fixedPhoneMode?VmFixedPhoneClient.IO_TIMEOUT_MS:0);if(prompt==null)return null;
                     lastVerifiedPrompt=prompt;WindowsGrantWire.Challenge body=WindowsGrantWire.read(android.util.Base64.decode(prompt.getString("challenge"),android.util.Base64.NO_WRAP));
                     requestVerifiedAt=SystemClock.elapsedRealtime();
                     return new VmWearSession.Request<>(prompt,prompt.getString("challenge"),(body.expires-WindowsGrantWire.FILETIME_UNIX_MILLISECONDS)/1000);
                 }
                 @Override public VmWearSession.Result decide(JSONObject prompt,boolean approved)throws Exception{
-                    JSONObject result=client.decide(prompt,approved,fixedPhoneMode?3000:0);
+                    JSONObject result=client.decide(prompt,approved,fixedPhoneMode?VmFixedPhoneClient.IO_TIMEOUT_MS:0);
                     if(result.optBoolean("windowsUnlocked"))throw new SecurityException("Unobserved Windows unlock claim");
                     if(approved && result.optBoolean("authorized") && result.optBoolean("submitted"))return VmWearSession.Result.DELIVERED;
                     if(!approved && !result.optBoolean("authorized") && !result.optBoolean("submitted") && "user-denied".equals(result.optString("code")))return VmWearSession.Result.DENIED;
@@ -183,7 +184,9 @@ public final class VmWearConfirmService extends Service {
                         observedRadio=radio;observedConnectionGeneration=generation;linkReadyAt=radio.connectedSinceElapsed();if(linkReadyAt<0)linkReadyAt=SystemClock.elapsedRealtime();
                         requestVerifiedAt=notificationDispatchAt=notifyAcceptedAt=-1;fixedClient.onBleReconnected();
                     }
-                    fixedClient.pulse(bandConnection.sample(),current==null || current.needsNewRequest());
+                    // Keep the signed inline poll on the existing state heartbeat.
+                    // Otherwise a previous 120s ticket hides a NEW lock/return request.
+                    fixedClient.pulse(bandConnection.sample(),true);
                     // A brief HTTP interruption blocks submission through the link predicate but
                     // must not consume the still-current notification. A refreshed native request
                     // cancels the old notification. Unknown/brief loss only blocks its submission.
@@ -192,7 +195,7 @@ public final class VmWearConfirmService extends Service {
                     observedFixedRenewals=renewals;
                 }
                 else if(fixedPhoneMode && fixedClient!=null)fixedClient.onBleDisconnected();
-                if(current!=null){if(fixedPhoneMode)current.pollIfNewRequestNeeded();else current.poll();}
+                if(current!=null){if(fixedPhoneMode)current.pollIfNewRequestNeeded(fixedClient.hasPrompt());else current.poll();}
             }),0,fixedPhoneMode?(resident?200:500):2000,TimeUnit.MILLISECONDS);
             handler.post(timer);
         }catch(Exception error){finish("startup-"+error.getClass().getSimpleName());}
