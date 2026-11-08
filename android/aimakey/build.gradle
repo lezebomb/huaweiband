@@ -1,0 +1,21 @@
+plugins { id 'com.android.application' }
+android {
+    namespace 'dev.bandkey.aimakey'
+    compileSdk 36
+    defaultConfig {
+        applicationId 'dev.bandkey.aimakey'
+        minSdk 26
+        targetSdk 36
+        versionCode 1
+        versionName '0.1.0-mock'
+        testInstrumentationRunner 'dev.bandkey.aimakey.AimaInstrumentation'
+        // BandKey's approval is package/signature-specific; never silently reuse its app ID.
+        manifestPlaceholders = [aimaWearEngineAppId: providers.gradleProperty('aimaWearEngineAppId').getOrElse('UNCONFIGURED')]
+    }
+    compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+    buildTypes { release { minifyEnabled false } }
+}
+dependencies {
+    implementation project(':aimakey-core')
+    implementation 'com.huawei.hms:wearengine:5.0.3.304'
+}

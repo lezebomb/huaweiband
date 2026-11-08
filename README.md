@@ -1,5 +1,7 @@
 # BandKey
 
+2026-11-08 新增独立 **AimaKey 模拟实验室**：已实现手机双按钮模型、Mock 控车协议和后台测试，尚不能从 Band 11 Pro 常驻页面控制实车。详见[开发与真机步骤](docs/aimakey-development-20261108.md)、[手环入口能力调查](docs/aimakey-wearengine-research-20261108.md)及[爱玛 App 分析](docs/aimakey-aima-analysis-20261108.md)。
+
 Huawei Band 11 Pro → Android Wear Engine桥接 → BLE → Windows 11。
 
 手动锁定电脑后，携带手机、手环离开再回来，手环收到本次通知，**点一次确认才解锁**。无需同一Wi-Fi。手机与电脑常驻；电脑冷启动第一次登录仍用原密码／Windows Hello。离开自动锁屏已按用户要求关闭。

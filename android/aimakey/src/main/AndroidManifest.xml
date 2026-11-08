@@ -1,0 +1,22 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+  <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+  <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+  <queries>
+    <package android:name="com.huawei.health" />
+    <package android:name="com.huawei.hwid" />
+  </queries>
+  <application android:label="AimaKey 模拟实验室" android:allowBackup="false" android:icon="@drawable/ic_aimakey"
+      android:dataExtractionRules="@xml/data_extraction_rules" android:fullBackupContent="@xml/backup_rules"
+      android:theme="@android:style/Theme.Material.NoActionBar" android:supportsRtl="true">
+    <meta-data android:name="com.huawei.hms.client.appid" android:value="${aimaWearEngineAppId}" />
+    <activity android:name=".AimaActivity" android:exported="true">
+      <intent-filter>
+        <action android:name="android.intent.action.MAIN" />
+        <category android:name="android.intent.category.LAUNCHER" />
+      </intent-filter>
+    </activity>
+    <service android:name=".AimaService" android:exported="false" android:foregroundServiceType="connectedDevice" />
+  </application>
+</manifest>

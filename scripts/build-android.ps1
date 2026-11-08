@@ -10,8 +10,8 @@ $env:ANDROID_USER_HOME=Join-Path $env:ANDROID_PREFS_ROOT '.android'
 # Keep the debug signing identity inside this checkout, never rewrite another project's key.
 New-Item -ItemType Directory -Force -Path $env:ANDROID_USER_HOME,'artifacts' | Out-Null
 & (Join-Path $PSScriptRoot 'test-android-runtime.ps1')
-$bandKeyGradleArgs=@('assembleDebug','--console=plain')
-if($Lint){$bandKeyGradleArgs+= 'lintDebug'}
+$bandKeyGradleArgs=@(':app:assembleDebug','--console=plain')
+if($Lint){$bandKeyGradleArgs+= ':app:lintDebug'}
 if($WearEngineAppId){$bandKeyGradleArgs+= "-PwearEngineAppId=$WearEngineAppId"}
 Push-Location -LiteralPath android
 try { & '.\gradlew.bat' @bandKeyGradleArgs; if($LASTEXITCODE -ne 0){throw 'Android build failed'} }
