@@ -54,8 +54,14 @@ public final class AimaCoordinator {
         catch (RuntimeException e) { return rememberReject(request, "STATE_UNAVAILABLE"); }
         if (snapshot == null || snapshot.connection() != Connection.CONNECTED) return rememberReject(request, "VEHICLE_NOT_CONNECTED");
         if (!fresh(snapshot)) return rememberReject(request, "STALE_STATE");
-        if (request.action() == Action.STOP && (!request.stopConfirmed() || !snapshot.stationaryVerified()))
-            return rememberReject(request, request.stopConfirmed() ? "STATIONARY_UNVERIFIED" : "STOP_CONFIRMATION_REQUIRED");
+        if (request.action() == Action.STOP && !request.stopConfirmed()) return rememberReject(request, "STOP_CONFIRMATION_REQUIRED");
+        if (snapshot.power() == Power.UNKNOWN) return rememberReject(request, "POWER_STATE_UNVERIFIED");
+        if (request.action() == Action.STOP && !snapshot.stationaryVerified()) return rememberReject(request, "STATIONARY_UNVERIFIED");
+        Power desired = request.action() == Action.START ? Power.ON : Power.OFF;
+        // The official UI toggles one widget. Never turn a duplicate START into a toggle-to-OFF.
+        if (snapshot.power() == desired) {
+            publish(request, Stage.CONFIRMED, "ALREADY_IN_REQUESTED_STATE"); return last;
+        }
         active = request;
         deadlineElapsed = clock.elapsedMs() + request.expiresAtMs() - now;
         // Reservation is not evidence that a request was sent to the vehicle.
@@ -64,7 +70,7 @@ public final class AimaCoordinator {
         try {
             Callback callback = update -> onUpdate(request, update);
             if (request.action() == Action.START) controller.startVehicle(callback); else controller.stopVehicle(callback);
-        } catch (RuntimeException e) { finish(request, Stage.FAILED, "ADAPTER_ERROR"); }
+        } catch (RuntimeException e) { if (Objects.equals(active, request)) finish(request, Stage.FAILED, "ADAPTER_ERROR"); }
         return history.get(request.id()).result();
     }
     private boolean fresh(Snapshot s) {

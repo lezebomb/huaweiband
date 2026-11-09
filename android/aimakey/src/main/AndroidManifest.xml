@@ -6,6 +6,7 @@
   <queries>
     <package android:name="com.huawei.health" />
     <package android:name="com.huawei.hwid" />
+    <package android:name="dev.bandkey.bridge" />
   </queries>
   <application android:label="AimaKey 模拟实验室" android:allowBackup="false" android:icon="@drawable/ic_aimakey"
       android:dataExtractionRules="@xml/data_extraction_rules" android:fullBackupContent="@xml/backup_rules"

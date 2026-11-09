@@ -17,7 +17,9 @@ $aimaMirror=Join-Path $aimaRoot '.tooling\wearengine-maven'
 if(Test-Path -LiteralPath $aimaMirror){$aimaArguments+="-PbandKeyWearEngineMirror=$aimaMirror"}
 Push-Location android
 try{& .\gradlew.bat @aimaArguments;if($LASTEXITCODE){throw 'AimaKey Android build failed'}}finally{Pop-Location}
-Copy-Item -LiteralPath 'android\aimakey\build\outputs\apk\debug\aimakey-debug.apk' -Destination 'artifacts\aimakey\AimaKey-0.1.0-mock.apk' -Force
-& (Join-Path $env:ANDROID_HOME 'build-tools\36.0.0\apksigner.bat') verify --verbose 'artifacts\aimakey\AimaKey-0.1.0-mock.apk'
+$aimaVersion=(Get-Content -LiteralPath 'android\aimakey\build\outputs\apk\debug\output-metadata.json' -Raw | ConvertFrom-Json).elements[0].versionName
+$aimaApk=Join-Path 'artifacts\aimakey' ('AimaKey-'+$aimaVersion+'.apk')
+Copy-Item -LiteralPath 'android\aimakey\build\outputs\apk\debug\aimakey-debug.apk' -Destination $aimaApk -Force
+& (Join-Path $env:ANDROID_HOME 'build-tools\36.0.0\apksigner.bat') verify --verbose $aimaApk
 if($LASTEXITCODE){throw 'AimaKey signature check failed'}
-Get-FileHash -LiteralPath 'artifacts\aimakey\AimaKey-0.1.0-mock.apk' -Algorithm SHA256
+Get-FileHash -LiteralPath $aimaApk -Algorithm SHA256

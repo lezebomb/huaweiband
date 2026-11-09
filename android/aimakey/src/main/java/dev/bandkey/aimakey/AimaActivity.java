@@ -67,6 +67,11 @@ public final class AimaActivity extends Activity {
         });
         button(root, "开启锁屏后台模拟", this::startBackground);
         button(root, "停止后台模拟", () -> { if (service != null) service.stopBackground(); });
+        button(root, "查看／导出手机本地诊断", () -> startActivity(new Intent(this, dev.bandkey.aimakey.field.FieldDiagnosticsActivity.class)));
+        button(root, "打开 BandKey 手环真实点击诊断", () -> {
+            try { startActivity(new Intent().setClassName("dev.bandkey.bridge", "dev.bandkey.bridge.MainActivity").putExtra("bandkeyAimaLab", true)); }
+            catch (RuntimeException e) { status.setText("请先安装含 AimaKey 手环诊断入口的 BandKey 0.9.6-field 或更新版本"); }
+        });
         diagnostics = text("Wear Engine：独立包尚未配置服务授权。BandKey 的授权不自动适用于本包。", 14); root.addView(diagnostics);
         button(root, "只读能力诊断", () -> new WearCapabilityProbe(this).run(value -> runOnUiThread(() -> diagnostics.setText(value))));
         button(root, "请求 Wear Engine 设备管理授权", () -> new WearCapabilityProbe(this).authorize(value -> runOnUiThread(() -> diagnostics.setText(value))));

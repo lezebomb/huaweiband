@@ -5,6 +5,9 @@ import android.content.*;
 import android.os.*;
 import dev.bandkey.aimakey.core.*;
 import java.util.concurrent.*;
+import dev.bandkey.aimakey.field.MobileTrace;
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 
 /** Runs only the shipped mock adapter; never starts or instruments the official vehicle app. */
 public final class AimaInstrumentation extends Instrumentation {
@@ -55,6 +58,15 @@ public final class AimaInstrumentation extends Instrumentation {
             before = service.invocations();
             runOnMainSync(() -> { service.setScenario(MockVehicleController.Scenario.DISCONNECTED); service.setScenario(MockVehicleController.Scenario.NORMAL); });
             Thread.sleep(500); verify(service.invocations() == before, "reconnect has no implicit action");
+            Thread.sleep(500);
+            FieldTraceStore store = MobileTrace.open(context);
+            String recorded = new String(store.latest().bytes(), StandardCharsets.UTF_8);
+            verify(recorded.contains("PHONE_GESTURE") && recorded.contains("REQUEST_RESULT"), "phone writes its pipeline without computer logcat");
+            verify(recorded.contains("\"stage\":\"CONFIRMED\"") && recorded.contains("\"vehicleSimulation\":true"), "persisted confirmation labelled simulation");
+            verify(recorded.contains("\"realVehicleAdapter\":false") && !recorded.contains("wearableUuid"), "mobile trace omits private identifiers");
+            ByteArrayOutputStream exported = new ByteArrayOutputStream(); store.exportZip(exported);
+            verify(exported.size() > 0, "portable diagnosis zip created on phone");
+            verify(java.util.Arrays.equals(store.latest().bytes(), MobileTrace.open(context).latest().bytes()), "new phone reader recovers persistent events");
             report.putInt("passed", passed); report.putString("scope", "physical Android; mock vehicle only"); report.putBoolean("screenOffTest", screenOff);
             exitCode = Activity.RESULT_OK;
         } catch (Throwable e) { report.putString("failure", e.toString()); report.putInt("passed", passed); }

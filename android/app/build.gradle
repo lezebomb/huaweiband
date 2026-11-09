@@ -6,8 +6,8 @@ android {
         applicationId 'dev.bandkey.bridge'
         minSdk 26
         targetSdk 36
-        versionCode 22
-        versionName '0.9.5'
+        versionCode 23
+        versionName '0.9.6-field'
         testInstrumentationRunner 'dev.bandkey.bridge.VmUsbInstrumentation'
         // Huawei-issued client ID is supplied after service application; no developer secrets in source.
         manifestPlaceholders = [wearEngineAppId: providers.gradleProperty('wearEngineAppId').getOrElse('UNCONFIGURED')]
@@ -15,4 +15,7 @@ android {
     compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
     buildTypes { release { minifyEnabled false } }
 }
-dependencies { implementation 'com.huawei.hms:wearengine:5.0.3.304' }
+dependencies {
+    implementation 'com.huawei.hms:wearengine:5.0.3.304'
+    implementation project(':aimakey-field')
+}

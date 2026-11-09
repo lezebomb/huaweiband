@@ -88,21 +88,30 @@ public final class AimaKeyTests {
         var failedJournal = new AimaCoordinator(SESSION, mock, time, q -> false, v -> {});
         var req = new AimaProtocol.Request(SESSION, AimaProtocol.newId(), 1, Action.START, time.wall, time.wall + 5_000, false);
         check("storage failure prevents side effect", failedJournal.submit(req).code().equals("JOURNAL_FAILED") && mock.invocations() == 0);
+        Power[] reported = {Power.OFF};
         VehicleController invalid = new VehicleController() {
-            public Snapshot getVehicleConnectionState() { return new Snapshot(Connection.CONNECTED, Power.OFF, true, time.elapsed); }
+            public Snapshot getVehicleConnectionState() { return new Snapshot(Connection.CONNECTED, reported[0], true, time.elapsed); }
             public boolean isSimulation() { return true; }
             public void startVehicle(Callback cb) { cb.accept(new Update(Evidence.CONFIRMED, getVehicleConnectionState(), "")); }
             public void stopVehicle(Callback cb) { cb.accept(new Update(Evidence.CONFIRMED, null, "")); }
         };
         var unverified = new AimaCoordinator(SESSION, invalid, time, q -> true, v -> {});
         check("wrong power cannot confirm start", unverified.submit(req).code().equals("CONFIRMATION_UNVERIFIED"));
+        reported[0] = Power.ON;
         var nullState = new AimaProtocol.Request(SESSION, AimaProtocol.newId(), 2, Action.STOP, time.wall, time.wall + 5_000, true);
         check("missing state cannot confirm stop", unverified.submit(nullState).code().equals("CONFIRMATION_UNVERIFIED"));
         r = new Rig(); r.mock.setScenario(MockVehicleController.Scenario.NO_ACK); r.coordinator.submit(r.request(Action.START, false)); r.time.wall -= 86_400_000; r.time.elapsed += 5_000; r.coordinator.tick();
         check("wall clock rollback cannot extend deadline", r.coordinator.getLastOperationResult().stage() == TIMED_OUT);
         r = new Rig();
         for (int i = 0; i < 512; i++) { r.coordinator.submit(r.request(Action.START, false)); r.complete(); }
-        check("capacity refuses rather than evicting replay history", r.coordinator.submit(r.request(Action.START, false)).code().equals("SESSION_FULL") && r.mock.invocations() == 512);
+        check("capacity refuses rather than evicting replay history", r.coordinator.submit(r.request(Action.START, false)).code().equals("SESSION_FULL") && r.mock.invocations() == 1);
+        r = new Rig(); r.coordinator.submit(r.request(Action.START, false)); r.complete();
+        check("start when already on never toggles off", r.coordinator.submit(r.request(Action.START, false)).code().equals("ALREADY_IN_REQUESTED_STATE") && r.mock.invocations() == 1);
+        r.coordinator.submit(r.request(Action.STOP, true)); r.complete();
+        check("stop when already off never toggles on", r.coordinator.submit(r.request(Action.STOP, true)).code().equals("ALREADY_IN_REQUESTED_STATE") && r.mock.invocations() == 2);
+        reported[0] = Power.UNKNOWN;
+        var unknown = new AimaCoordinator(SESSION, invalid, time, q -> true, v -> {});
+        check("unknown power refuses blind toggle", unknown.submit(req).code().equals("POWER_STATE_UNVERIFIED"));
         List<byte[]> outgoing = new ArrayList<>(); AimaPageModel page = new AimaPageModel(outgoing::add);
         check("page disconnected blocks request", page.activate(Action.START, false, time.wall).equals("PHONE_NOT_CONNECTED"));
         page.connected(SESSION, true);

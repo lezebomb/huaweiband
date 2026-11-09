@@ -1,5 +1,7 @@
 # BandKey
 
+2026-11-09：AimaKey增加[真实手环点击诊断与手机离线记录](docs/aimakey-field-architecture-20261109.md)。用户已同意一次性通知仅用于临时通信验证；结果留在手机，稍后导出，不再要求骑车时带电脑。手环常驻页面和真实车辆适配仍未实现。[手机测试步骤](docs/aimakey-real-vehicle-test.md)。
+
 2026-11-08 新增独立 **AimaKey 模拟实验室**：已实现手机双按钮模型、Mock 控车协议和后台测试，尚不能从 Band 11 Pro 常驻页面控制实车。详见[开发与真机步骤](docs/aimakey-development-20261108.md)、[手环入口能力调查](docs/aimakey-wearengine-research-20261108.md)及[爱玛 App 分析](docs/aimakey-aima-analysis-20261108.md)。
 
 Huawei Band 11 Pro → Android Wear Engine桥接 → BLE → Windows 11。

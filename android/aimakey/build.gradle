@@ -6,8 +6,8 @@ android {
         applicationId 'dev.bandkey.aimakey'
         minSdk 26
         targetSdk 36
-        versionCode 1
-        versionName '0.1.0-mock'
+        versionCode 2
+        versionName '0.2.0-field-mock'
         testInstrumentationRunner 'dev.bandkey.aimakey.AimaInstrumentation'
         // BandKey's approval is package/signature-specific; never silently reuse its app ID.
         manifestPlaceholders = [aimaWearEngineAppId: providers.gradleProperty('aimaWearEngineAppId').getOrElse('UNCONFIGURED')]
@@ -17,5 +17,6 @@ android {
 }
 dependencies {
     implementation project(':aimakey-core')
+    implementation project(':aimakey-field')
     implementation 'com.huawei.hms:wearengine:5.0.3.304'
 }

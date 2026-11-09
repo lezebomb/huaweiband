@@ -5,6 +5,7 @@ import android.content.Intent;
 import android.os.*;
 import android.util.Log;
 import dev.bandkey.aimakey.core.*;
+import dev.bandkey.aimakey.field.MobileTrace;
 import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.List;
@@ -17,6 +18,7 @@ public final class AimaService extends Service {
     private AimaCoordinator coordinator;
     private MockVehicleController controller;
     private AimaPageModel page;
+    private MobileTrace trace;
     private String status = "模拟车辆已连接 · 实车接口尚未接入";
     private boolean foreground;
     public final class LocalBinder extends Binder { public AimaService service() { return AimaService.this; } }
@@ -26,6 +28,7 @@ public final class AimaService extends Service {
     };
     @Override public void onCreate() {
         super.onCreate();
+        trace = new MobileTrace(this, FieldTraceStore.Domain.PHONE_MOCK);
         AimaCoordinator.Clock clock = new AimaCoordinator.Clock() {
             public long wallMs() { return System.currentTimeMillis(); }
             public long elapsedMs() { return SystemClock.elapsedRealtime(); }
@@ -38,7 +41,8 @@ public final class AimaService extends Service {
             request -> getSharedPreferences("aima-journal", MODE_PRIVATE).edit()
                 .putString("session", request.session()).putLong("sequence", request.sequence())
                 .putString("requestId", request.id()).commit(),
-            result -> { page.receive(AimaProtocol.encodeReply(nonce.toString(), result)); setStatus(describe(result)); });
+            result -> { trace.record(FieldTraceStore.Event.REQUEST_RESULT, result.action(), result.stage(), 0);
+                page.receive(AimaProtocol.encodeReply(nonce.toString(), result)); setStatus(describe(result)); });
         page.connected(nonce.toString(), true);
         handler.post(ticker);
     }
@@ -52,6 +56,7 @@ public final class AimaService extends Service {
             .setSmallIcon(android.R.drawable.stat_notify_sync).setContentTitle("AimaKey · 仅模拟")
             .setContentText("后台测试运行中，不连接真实车辆").setContentIntent(open).setOngoing(true).build();
         startForeground(2101, notification); foreground = true;
+        trace.record(FieldTraceStore.Event.SERVICE_STARTED, null, null, 0);
         return START_NOT_STICKY; // No restoration of queued commands after process death.
     }
     public String status() { return status; }
@@ -60,6 +65,7 @@ public final class AimaService extends Service {
     public void observe(Consumer<String> observer) { observers.add(observer); observer.accept(status); }
     public void unobserve(Consumer<String> observer) { observers.remove(observer); }
     public void simulate(VehicleController.Action action, boolean stopConfirmed) {
+        trace.record(FieldTraceStore.Event.PHONE_GESTURE, action, null, 0);
         String code = page.activate(action, stopConfirmed, System.currentTimeMillis());
         if (!"REQUESTED".equals(code)) setStatus("[模拟] 已拒绝：" + code);
     }
@@ -69,7 +75,7 @@ public final class AimaService extends Service {
             AimaCoordinator.Result result = coordinator.submit(AimaProtocol.decode(bytes));
             page.receive(AimaProtocol.encodeReply(session(), result));
             if (result.stage() == AimaCoordinator.Stage.REJECTED || result.stage() == AimaCoordinator.Stage.ACCEPTED)
-                setStatus(describe(result));
+                { trace.record(FieldTraceStore.Event.REQUEST_RESULT, result.action(), result.stage(), 0); setStatus(describe(result)); }
         } catch (IllegalArgumentException e) { setStatus("模拟请求被拒绝：协议格式错误"); }
     }
     public void setScenario(MockVehicleController.Scenario scenario) {
@@ -80,7 +86,7 @@ public final class AimaService extends Service {
     VehicleController.Snapshot snapshot() { return controller.getVehicleConnectionState(); }
     AimaCoordinator.Result lastResult() { return coordinator.getLastOperationResult(); }
     int invocations() { return controller.invocations(); }
-    public void stopBackground() { foreground = false; stopForeground(STOP_FOREGROUND_REMOVE); stopSelf(); }
+    public void stopBackground() { coordinator.disconnect(); foreground = false; stopForeground(STOP_FOREGROUND_REMOVE); stopSelf(); }
     private void setStatus(String value) {
         status = value;
         Log.i("AimaKey", value); // Controlled codes only: no packet bodies, device IDs or vehicle/account data.
@@ -88,6 +94,7 @@ public final class AimaService extends Service {
     }
     private static String describe(AimaCoordinator.Result result) {
         String prefix = result.simulation() ? "[模拟] " : "";
+        if ("ALREADY_IN_REQUESTED_STATE".equals(result.code())) return prefix + "当前已是目标电源状态，未发送新动作";
         return prefix + switch (result.stage()) {
             case ACCEPTED -> "已接受，尚未发送";
             case REQUEST_SENT -> "请求已发送，尚未确认车辆接收";
@@ -99,6 +106,6 @@ public final class AimaService extends Service {
         };
     }
     @Override public void onDestroy() {
-        coordinator.disconnect(); handler.removeCallbacksAndMessages(null); observers.clear(); super.onDestroy();
+        coordinator.disconnect(); trace.close(); handler.removeCallbacksAndMessages(null); observers.clear(); super.onDestroy();
     }
 }

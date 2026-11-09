@@ -47,6 +47,7 @@ public final class MainActivity extends Activity {
         button(column,"3. 授权 Wear Engine 并选择手环",this::authorize);
         button(column,"诊断连接与设备能力",()->new WearDiagnostics(this,this::show).run());
         button(column,"手环按钮测试（不会解锁电脑）",()->startActivity(new Intent(this,WearTestActivity.class)));
+        button(column,"AimaKey 手环通信诊断（不控车）",()->startActivity(new Intent(this,AimaWearFieldActivity.class)));
         button(column,"诊断目标手环广播（30 秒）",this::probeAdvertisement);
         button(column,"导出诊断 JSON",()->startActivityForResult(new Intent(Intent.ACTION_CREATE_DOCUMENT).setType("application/json").putExtra(Intent.EXTRA_TITLE,"bandkey-diagnostics.json"),12));
         button(column,"4. 启动自动桥接",()->{
@@ -62,6 +63,13 @@ public final class MainActivity extends Activity {
         button(column,"VM 确认实验（手机或真实手环）",()->startActivity(new Intent(this,VmLabActivity.class)));
         try{identity=new Identity();}catch(Exception e){show("密钥初始化失败："+e.getClass().getSimpleName());}
         if(getIntent().getBooleanExtra("bandkeyVmLab",false))startActivity(new Intent(this,VmLabActivity.class));
+        openAimaIfRequested(getIntent());
+    }
+    @Override protected void onNewIntent(Intent intent){super.onNewIntent(intent);openAimaIfRequested(intent);}
+    private void openAimaIfRequested(Intent intent){
+        if(intent!=null && intent.getBooleanExtra("bandkeyAimaLab",false)){
+            intent.removeExtra("bandkeyAimaLab");startActivity(new Intent(this,AimaWearFieldActivity.class));
+        }
     }
     private void authorize(){
         if(Build.VERSION.SDK_INT>=31 && checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)!=PackageManager.PERMISSION_GRANTED){requestPermissions(new String[]{Manifest.permission.BLUETOOTH_CONNECT},20);return;}

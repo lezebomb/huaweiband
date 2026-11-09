@@ -17,6 +17,9 @@
     <activity android:name=".MainActivity" android:exported="true"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity>
     <activity android:name=".VmLabActivity" android:exported="false" />
     <activity android:name=".WearTestActivity" android:exported="false" />
+    <activity android:name=".AimaWearFieldActivity" android:exported="false" android:process=":aimakey" />
+    <service android:name=".AimaWearFieldService" android:exported="false" android:process=":aimakey" android:foregroundServiceType="connectedDevice" />
+    <activity android:name="dev.bandkey.aimakey.field.FieldDiagnosticsActivity" android:exported="false" android:process=":aimakey" />
     <service android:name=".BridgeService" android:exported="false" android:foregroundServiceType="connectedDevice" />
     <service android:name=".VmBleTransportService" android:exported="false" android:stopWithTask="true" android:foregroundServiceType="connectedDevice" />
     <service android:name=".VmWearConfirmService" android:exported="false" android:stopWithTask="false" android:foregroundServiceType="connectedDevice" />
